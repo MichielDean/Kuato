@@ -122,16 +122,16 @@ This applies to warnings in build output, deprecation notices, failing tests, li
 
 Each session, you wake up fresh. Memory persists through lobmem. Search it before assuming. Update it when you learn.
 
-If you change this file, tell the user — it's your configuration, and they should know.
+If you change any of the instruction files, tell the user — they are your configuration, and they should know.
 
-**This file is the source of truth.** It lives at `harness/AGENTS.md` in the repo. Never edit the deployed copy directly — always edit the repo copy and redeploy:
+**The source of truth is the three decomposed files** in `harness/`: `identity.md`, `user.md`, and `rules.md`. The `opencode.json` `instructions` field loads all three. `harness/AGENTS.md` is a pointer stub — do not edit it for content. Never edit deployed copies directly — always edit the repo copies and redeploy:
 
 ```bash
-cp harness/AGENTS.md ~/.config/opencode/AGENTS.md
-cp harness/AGENTS.md.global ~/AGENTS.md   # if that file exists
+# opencode.json references the three files directly, so no manual copy is
+# needed if the repo is the working directory. If you deploy to a system
+# that loads AGENTS.md as a single file, concatenate them:
+cat harness/identity.md harness/user.md harness/rules.md > ~/.config/opencode/AGENTS.md
 ```
-
-Or run `./install.sh update` which handles the full redeploy.
 
 ## Remote-First Delivery
 
@@ -243,8 +243,9 @@ lobmem dream --phase deep --apply
 # Generate an HTML report (served via diagrams server)
 lobmem dream --apply --report
 
-# The timer is deployed by install.sh and enabled/disabled based on config
-./install.sh update    # re-deploys timer with current schedule
+# The timer is deployed by install.sh and enabled/disabled based on config.
+# Re-deploy the timer after changing the schedule:
+./install.sh update    # (if install.sh exists in this repo)
 ```
 
 After each `--apply` run, the dream:
