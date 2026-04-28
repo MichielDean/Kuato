@@ -1,5 +1,6 @@
 """URL validation for urllib calls — prevent SSRF and file-scheme attacks."""
 
+import http.client
 import ipaddress
 import socket
 import urllib.request
@@ -189,7 +190,7 @@ def safe_urlopen(
     timeout: int = DEFAULT_URLOPEN_TIMEOUT,
     allow_remote: bool = False,
     **kwargs,
-) -> urllib.request.OpenerDirector:
+) -> http.client.HTTPResponse:
     """Open a URL with SSRF protections: validates URL, blocks redirects, sets timeout.
 
     This is the safe replacement for urllib.request.urlopen(). It:
@@ -207,10 +208,10 @@ def safe_urlopen(
             policy used during URL construction (e.g. ExtractionEngine passes
             allow_remote=True because Ollama can run on remote hosts). Defaults
             to False for safety.
-        **kwargs: Additional arguments passed to OpenerDirector.open().
+        **kwargs: Additional arguments passed to the opener's open() method.
 
     Returns:
-        The response object from the opener.
+        An http.client.HTTPResponse object (context manager).
 
     Raises:
         ValueError: If the URL fails is_safe_url() validation.
