@@ -161,9 +161,15 @@ def _validate_write_path(path: Path, label: str) -> Path:
             )
 
     # Must not be a symlink itself
-    if path.is_symlink():
+    # If we can't stat the path (permission denied), treat it as unsafe
+    try:
+        if path.is_symlink():
+            raise ValueError(
+                f"llmem: paths: {label} path is a symlink (not allowed for write targets): {path}"
+            )
+    except OSError:
         raise ValueError(
-            f"llmem: paths: {label} path is a symlink (not allowed for write targets): {path}"
+            f"llmem: paths: {label} path cannot be accessed (permission denied): {path}"
         )
 
     return resolved

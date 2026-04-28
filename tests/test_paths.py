@@ -16,6 +16,7 @@ from llmem.paths import (
     get_context_dir,
     migrate_from_lobsterdog,
     _validate_home_path,
+    _validate_write_path,
     BLOCKED_SYSTEM_PREFIXES,
 )
 
@@ -270,3 +271,35 @@ class TestPaths_BlockedSystemPrefixesShared:
                 pass
             with pytest.raises(ValueError, match="protected directory"):
                 _validate_write_path(test_path, "test")
+
+
+class TestPaths_ValidateWritePath_SymlinkOSError:
+    """Test that _validate_write_path wraps is_symlink() in try/except OSError."""
+
+    def test_symlink_oserror_yields_value_error(self):
+        """If is_symlink() raises OSError, _validate_write_path must raise
+        a clear ValueError instead of letting OSError propagate."""
+        from llmem.paths import _validate_write_path
+
+        # Use a path that is NOT under any blocked prefix, so the blocked-prefix
+        # check passes and we reach the is_symlink() call.
+        inaccessible = Path("/home/someone_protected/file.html")
+        with patch.object(Path, "is_symlink", side_effect=OSError("Permission denied")):
+            with pytest.raises(ValueError, match="cannot be accessed"):
+                _validate_write_path(inaccessible, "test_write")
+
+    def test_symlink_rejection_works(self, tmp_path):
+        """_validate_write_path must reject paths that are symlinks."""
+        target = tmp_path / "real_file.html"
+        target.write_text("content")
+        link = tmp_path / "link_file.html"
+        link.symlink_to(target)
+        with pytest.raises(ValueError, match="symlink"):
+            _validate_write_path(link, "test_write")
+
+    def test_accepts_regular_file(self, tmp_path):
+        """_validate_write_path accepts regular (non-symlink) files."""
+        regular = tmp_path / "output.html"
+        regular.write_text("content")
+        result = _validate_write_path(regular, "test_write")
+        assert result == regular.resolve()
