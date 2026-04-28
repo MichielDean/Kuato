@@ -46,6 +46,60 @@ class TestCli_EntryPoint:
         assert "llmem" in output.lower()
 
 
+class TestCli_LobmemCompat:
+    """Test backward-compatible lobmem invocation with deprecation warning."""
+
+    def test_lobmem_compat_deprecation_warning(self):
+        """When invoked as 'lobmem', main() prints deprecation warning to stderr."""
+        from llmem.cli import main
+        import io
+
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        try:
+            sys.argv = ["lobmem", "--help"]
+            main()
+        except SystemExit:
+            pass
+        finally:
+            stderr = sys.stderr.getvalue()
+            stdout = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+        assert "deprecated" in stderr.lower(), (
+            f"Expected deprecation warning in stderr, got: {stderr!r}"
+        )
+        assert "llmem" in stderr.lower(), (
+            f"Expected 'llmem' in deprecation warning, got: {stderr!r}"
+        )
+
+    def test_llmem_no_deprecation_warning(self):
+        """When invoked as 'llmem', no deprecation warning is emitted."""
+        from llmem.cli import main
+        import io
+
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        try:
+            sys.argv = ["llmem", "--help"]
+            main()
+        except SystemExit:
+            pass
+        finally:
+            stderr = sys.stderr.getvalue()
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+        assert "deprecated" not in stderr.lower(), (
+            f"No deprecation warning expected for llmem invocation, got: {stderr!r}"
+        )
+
+
 class TestCli_DbPathDefault:
     """Test that CLI uses ~/.config/llmem/memory.db by default."""
 

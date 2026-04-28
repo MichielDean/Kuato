@@ -17,6 +17,7 @@ dev = ["pytest>=9.0"]
 
 [project.scripts]
 llmem = "llmem.cli:main"
+lobmem = "llmem.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["llmem*", "llmem_migrations*", "memory*"]

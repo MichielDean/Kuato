@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -380,6 +381,14 @@ def cmd_init(args):
 
 def main():
     """Entry point for the llmem CLI."""
+    # Backward-compat: warn when invoked as 'lobmem'
+    invoked_as = os.path.basename(sys.argv[0])
+    if invoked_as == "lobmem":
+        print(
+            "warning: 'lobmem' is deprecated, use 'llmem'",
+            file=sys.stderr,
+        )
+
     parser = argparse.ArgumentParser(
         prog="llmem",
         description="LLMem — structured memory with semantic search",
