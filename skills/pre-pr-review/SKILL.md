@@ -33,13 +33,12 @@ cd <repo> && git diff main...HEAD
 
 **For an existing PR:**
 ```bash
-export GH_TOKEN=$(pass github/gh-token 2>/dev/null)
 gh pr diff <number>
 ```
 
 Also collect the full content of each modified file (after change):
 ```bash
-git diff main...HEAD --name-only | xargs -I{} sh -c 'echo "=== {} ===" && cat {}'
+git diff main...HEAD --name-only | while IFS= read -r file; do echo "=== $file ===" && cat "$file"; done
 ```
 
 ## Step 2: Gather Original Files (Behavioral Regression Context)
@@ -47,9 +46,9 @@ git diff main...HEAD --name-only | xargs -I{} sh -c 'echo "=== {} ===" && cat {}
 For each modified file, also collect the **original version** before the change:
 ```bash
 # For current branch:
-git diff main...HEAD --name-only | xargs -I{} sh -c 'echo "=== {} ===" && git show main:{}'
+git diff main...HEAD --name-only | while IFS= read -r file; do echo "=== $file ===" && git show "main:$file"; done
 # For an existing PR:
-gh pr diff <number> --name-only | xargs -I{} sh -c 'echo "=== {} ===" && git show HEAD~1:{}'
+gh pr diff <number> --name-only | while IFS= read -r file; do echo "=== $file ===" && git show "HEAD~1:$file"; done
 ```
 
 This is critical — the reviewer must compare old vs new to catch behavioral regressions

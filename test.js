@@ -40,6 +40,8 @@ const FORBIDDEN_PATTERNS = [
   /\bcastellarius\b/,
   /\bcataractae\b/,
   /\baqueduct\b/,
+  /xargs.*sh\s+-c/,         // Command injection vulnerability
+  /\bpass\s+github\b/,      // Internal credential path convention
 ];
 const NAME_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 

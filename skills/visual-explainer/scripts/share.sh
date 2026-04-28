@@ -24,6 +24,24 @@ if [ ! -f "$HTML_FILE" ]; then
     exit 1
 fi
 
+# Validate file is a plausible HTML file (not scripts, binaries, etc.)
+MIME_TYPE=$(file -b --mime-type "$HTML_FILE" 2>/dev/null || echo "")
+if [ -n "$MIME_TYPE" ]; then
+    case "$MIME_TYPE" in
+        text/html|text/xml|application/xml|text/plain) ;;
+        *)
+            echo -e "${RED}Error: File is not HTML (detected: $MIME_TYPE)${NC}" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+# Basic content check: must contain an HTML tag
+if ! grep -qiE '<html|<!doctype html' "$HTML_FILE"; then
+    echo -e "${RED}Error: File does not appear to be valid HTML${NC}" >&2
+    exit 1
+fi
+
 # Find vercel-deploy skill
 VERCEL_SCRIPT=""
 for dir in ~/.agents/skills/vercel-deploy/scripts /mnt/skills/user/vercel-deploy/scripts; do
