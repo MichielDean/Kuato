@@ -27,7 +27,7 @@ This copies all 7 skills into `~/.agents/skills/`, where OpenCode discovers them
 After installation, verify skills are discoverable:
 
 ```bash
-node test.js
+npm test
 ```
 
 Or manually check that the skill directories exist:
