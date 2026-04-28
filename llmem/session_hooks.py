@@ -15,7 +15,7 @@ from .embed import EmbeddingEngine
 from .adapters.opencode import OpenCodeAdapter
 from .hooks import SessionHook
 from .config import load_config
-from .paths import get_context_dir, validate_session_id
+from .paths import get_context_dir, validate_session_id, _validate_write_path
 from .registry import get_registered_session_hooks
 
 log = logging.getLogger(__name__)
@@ -166,6 +166,7 @@ class SessionHookCoordinator:
 
         context_dir = get_context_dir()
         context_file = context_dir / f"{session_id}.md"
+        context_file = _validate_write_path(context_file, "session context")
 
         try:
             context_dir.mkdir(parents=True, exist_ok=True)
@@ -306,6 +307,7 @@ class SessionHookCoordinator:
 
         context_dir = get_context_dir()
         context_file = context_dir / f"{session_id}-compact.md"
+        context_file = _validate_write_path(context_file, "session compact context")
 
         try:
             context_dir.mkdir(parents=True, exist_ok=True)

@@ -4,7 +4,7 @@ import ipaddress
 import socket
 import urllib.request
 import urllib.error
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, unquote
 
 OLLAMA_DEFAULT_PORT = 11434
 
@@ -99,6 +99,8 @@ def is_safe_url(url: str, allow_remote: bool = False) -> bool:
     Checks:
     - Scheme must be http or https (blocks file://, ftp://, data://, etc.)
     - Must have a hostname
+    - Percent-encoded hostnames are decoded before IP checks to prevent
+      SSRF bypass (e.g. %31%32%37%2e%30%2e%30%2e%31 → 127.0.0.1).
     - If allow_remote is False (default), only loopback addresses on the
       Ollama default port are allowed.
     - If allow_remote is True, any reachable hostname is allowed (still
@@ -116,14 +118,27 @@ def is_safe_url(url: str, allow_remote: bool = False) -> bool:
     if parsed.username or parsed.password:
         return False
     port = _get_effective_port(parsed)
+    # Percent-decode the hostname before IP checks to prevent SSRF bypass
+    # via encoded IP addresses (e.g. %31%32%37%2e%30%2e%30%2e%31 → 127.0.0.1).
+    # urllib normalizes percent-encoded hostnames, so we must check the
+    # decoded form to match what urllib will actually connect to.
+    decoded_hostname = unquote(hostname)
     try:
-        ip = ipaddress.ip_address(hostname)
+        ip = ipaddress.ip_address(decoded_hostname)
         return _check_ip_access(ip, allow_remote, port)
     except ValueError:
-        resolved = _resolve_hostname(hostname)
+        resolved = _resolve_hostname(decoded_hostname)
         if resolved is None:
             if not allow_remote:
                 return False
+            # If DNS fails but the decoded hostname looks like a raw IP,
+            # block it — DNS failure on a percent-encoded IP means urllib
+            # may still connect to the decoded private IP.
+            try:
+                ip = ipaddress.ip_address(decoded_hostname)
+                return _check_ip_access(ip, allow_remote, port)
+            except ValueError:
+                pass
         else:
             for addr in resolved:
                 try:
@@ -208,8 +223,10 @@ def safe_urlopen(
     parsed = urlparse(url_str)
     hostname = parsed.hostname
     if hostname:
+        # Use percent-decoded hostname for re-resolution (matches is_safe_url behavior)
+        decoded_hostname = unquote(hostname)
         port = _get_effective_port(parsed)
-        resolved = _resolve_hostname(hostname)
+        resolved = _resolve_hostname(decoded_hostname)
         if resolved:
             for addr in resolved:
                 try:

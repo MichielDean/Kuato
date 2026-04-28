@@ -8,6 +8,28 @@
 var path = require('path');
 var os = require('os');
 
+// Minimum interval between spawned llmem processes (milliseconds).
+// Prevents process-spawn flooding DoS if hooks fire rapidly.
+var _MIN_PROCESS_INTERVAL_MS = 5000;
+
+// Track the last time a process was spawned
+var _lastProcessTime = 0;
+
+/**
+ * Check whether enough time has passed since the last process spawn
+ * to allow a new one. Prevents process-spawn flooding.
+ *
+ * @returns {boolean} True if enough time has passed, false if rate-limited.
+ */
+function canSpawnProcess() {
+  var now = Date.now();
+  if (now - _lastProcessTime < _MIN_PROCESS_INTERVAL_MS) {
+    return false;
+  }
+  _lastProcessTime = now;
+  return true;
+}
+
 /**
  * Validate that a session ID is safe to use in filesystem paths.
  *
@@ -50,4 +72,4 @@ function getContextDir(config) {
   );
 }
 
-module.exports = { getContextDir, validateSessionId };
+module.exports = { getContextDir, validateSessionId, canSpawnProcess };

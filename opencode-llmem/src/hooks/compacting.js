@@ -26,6 +26,12 @@ function handle(sessionId, config) {
   // Validate session_id to prevent path traversal attacks
   utils.validateSessionId(sessionId);
 
+  // Rate limit: prevent process-spawn flooding
+  if (!utils.canSpawnProcess()) {
+    console.error('opencode-llmem: session.compacting hook rate-limited, skipping');
+    return;
+  }
+
   try {
     // Use execFileSync to prevent command injection via sessionId
     var result = child_process.execFileSync(
