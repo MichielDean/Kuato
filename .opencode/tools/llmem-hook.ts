@@ -3,11 +3,36 @@ import { runLlmem } from "./lib/_llmem";
 import path from "path";
 
 /**
+ * Resolve a user-supplied path relative to a base directory, rejecting
+ * path-traversal attempts (e.g. "../../etc/passwd").
+ *
+ * - Absolute paths are resolved as-is and checked against the base.
+ * - Relative paths are joined to base, then resolved.
+ * - If the resolved path escapes the base directory, returns null.
+ *
+ * @param userPath - The path supplied by the user (file or directory).
+ * @param base - The base directory to resolve against (e.g. context.directory).
+ * @returns The safe resolved path, or null if traversal is detected.
+ */
+function resolveContainedPath(userPath: string, base: string): string | null {
+  const resolved = path.resolve(base, userPath);
+  // Ensure the resolved path is within the base directory.
+  // Both must end with separator for prefix matching to avoid
+  // /foo/bar matching /foo/barbaz.
+  const baseNorm = base.endsWith(path.sep) ? base : base + path.sep;
+  if (resolved !== base && !resolved.startsWith(baseNorm)) {
+    return null;
+  }
+  return resolved;
+}
+
+/**
  * Run the llmem extraction hook.
  *
  * Invokes `llmem hook [--force] [--no-embed] [--no-introspect] [--file PATH] [--directory PATH]`.
  * File and directory paths are resolved relative to context.directory for
- * relative paths, and context.worktree for project-root paths.
+ * relative paths. Paths containing ".." that escape context.directory are
+ * rejected to prevent path traversal.
  * Returns extraction result string. On error, returns error string.
  */
 export default tool({
@@ -43,21 +68,20 @@ export default tool({
     if (args.noIntrospect) {
       cmdArgs.push("--no-introspect");
     }
+    const baseDir = context?.directory ?? context?.worktree ?? ".";
     if (args.file) {
-      // Resolve relative paths using context.directory
-      let filePath = args.file;
-      if (!path.isAbsolute(filePath) && context?.directory) {
-        filePath = path.join(context.directory, filePath);
+      const resolved = resolveContainedPath(args.file, baseDir);
+      if (resolved === null) {
+        return `Error: llmem hook: file path "${args.file}" escapes directory scope`;
       }
-      cmdArgs.push("--file", filePath);
+      cmdArgs.push("--file", resolved);
     }
     if (args.directory) {
-      // Resolve relative paths using context.directory
-      let dirPath = args.directory;
-      if (!path.isAbsolute(dirPath) && context?.directory) {
-        dirPath = path.join(context.directory, dirPath);
+      const resolved = resolveContainedPath(args.directory, baseDir);
+      if (resolved === null) {
+        return `Error: llmem hook: directory path "${args.directory}" escapes directory scope`;
       }
-      cmdArgs.push("--directory", dirPath);
+      cmdArgs.push("--directory", resolved);
     }
 
     const result = await runLlmem(cmdArgs, {

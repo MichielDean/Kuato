@@ -19,7 +19,7 @@ export default tool({
     type: tool.schema.string().optional().describe(
       "Filter by memory type (fact, decision, preference, etc.)"
     ),
-    limit: tool.schema.number().optional().describe(
+    limit: tool.schema.number().min(1).optional().describe(
       "Maximum number of results (default: 20)"
     ),
   },

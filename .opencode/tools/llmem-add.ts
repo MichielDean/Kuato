@@ -22,7 +22,7 @@ export default tool({
     source: tool.schema.string().optional().describe(
       "Source of memory (default: manual)"
     ),
-    confidence: tool.schema.number().optional().describe(
+    confidence: tool.schema.number().min(0).max(1).optional().describe(
       "Confidence 0-1 (default: 0.8)"
     ),
   },
