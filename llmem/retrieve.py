@@ -213,11 +213,7 @@ class Retriever:
         )
 
         # Track access for each result (best-effort, never raises)
-        for r in results:
-            try:
-                self._store.touch(r["id"])
-            except Exception:
-                log.debug("llmem: retrieve: failed to track access for %s", r["id"])
+        self._track_access(results)
 
         if traverse_relations and results:
             mem_ids = [r["id"] for r in results]
