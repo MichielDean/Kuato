@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llmem"
+version = "0.1.0"
+description = "LLMem — structured memory with semantic search"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+vec = ["sqlite-vec>=0.1.6"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+llmem = "llmem.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["llmem*", "llmem_migrations*"]
+
+[tool.setuptools.package-data]
+llmem = ["py.typed"]
+llmem_migrations = ["*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

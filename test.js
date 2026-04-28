@@ -492,6 +492,59 @@ function testOpencodeJsonLoadsAllHarnessFiles() {
   }
 }
 
+// ── Python Source Validation Tests ───────────────────────────────────
+
+function testNoLobsterdogRefsInPython() {
+  console.log('Python source forbidden reference check');
+  var pyDirs = ['llmem', 'tests'];
+  var foundProblems = [];
+  // Lines containing these substrings are allowed (backward compat)
+  var allowedSubstrings = ['migrate_from_lobsterdog', '.lobsterdog', '~/.lobsterdog',
+                           '_FORBIDDEN_WORDS', '_ALLOWED_PATTERNS', 'backward-compat',
+                           'backward compat', 'BackwardCompat', 'DataMigration',
+                           'test_cli_forbidden_refs', 'No lobsterdog', 'backward_compatibility'];
+  for (var d = 0; d < pyDirs.length; d++) {
+    var pyDir = path.join(__dirname, pyDirs[d]);
+    if (!fs.existsSync(pyDir)) continue;
+    (function walkDir(dir, relativeBase) {
+      var entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (var i = 0; i < entries.length; i++) {
+        var entry = entries[i];
+        var fullPath = path.join(dir, entry.name);
+        var relPath = relativeBase ? relativeBase + '/' + entry.name : entry.name;
+        if (entry.isDirectory()) {
+          walkDir(fullPath, relPath);
+        } else if (entry.name.endsWith('.py') && entry.name !== 'test_cli_forbidden_refs.py') {
+          var content = fs.readFileSync(fullPath, 'utf8');
+          var lines = content.split('\n');
+          for (var ln = 0; ln < lines.length; ln++) {
+            var line = lines[ln];
+            // Check if line is allowed (backward compat references)
+            var lineAllowed = false;
+            for (var a = 0; a < allowedSubstrings.length; a++) {
+              if (line.indexOf(allowedSubstrings[a]) !== -1) {
+                lineAllowed = true;
+                break;
+              }
+            }
+            if (lineAllowed) continue;
+            for (var p = 0; p < FORBIDDEN_PATTERNS.length; p++) {
+              var pattern = FORBIDDEN_PATTERNS[p];
+              var matches = line.match(pattern);
+              if (matches) {
+                foundProblems.push(relPath + ':' + (ln + 1) + ': found "' + matches[0] + '"');
+              }
+            }
+          }
+        }
+      }
+    })(pyDir, pyDirs[d]);
+  }
+  assert(foundProblems.length === 0,
+    'Python source has no Lobsterdog/Cistern/personal references' +
+    (foundProblems.length > 0 ? ' (found: ' + foundProblems.join('; ') + ')' : ''));
+}
+
 // ── Main ──────────────────────────────────────────────────────────────
 
 console.log('\n=== Validation Tests ===\n');
@@ -521,6 +574,8 @@ for (var t = 0; t < EXPECTED_TEMPLATES.length; t++) {
   testTemplateEndsWithNewline(tmplFile);
   console.log('');
 }
+
+testNoLobsterdogRefsInPython();
 
 console.log('=== Integration Tests ===\n');
 
