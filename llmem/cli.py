@@ -15,6 +15,7 @@ from .registry import get_registered_cli_plugins
 from .config import write_config_yaml
 from .ollama import ProviderDetector
 from .paths import migrate_from_lobsterdog
+from .url_validate import is_safe_url
 
 
 VALID_SOURCES = ["manual", "session", "heartbeat", "extraction", "import"]
@@ -258,7 +259,11 @@ def cmd_init(args):
     ollama_url = args.ollama_url or "http://localhost:11434"
 
     # Detect providers
-    detection = detector.detect(ollama_url=ollama_url)
+    try:
+        detection = detector.detect(ollama_url=ollama_url)
+    except ValueError as e:
+        print(f"Error: invalid Ollama URL {ollama_url!r}: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Build config dict
     config = {
@@ -280,6 +285,15 @@ def cmd_init(args):
         try:
             url_input = input(f"Ollama URL [{detection['ollama_url']}]: ").strip()
             if url_input:
+                if not url_input.startswith(("http://", "https://")) or not is_safe_url(
+                    url_input, allow_remote=True
+                ):
+                    print(
+                        f"Error: invalid or unsafe Ollama URL: {url_input!r} "
+                        "(must be http:// or https:// with a valid hostname)",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
                 config["memory"]["ollama_url"] = url_input
 
             dream_default = "Y"

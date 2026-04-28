@@ -660,6 +660,111 @@ class TestInit_CmdInit:
         assert "skills" not in files_in_home
         assert "agents" not in files_in_home
 
+    def test_detect_value_error_exits_cleanly(self, tmp_path):
+        """cmd_init exits with code 1 when detector.detect() raises ValueError."""
+        from llmem.cli import cmd_init
+
+        home = tmp_path / "llmem_home"
+        with patch("llmem.cli.get_llmem_home", return_value=home):
+            with patch("llmem.cli.get_config_path", return_value=home / "config.yaml"):
+                with patch("llmem.cli.get_db_path", return_value=home / "memory.db"):
+                    with patch("llmem.cli.ProviderDetector") as MockDetector:
+                        MockDetector.return_value.detect.side_effect = ValueError(
+                            "llmem: ollama: unsafe URL: 'ftp://bad'"
+                        )
+                        args = _make_args(non_interactive=True, ollama_url="ftp://bad")
+                        with pytest.raises(SystemExit) as exc_info:
+                            cmd_init(args)
+                        assert exc_info.value.code == 1
+
+    def test_detect_empty_url_exits_cleanly(self, tmp_path):
+        """cmd_init exits with code 1 when --ollama-url is empty string."""
+        from llmem.cli import cmd_init
+
+        home = tmp_path / "llmem_home"
+        with patch("llmem.cli.get_llmem_home", return_value=home):
+            with patch("llmem.cli.get_config_path", return_value=home / "config.yaml"):
+                with patch("llmem.cli.get_db_path", return_value=home / "memory.db"):
+                    with patch("llmem.cli.ProviderDetector") as MockDetector:
+                        MockDetector.return_value.detect.side_effect = ValueError(
+                            "llmem: ollama: invalid base_url"
+                        )
+                        args = _make_args(non_interactive=True, ollama_url="")
+                        with pytest.raises(SystemExit) as exc_info:
+                            cmd_init(args)
+                        assert exc_info.value.code == 1
+
+    def test_interactive_unsafe_url_rejected(self, tmp_path):
+        """Interactive-mode URL input that fails is_safe_url() is rejected."""
+        from llmem.cli import cmd_init
+
+        home = tmp_path / "llmem_home"
+        with patch("llmem.cli.get_llmem_home", return_value=home):
+            with patch("llmem.cli.get_config_path", return_value=home / "config.yaml"):
+                with patch("llmem.cli.get_db_path", return_value=home / "memory.db"):
+                    with patch("llmem.cli.ProviderDetector") as MockDetector:
+                        MockDetector.return_value.detect.return_value = {
+                            "provider": "none",
+                            "ollama_url": "http://localhost:11434",
+                            "openai_key_found": "false",
+                            "anthropic_key_found": "false",
+                        }
+                        # User types an unsafe URL (file://) in interactive mode
+                        args = _make_args(non_interactive=False)
+                        with patch("builtins.input", return_value="file:///etc/passwd"):
+                            with pytest.raises(SystemExit) as exc_info:
+                                cmd_init(args)
+                            assert exc_info.value.code == 1
+
+    def test_interactive_non_http_url_rejected(self, tmp_path):
+        """Interactive-mode URL input without http(s) scheme is rejected."""
+        from llmem.cli import cmd_init
+
+        home = tmp_path / "llmem_home"
+        with patch("llmem.cli.get_llmem_home", return_value=home):
+            with patch("llmem.cli.get_config_path", return_value=home / "config.yaml"):
+                with patch("llmem.cli.get_db_path", return_value=home / "memory.db"):
+                    with patch("llmem.cli.ProviderDetector") as MockDetector:
+                        MockDetector.return_value.detect.return_value = {
+                            "provider": "none",
+                            "ollama_url": "http://localhost:11434",
+                            "openai_key_found": "false",
+                            "anthropic_key_found": "false",
+                        }
+                        # User types ftp:// URL in interactive mode
+                        args = _make_args(non_interactive=False)
+                        with patch(
+                            "builtins.input", return_value="ftp://evil.server:11434"
+                        ):
+                            with pytest.raises(SystemExit) as exc_info:
+                                cmd_init(args)
+                            assert exc_info.value.code == 1
+
+    def test_interactive_valid_url_accepted(self, tmp_path):
+        """Interactive-mode URL input with a valid http(s) URL is accepted."""
+        from llmem.cli import cmd_init
+
+        home = tmp_path / "llmem_home"
+        custom_url = "http://my-ollama-server:11434"
+        with patch("llmem.cli.get_llmem_home", return_value=home):
+            with patch("llmem.cli.get_config_path", return_value=home / "config.yaml"):
+                with patch("llmem.cli.get_db_path", return_value=home / "memory.db"):
+                    with patch("llmem.cli.ProviderDetector") as MockDetector:
+                        MockDetector.return_value.detect.return_value = {
+                            "provider": "ollama",
+                            "ollama_url": "http://localhost:11434",
+                            "openai_key_found": "false",
+                            "anthropic_key_found": "false",
+                        }
+                        # User types a valid URL, then accepts default for dream
+                        args = _make_args(non_interactive=False)
+                        with patch("builtins.input", side_effect=[custom_url, ""]):
+                            cmd_init(args)
+
+        config_path = home / "config.yaml"
+        data = yaml.safe_load(config_path.read_text())
+        assert data["memory"]["ollama_url"] == custom_url
+
 
 # ===========================================================================
 # Integration tests
