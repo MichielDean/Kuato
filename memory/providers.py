@@ -410,7 +410,7 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
             },
             timeout=timeout,
         )
-        return result["choices"][0]["message"]["content"]
+        return result["choices"][0]["message"]["content"] or ""
 
     def check_available(self) -> bool:
         """Check if the OpenAI API key is valid by calling /v1/models.
@@ -525,7 +525,7 @@ class AnthropicProvider(GenerateProvider):
             raise RuntimeError(
                 f"providers: Anthropic request failed: {e.reason if hasattr(e, 'reason') else e}"
             ) from e
-        return data["content"][0]["text"]
+        return data["content"][0]["text"] or ""
 
     def check_available(self) -> bool:
         """Check if the Anthropic API key is valid by sending a minimal request.

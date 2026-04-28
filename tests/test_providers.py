@@ -1849,3 +1849,116 @@ class TestAnthropicProvider_ConnectionErrors:
         ):
             with pytest.raises(RuntimeError, match="Anthropic API returned HTTP 429"):
                 provider.generate("test prompt")
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-887ww: OpenAIProvider.generate can return None
+# Issue ll-1ztcx-woaqv: AnthropicProvider.generate can return None
+#
+# Both generate() methods promise '-> str' but can return None when the API
+# returns null content (e.g., content_filter finish_reason for OpenAI,
+# or null text in Anthropic response). Fix: use `or ""` to coerce None.
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAIProvider_GenerateNeverReturnsNone:
+    """OpenAIProvider.generate() must return str, never None.
+
+    When OpenAI returns content=null (e.g., due to content_filter finish_reason),
+    generate() must return '' instead of None, honoring the '-> str' contract.
+    """
+
+    def test_generate_returns_empty_string_when_content_is_null(self):
+        """When API returns {'choices': [{'message': {'content': None}}]},
+        generate() must return '' not None."""
+        provider = OpenAIProvider(api_key="test-key")
+        with patch.object(
+            provider,
+            "_make_request",
+            return_value={
+                "choices": [{"message": {"content": None}}],
+            },
+        ):
+            result = provider.generate("test prompt")
+        assert result == ""
+        assert result is not None
+
+    def test_generate_returns_actual_content_when_present(self):
+        """Normal case: content is a non-None string."""
+        provider = OpenAIProvider(api_key="test-key")
+        with patch.object(
+            provider,
+            "_make_request",
+            return_value={
+                "choices": [{"message": {"content": "Hello, world!"}}],
+            },
+        ):
+            result = provider.generate("test prompt")
+        assert result == "Hello, world!"
+
+    def test_generate_returns_empty_string_when_content_is_empty(self):
+        """When content is empty string, should return empty string (not None)."""
+        provider = OpenAIProvider(api_key="test-key")
+        with patch.object(
+            provider,
+            "_make_request",
+            return_value={
+                "choices": [{"message": {"content": ""}}],
+            },
+        ):
+            result = provider.generate("test prompt")
+        assert result == ""
+        assert result is not None
+
+
+class TestAnthropicProvider_GenerateNeverReturnsNone:
+    """AnthropicProvider.generate() must return str, never None.
+
+    When Anthropic returns content with null text, generate() must return ''
+    instead of None, honoring the '-> str' contract.
+    """
+
+    def test_generate_returns_empty_string_when_text_is_null(self):
+        """When API returns {'content': [{'text': None}]},
+        generate() must return '' not None."""
+        provider = AnthropicProvider(api_key="test-key")
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(
+                {"content": [{"text": None}]}
+            ).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+            result = provider.generate("test prompt")
+        assert result == ""
+        assert result is not None
+
+    def test_generate_returns_actual_text_when_present(self):
+        """Normal case: text is a non-None string."""
+        provider = AnthropicProvider(api_key="test-key")
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(
+                {"content": [{"text": "Hello, world!"}]}
+            ).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+            result = provider.generate("test prompt")
+        assert result == "Hello, world!"
+
+    def test_generate_returns_empty_string_when_text_is_empty(self):
+        """When text is empty string, should return empty string (not None)."""
+        provider = AnthropicProvider(api_key="test-key")
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(
+                {"content": [{"text": ""}]}
+            ).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+            result = provider.generate("test prompt")
+        assert result == ""
+        assert result is not None
