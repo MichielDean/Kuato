@@ -19,6 +19,9 @@ log = logging.getLogger(__name__)
 # Valid dream phases for hook registration.
 _VALID_DREAM_PHASES = frozenset({"light", "deep", "rem"})
 
+# Valid session event types for hook registration.
+VALID_SESSION_EVENT_TYPES = frozenset({"created", "idle", "compacting"})
+
 # --- Module-level registries ---
 # Populated by explicit register_X() calls only.
 # Each consumer makes a defensive copy at usage time.
@@ -26,6 +29,7 @@ _VALID_DREAM_PHASES = frozenset({"light", "deep", "rem"})
 _adapter_registry: dict[str, type[SessionAdapter]] = {}
 _dream_hook_registry: dict[str, Callable] = {}
 _cli_plugin_registry: dict[str, Callable] = {}
+_session_hook_registry: dict[str, Callable] = {}
 
 
 def register_session_adapter(name: str, adapter_class: type[SessionAdapter]) -> None:
@@ -127,6 +131,52 @@ def get_registered_dream_hooks() -> dict[str, Callable]:
     return dict(_dream_hook_registry)
 
 
+def register_session_hook(
+    event_type: str,
+    hook_fn: Callable,
+) -> None:
+    """Register a session event hook function.
+
+    The hook_fn is called by SessionEventManager.emit() when the
+    corresponding session event occurs.
+
+    Args:
+        event_type: One of 'created', 'idle', or 'compacting'.
+        hook_fn: Callable invoked when the event is emitted.
+
+    Raises:
+        ValueError: If event_type is not a valid session event type.
+        ValueError: If a hook is already registered for that event_type.
+        TypeError: If hook_fn is not callable.
+    """
+    if event_type not in VALID_SESSION_EVENT_TYPES:
+        raise ValueError(
+            f"llmem: registry: register_session_hook: "
+            f"invalid event_type '{event_type}', must be one of {sorted(VALID_SESSION_EVENT_TYPES)}"
+        )
+    if not callable(hook_fn):
+        raise TypeError(
+            f"llmem: registry: register_session_hook: "
+            f"hook_fn must be callable, got {type(hook_fn)!r}"
+        )
+    if event_type in _session_hook_registry:
+        raise ValueError(
+            f"llmem: registry: register_session_hook: "
+            f"a hook is already registered for event_type '{event_type}'"
+        )
+    _session_hook_registry[event_type] = hook_fn
+
+
+def get_registered_session_hooks() -> dict[str, Callable]:
+    """Return a copy of the session hook registry.
+
+    Returns:
+        A dict mapping event type to hook function. Callers cannot
+        mutate the internal registry.
+    """
+    return dict(_session_hook_registry)
+
+
 def register_cli_plugin(
     name: str,
     setup_fn: Callable,
@@ -189,3 +239,4 @@ def _reset_registries() -> None:
     _adapter_registry.clear()
     _dream_hook_registry.clear()
     _cli_plugin_registry.clear()
+    _session_hook_registry.clear()

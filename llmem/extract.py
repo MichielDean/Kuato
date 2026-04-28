@@ -8,7 +8,7 @@ import urllib.request
 import urllib.error
 
 from .taxonomy import ERROR_TAXONOMY, ERROR_TAXONOMY_KEYS, SELF_ASSESSMENT_FIELDS
-from .url_validate import is_safe_url, _strip_credentials
+from .url_validate import is_safe_url, _strip_credentials, validate_base_url
 
 log = logging.getLogger(__name__)
 
@@ -35,15 +35,7 @@ Text:
 
 class ExtractionEngine:
     def __init__(self, model: str = DEFAULT_MODEL, base_url: str = OLLAMA_BASE):
-        base_url = base_url.rstrip("/")
-        if not base_url.startswith(("http://", "https://")):
-            raise ValueError(
-                f"llmem: extract: unsafe Ollama URL: {_strip_credentials(base_url)!r}"
-            )
-        if not is_safe_url(base_url, allow_remote=True):
-            raise ValueError(
-                f"llmem: extract: unsafe Ollama URL: {_strip_credentials(base_url)!r}"
-            )
+        base_url = validate_base_url(base_url, module="extract")
         self._model = model
         self._base_url = base_url
 

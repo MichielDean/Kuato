@@ -17,6 +17,8 @@ from .registry import (
     register_session_adapter,
     register_dream_hook,
     register_cli_plugin,
+    register_session_hook,
+    get_registered_session_hooks,
 )
 
 __all__ = [
@@ -35,4 +37,6 @@ __all__ = [
     "register_session_adapter",
     "register_dream_hook",
     "register_cli_plugin",
+    "register_session_hook",
+    "get_registered_session_hooks",
 ]

@@ -250,3 +250,34 @@ def validate_url(url: str, allow_remote: bool = False) -> str:
             f"URL rejected: must be http(s) to a permitted address — got {_strip_credentials(url)!r}"
         )
     return url
+
+
+def validate_base_url(base_url: str, module: str = "url_validate") -> str:
+    """Validate and normalize an Ollama base URL.
+
+    Performs three checks shared by EmbeddingEngine, ExtractionEngine,
+    and IntrospectionAnalyzer constructors:
+    1. Strips trailing slash
+    2. Validates http:// or https:// prefix
+    3. Validates via is_safe_url with allow_remote=True
+
+    Args:
+        base_url: The Ollama base URL to validate.
+        module: Module name for error messages (e.g. 'embed', 'extract', 'introspection').
+
+    Returns:
+        The stripped, validated URL string.
+
+    Raises:
+        ValueError: If the URL is not http(s) or fails is_safe_url().
+    """
+    base_url = base_url.rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        raise ValueError(
+            f"llmem: {module}: unsafe Ollama URL (must be http/https): {_strip_credentials(base_url)!r}"
+        )
+    if not is_safe_url(base_url, allow_remote=True):
+        raise ValueError(
+            f"llmem: {module}: unsafe Ollama URL (blocked address): {_strip_credentials(base_url)!r}"
+        )
+    return base_url
