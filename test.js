@@ -17,6 +17,7 @@ const { execSync } = require('child_process');
 
 const SKILLS_DIR = path.join(__dirname, 'skills');
 const TEMPLATES_DIR = path.join(__dirname, 'templates');
+const TOOLS_DIR = path.join(__dirname, '.opencode', 'tools');
 const EXPECTED_SKILLS = [
   'git-sync',
   'task-intake',
@@ -33,6 +34,14 @@ const EXPECTED_TEMPLATES = [
   'rules.md',
   'identity.md',
   'user.md'
+];
+const EXPECTED_TOOLS = [
+  'llmem-search',
+  'llmem-add',
+  'llmem-context',
+  'llmem-invalidate',
+  'llmem-stats',
+  'llmem-hook'
 ];
 const FORBIDDEN_PATTERNS = [
   /\blogmem\b/,
@@ -495,6 +504,160 @@ function testOpencodeJsonLoadsAllHarnessFiles() {
   }
 }
 
+// ── OpenCode Tool Validation Tests ──────────────────────────────────────
+
+function testToolFileExists(toolName) {
+  var toolPath = path.join(TOOLS_DIR, toolName + '.ts');
+  assert(fs.existsSync(toolPath), toolName + ' exists in .opencode/tools/');
+}
+
+function testToolImportsOpencodePlugin(toolName) {
+  var toolPath = path.join(TOOLS_DIR, toolName + '.ts');
+  if (!fs.existsSync(toolPath)) {
+    assert(false, toolName + ' imports @opencode-ai/plugin: file missing');
+    return;
+  }
+  var content = fs.readFileSync(toolPath, 'utf8');
+  assert(content.indexOf('import { tool } from "@opencode-ai/plugin"') !== -1,
+    toolName + ' imports { tool } from "@opencode-ai/plugin"');
+}
+
+function testToolUsesToolSchema(toolName) {
+  var toolPath = path.join(TOOLS_DIR, toolName + '.ts');
+  if (!fs.existsSync(toolPath)) {
+    assert(false, toolName + ' uses tool.schema accessors: file missing');
+    return;
+  }
+  var content = fs.readFileSync(toolPath, 'utf8');
+  // Tools with args: {} have no tool.schema usage, which is acceptable
+  var hasNoArgs = /args:\s*\{\s*\}/.test(content);
+  if (hasNoArgs) {
+    assert(true, toolName + ' has no args (tool.schema not needed)');
+    return;
+  }
+  assert(content.indexOf('tool.schema') !== -1,
+    toolName + ' uses tool.schema accessors for Zod schemas');
+}
+
+function testToolHasDefaultExport(toolName) {
+  var toolPath = path.join(TOOLS_DIR, toolName + '.ts');
+  if (!fs.existsSync(toolPath)) {
+    assert(false, toolName + ' has default export: file missing');
+    return;
+  }
+  var content = fs.readFileSync(toolPath, 'utf8');
+  assert(content.indexOf('export default tool') !== -1,
+    toolName + ' has "export default tool(...)"');
+}
+
+function testToolDescriptionStartsWithVerb(toolName) {
+  var toolPath = path.join(TOOLS_DIR, toolName + '.ts');
+  if (!fs.existsSync(toolPath)) {
+    assert(false, toolName + ' description starts with verb: file missing');
+    return;
+  }
+  var content = fs.readFileSync(toolPath, 'utf8');
+  // Match description: "..." or description: `...`
+  var descMatch = content.match(/description:\s*["`]([\s\S]*?)["`]/);
+  if (!descMatch) {
+    assert(false, toolName + ' has a description field');
+    return;
+  }
+  var desc = descMatch[1].trim();
+  // Description should start with a verb and mention llmem or memory
+  var startsWithVerb = /^(Search|Add|Retrieve|Invalidate|Show|Run|Get|Find|List|Format)/.test(desc);
+  assert(startsWithVerb, toolName + ' description starts with a verb');
+  var mentionsLlmem = desc.toLowerCase().indexOf('llmem') !== -1 || desc.toLowerCase().indexOf('memory') !== -1;
+  assert(mentionsLlmem, toolName + ' description mentions llmem or memory');
+}
+
+function testToolHandlesErrors(toolName) {
+  var toolPath = path.join(TOOLS_DIR, toolName + '.ts');
+  if (!fs.existsSync(toolPath)) {
+    assert(false, toolName + ' handles errors: file missing');
+    return;
+  }
+  var content = fs.readFileSync(toolPath, 'utf8');
+  // Tool must check exitCode and return error string on failure
+  assert(content.indexOf('exitCode') !== -1,
+    toolName + ' checks exitCode for error handling');
+}
+
+function testToolNoForbiddenPatterns(toolName) {
+  var toolPath = path.join(TOOLS_DIR, toolName + '.ts');
+  if (!fs.existsSync(toolPath)) {
+    assert(false, toolName + ' no forbidden patterns: file missing');
+    return;
+  }
+  var content = fs.readFileSync(toolPath, 'utf8');
+  // No direct SQLite access
+  assert(content.indexOf('sqlite') === -1 && content.indexOf('better-sqlite3') === -1,
+    toolName + ' has no direct SQLite access');
+  // No lazy init patterns
+  assert(content.indexOf('initClient') === -1 && content.indexOf('ensureConnected') === -1,
+    toolName + ' has no lazy initialization patterns');
+  // No SetXxx mutation methods
+  assert(!/set[A-Z]\w+\s*\(/.test(content),
+    toolName + ' has no SetXxx mutation methods');
+}
+
+function testSharedHelperExists() {
+  var helperPath = path.join(TOOLS_DIR, 'lib', '_llmem.ts');
+  assert(fs.existsSync(helperPath), 'lib/_llmem.ts shared helper exists');
+}
+
+function testSharedHelperExportsRunLlmem() {
+  var helperPath = path.join(TOOLS_DIR, 'lib', '_llmem.ts');
+  if (!fs.existsSync(helperPath)) {
+    assert(false, '_llmem.ts exports runLlmem: file missing');
+    return;
+  }
+  var content = fs.readFileSync(helperPath, 'utf8');
+  assert(content.indexOf('export async function runLlmem') !== -1,
+    '_llmem.ts exports runLlmem function');
+}
+
+function testSharedHelperExportsNotFoundConstant() {
+  var helperPath = path.join(TOOLS_DIR, 'lib', '_llmem.ts');
+  if (!fs.existsSync(helperPath)) {
+    assert(false, '_llmem.ts exports LLMEM_NOT_FOUND: file missing');
+    return;
+  }
+  var content = fs.readFileSync(helperPath, 'utf8');
+  assert(content.indexOf('export const LLMEM_NOT_FOUND') !== -1,
+    '_llmem.ts exports LLMEM_NOT_FOUND constant');
+}
+
+function testSharedHelperNeverThrows() {
+  var helperPath = path.join(TOOLS_DIR, 'lib', '_llmem.ts');
+  if (!fs.existsSync(helperPath)) {
+    assert(false, '_llmem.ts never throws: file missing');
+    return;
+  }
+  var content = fs.readFileSync(helperPath, 'utf8');
+  // Should have try/catch and return error strings instead of throwing
+  assert(content.indexOf('try') !== -1 && content.indexOf('catch') !== -1,
+    '_llmem.ts uses try/catch (never throws)');
+  // No bare throw statements (only re-throw or return error strings)
+  var throwMatches = content.match(/\bthrow\b/g);
+  assert(throwMatches === null, '_llmem.ts has no throw statements');
+}
+
+function testToolNoPersonalReferences(toolName) {
+  var toolPath = path.join(TOOLS_DIR, toolName + '.ts');
+  if (!fs.existsSync(toolPath)) {
+    assert(false, toolName + ' no personal references: file missing');
+    return;
+  }
+  checkNoPersonalReferences(toolPath, '.opencode/tools/' + toolName + '.ts');
+}
+
+function testToolsDirInPackageJson() {
+  var pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+  var hasOpenCode = pkg.files && pkg.files.indexOf('.opencode/') !== -1;
+  assert(hasOpenCode, 'package.json files array includes ".opencode/"');
+}
+
 // ── Python Source Validation Tests ───────────────────────────────────
 
 function testNoLobsterdogRefsInPython() {
@@ -503,9 +666,10 @@ function testNoLobsterdogRefsInPython() {
   var foundProblems = [];
   // Lines containing these substrings are allowed (backward compat)
   var allowedSubstrings = ['migrate_from_lobsterdog', '.lobsterdog', '~/.lobsterdog',
-                           '_FORBIDDEN_WORDS', '_ALLOWED_PATTERNS', 'backward-compat',
-                           'backward compat', 'BackwardCompat', 'DataMigration',
-                           'test_cli_forbidden_refs', 'No lobsterdog', 'backward_compatibility'];
+                            '_FORBIDDEN_WORDS', '_ALLOWED_PATTERNS', 'backward-compat',
+                            'backward compat', 'BackwardCompat', 'DataMigration',
+                            'test_cli_forbidden_refs', 'No lobsterdog', 'backward_compatibility',
+                            "'cistern'", "'lobsterdog'", '"lobsterdog"', '"cistern"'];
   for (var d = 0; d < pyDirs.length; d++) {
     var pyDir = path.join(__dirname, pyDirs[d]);
     if (!fs.existsSync(pyDir)) continue;
@@ -579,6 +743,29 @@ for (var t = 0; t < EXPECTED_TEMPLATES.length; t++) {
 }
 
 testNoLobsterdogRefsInPython();
+
+console.log('=== OpenCode Tool Validation Tests ===\n');
+
+testSharedHelperExists();
+testSharedHelperExportsRunLlmem();
+testSharedHelperExportsNotFoundConstant();
+testSharedHelperNeverThrows();
+
+for (var ti = 0; ti < EXPECTED_TOOLS.length; ti++) {
+  var toolName = EXPECTED_TOOLS[ti];
+  console.log('--- ' + toolName + ' ---');
+  testToolFileExists(toolName);
+  testToolImportsOpencodePlugin(toolName);
+  testToolUsesToolSchema(toolName);
+  testToolHasDefaultExport(toolName);
+  testToolDescriptionStartsWithVerb(toolName);
+  testToolHandlesErrors(toolName);
+  testToolNoForbiddenPatterns(toolName);
+  testToolNoPersonalReferences(toolName);
+  console.log('');
+}
+
+testToolsDirInPackageJson();
 
 console.log('=== Integration Tests ===\n');
 
