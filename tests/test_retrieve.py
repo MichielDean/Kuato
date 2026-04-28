@@ -282,6 +282,21 @@ class TestRetrieve_HybridSearch:
         results = retriever.hybrid_search("", limit=10, search_mode="fts")
         assert results == []
 
+    def test_hybrid_search_invalid_search_mode_raises_value_error(self, store):
+        """An invalid search_mode value raises ValueError with llmem: retrieve: prefix.
+        Regression test for silent fallthrough to hybrid path on typos."""
+        self._add_memories(store)
+        retriever = Retriever(store=store, embedder=None)
+
+        with pytest.raises(ValueError, match="llmem: retrieve:"):
+            retriever.hybrid_search("Python", limit=10, search_mode="fulltext")
+
+        with pytest.raises(ValueError, match="llmem: retrieve:"):
+            retriever.hybrid_search("Python", limit=10, search_mode="HYBRID")
+
+        with pytest.raises(ValueError, match="llmem: retrieve:"):
+            retriever.hybrid_search("Python", limit=10, search_mode="")
+
     def test_hybrid_search_type_filter(self, store):
         """search_mode='fts' with type_filter narrows results to that type."""
         ids = self._add_memories(store)

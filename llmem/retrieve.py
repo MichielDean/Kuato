@@ -153,6 +153,13 @@ class Retriever:
         if not query:
             return []
 
+        valid_modes = {"hybrid", "fts", "semantic"}
+        if search_mode not in valid_modes:
+            raise ValueError(
+                f"llmem: retrieve: invalid search_mode {search_mode!r}, "
+                f"must be one of {sorted(valid_modes)}"
+            )
+
         if search_mode == "fts":
             fts_results = self._store.search(
                 query=query, type=type_filter, limit=limit, _include_rank=True
