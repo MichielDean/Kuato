@@ -60,7 +60,13 @@ def is_safe_url(url: str, allow_remote: bool = False) -> bool:
         ip = ipaddress.ip_address(decoded_hostname)
         if _ip_is_blocked(ip):
             return False
-        if not allow_remote and ip.is_loopback:
+        if not allow_remote:
+            # Only loopback on the Ollama default port is allowed.
+            # Public IPs must be explicitly rejected here: _ip_is_blocked
+            # returns False for public IPs, so without this check they would
+            # pass through and violate the allow_remote=False contract.
+            if not ip.is_loopback:
+                return False
             if _get_effective_port(parsed) != OLLAMA_DEFAULT_PORT:
                 return False
     except ValueError:
@@ -88,7 +94,9 @@ def is_safe_url(url: str, allow_remote: bool = False) -> bool:
                     return False
                 if _ip_is_blocked(ip):
                     return False
-                if not allow_remote and ip.is_loopback:
+                if not allow_remote:
+                    if not ip.is_loopback:
+                        return False
                     if _get_effective_port(parsed) != OLLAMA_DEFAULT_PORT:
                         return False
     return True

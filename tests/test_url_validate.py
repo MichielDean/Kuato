@@ -308,6 +308,40 @@ class TestIsSafeURL_AllowRemote:
         assert is_safe_url("http://10.0.0.1:443", allow_remote=True) is False
 
 
+class TestIsSafeURL_PublicIPBlockedByDefault:
+    """SSRF bypass fix: when allow_remote=False (default), public IPs must be blocked.
+
+    Previously, _ip_is_blocked returned False for public IPs, and the code
+    only checked port restrictions for loopback — meaning public IPs like
+    93.184.216.34 would be allowed through even with allow_remote=False.
+    The documented contract says allow_remote=False restricts to loopback only.
+    """
+
+    def test_public_ip_blocked_when_allow_remote_false(self):
+        """Public IP addresses must be blocked when allow_remote=False."""
+        assert is_safe_url("http://93.184.216.34:11434") is False
+
+    def test_public_ip_on_port_80_blocked_when_allow_remote_false(self):
+        """Public IPs on any port are blocked when allow_remote=False."""
+        assert is_safe_url("http://93.184.216.34:80") is False
+
+    def test_public_ip_on_port_443_blocked_when_allow_remote_false(self):
+        """Public IPs on port 443 are blocked when allow_remote=False."""
+        assert is_safe_url("https://93.184.216.34") is False
+
+    def test_public_hostname_dns_blocked_when_allow_remote_false(self):
+        """Hostnames resolving to public IPs are blocked when allow_remote=False."""
+        with patch(
+            "memory.url_validate._resolve_hostname",
+            return_value=["93.184.216.34"],
+        ):
+            assert is_safe_url("http://example.com:11434") is False
+
+    def test_loopback_on_default_port_still_allowed_when_allow_remote_false(self):
+        """Loopback on Ollama default port remains allowed (regression check)."""
+        assert is_safe_url(f"http://127.0.0.1:{OLLAMA_DEFAULT_PORT}") is True
+
+
 # ---------------------------------------------------------------------------
 # validate_url tests
 # ---------------------------------------------------------------------------
