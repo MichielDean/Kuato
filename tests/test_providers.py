@@ -1669,3 +1669,183 @@ class TestCheckAvailable_LogsOnException:
         mock_log.debug.assert_called_once_with(
             "providers: Anthropic check_available failed", exc_info=True
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-9xxfp: OllamaProvider._embed_batch_internal wraps
+# HTTPError and URLError/OSError into RuntimeError
+# ---------------------------------------------------------------------------
+
+
+class TestOllamaProvider_EmbedBatchInternal_ConnectionErrors:
+    """OllamaProvider.embed()/embed_batch() docstrings promise RuntimeError
+    on HTTP errors and connection failures. Raw HTTPError, URLError, or
+    OSError must be wrapped in RuntimeError to honor the contract.
+    """
+
+    def test_embed_wraps_http_error_as_runtime_error(self):
+        """embed() must wrap HTTPError in RuntimeError."""
+        provider = OllamaProvider()
+        import urllib.error
+
+        with patch(
+            "memory.providers.safe_urlopen",
+            side_effect=urllib.error.HTTPError(
+                url="http://localhost:11434/api/embeddings",
+                code=500,
+                msg="Internal Server Error",
+                hdrs=None,
+                fp=None,
+            ),
+        ):
+            with pytest.raises(
+                RuntimeError, match="Ollama embedding API returned HTTP 500"
+            ):
+                provider.embed("test text")
+
+    def test_embed_wraps_url_error_as_runtime_error(self):
+        """embed() must wrap URLError (connection refused) in RuntimeError."""
+        provider = OllamaProvider()
+        import urllib.error
+
+        with patch(
+            "memory.providers.safe_urlopen",
+            side_effect=urllib.error.URLError("Connection refused"),
+        ):
+            with pytest.raises(RuntimeError, match="Ollama embedding request failed"):
+                provider.embed("test text")
+
+    def test_embed_wraps_os_error_as_runtime_error(self):
+        """embed() must wrap OSError (network unreachable) in RuntimeError."""
+        provider = OllamaProvider()
+
+        with patch(
+            "memory.providers.safe_urlopen",
+            side_effect=OSError("Network is unreachable"),
+        ):
+            with pytest.raises(RuntimeError, match="Ollama embedding request failed"):
+                provider.embed("test text")
+
+    def test_embed_batch_wraps_http_error_as_runtime_error(self):
+        """embed_batch() must wrap HTTPError in RuntimeError."""
+        provider = OllamaProvider()
+        import urllib.error
+
+        with patch(
+            "memory.providers.safe_urlopen",
+            side_effect=urllib.error.HTTPError(
+                url="http://localhost:11434/api/embeddings",
+                code=503,
+                msg="Service Unavailable",
+                hdrs=None,
+                fp=None,
+            ),
+        ):
+            with pytest.raises(
+                RuntimeError, match="Ollama embedding API returned HTTP 503"
+            ):
+                provider.embed_batch(["text a", "text b"])
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-6eq2d: OpenAI and Anthropic wrap URLError/OSError
+#   into RuntimeError
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAIProvider_ConnectionErrors:
+    """OpenAIProvider._make_request must wrap URLError/OSError into RuntimeError.
+
+    All OpenAI methods (embed, embed_batch, generate) delegate to _make_request,
+    which must honor the 'Raises: RuntimeError' contract for connection failures.
+    """
+
+    def test_make_request_wraps_url_error_as_runtime_error(self):
+        """_make_request must wrap URLError in RuntimeError."""
+        provider = OpenAIProvider(api_key="test-key")
+        import urllib.error
+
+        with patch(
+            "memory.providers.safe_urlopen",
+            side_effect=urllib.error.URLError("Connection refused"),
+        ):
+            with pytest.raises(RuntimeError, match="OpenAI request failed"):
+                provider.embed("test text")
+
+    def test_make_request_wraps_os_error_as_runtime_error(self):
+        """_make_request must wrap OSError in RuntimeError."""
+        provider = OpenAIProvider(api_key="test-key")
+
+        with patch(
+            "memory.providers.safe_urlopen",
+            side_effect=OSError("Network is unreachable"),
+        ):
+            with pytest.raises(RuntimeError, match="OpenAI request failed"):
+                provider.embed("test text")
+
+    def test_make_request_http_error_still_runtime_error(self):
+        """_make_request must still raise RuntimeError for HTTPError (existing behavior)."""
+        provider = OpenAIProvider(api_key="test-key")
+        import urllib.error
+
+        with patch(
+            "memory.providers.safe_urlopen",
+            side_effect=urllib.error.HTTPError(
+                url="https://api.openai.com/v1/embeddings",
+                code=401,
+                msg="Unauthorized",
+                hdrs=None,
+                fp=None,
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="OpenAI API returned HTTP 401"):
+                provider.embed("test text")
+
+
+class TestAnthropicProvider_ConnectionErrors:
+    """AnthropicProvider.generate() must wrap URLError/OSError into RuntimeError.
+
+    The documented contract says 'Raises: RuntimeError'. Connection failures
+    must be wrapped to honor that contract.
+    """
+
+    def test_generate_wraps_url_error_as_runtime_error(self):
+        """generate() must wrap URLError in RuntimeError."""
+        provider = AnthropicProvider(api_key="test-key")
+        import urllib.error
+
+        with patch(
+            "memory.providers.safe_urlopen",
+            side_effect=urllib.error.URLError("Connection refused"),
+        ):
+            with pytest.raises(RuntimeError, match="Anthropic request failed"):
+                provider.generate("test prompt")
+
+    def test_generate_wraps_os_error_as_runtime_error(self):
+        """generate() must wrap OSError in RuntimeError."""
+        provider = AnthropicProvider(api_key="test-key")
+
+        with patch(
+            "memory.providers.safe_urlopen",
+            side_effect=OSError("Network is unreachable"),
+        ):
+            with pytest.raises(RuntimeError, match="Anthropic request failed"):
+                provider.generate("test prompt")
+
+    def test_generate_http_error_still_runtime_error(self):
+        """generate() must still raise RuntimeError for HTTPError (existing behavior)."""
+        provider = AnthropicProvider(api_key="test-key")
+        import urllib.error
+
+        with patch(
+            "memory.providers.safe_urlopen",
+            side_effect=urllib.error.HTTPError(
+                url="https://api.anthropic.com/v1/messages",
+                code=429,
+                msg="Too Many Requests",
+                hdrs=None,
+                fp=None,
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="Anthropic API returned HTTP 429"):
+                provider.generate("test prompt")

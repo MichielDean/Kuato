@@ -13,7 +13,7 @@ import urllib.request
 import urllib.error
 
 from .ollama import check_ollama_model, _call_ollama_generate
-from .url_validate import is_safe_url, safe_urlopen, sanitize_url_for_log
+from .url_validate import is_safe_url, safe_urlopen
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class GenerateProvider(abc.ABC):
             The generated text string.
 
         Raises:
-            RuntimeError: On HTTP errors with status code context.
+            RuntimeError: On HTTP errors or connection failures.
             ValueError: On URL validation failures.
         """
 
@@ -146,7 +146,7 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
             A list of floats representing the embedding vector.
 
         Raises:
-            RuntimeError: On HTTP errors.
+            RuntimeError: On HTTP errors or connection failures.
             ValueError: On URL validation failures or unexpected response format.
         """
         return self._embed_batch_internal([text])[0]
@@ -161,7 +161,7 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
             A list of embedding vectors, one per input text.
 
         Raises:
-            RuntimeError: On HTTP errors.
+            RuntimeError: On HTTP errors or connection failures.
             ValueError: On URL validation failures or unexpected response format.
         """
         return self._embed_batch_internal(texts)
@@ -181,8 +181,17 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with safe_urlopen(req, timeout=self._timeout) as resp:
-                data = json.loads(resp.read())
+            try:
+                with safe_urlopen(req, timeout=self._timeout) as resp:
+                    data = json.loads(resp.read())
+            except urllib.error.HTTPError as e:
+                raise RuntimeError(
+                    f"providers: Ollama embedding API returned HTTP {e.code}: {e.reason}"
+                ) from e
+            except (urllib.error.URLError, OSError) as e:
+                raise RuntimeError(
+                    f"providers: Ollama embedding request failed: {e.reason if hasattr(e, 'reason') else e}"
+                ) from e
             if "embedding" not in data:
                 raise ValueError(
                     f"providers: unexpected Ollama embedding response: {list(data.keys())}"
@@ -212,7 +221,7 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
             The generated text string.
 
         Raises:
-            RuntimeError: On HTTP errors with status code context.
+            RuntimeError: On HTTP errors or connection failures.
             ValueError: On URL validation failures.
         """
         effective_timeout = timeout if timeout is not None else self._timeout
@@ -298,7 +307,7 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
             The parsed JSON response as a dict.
 
         Raises:
-            RuntimeError: On HTTP errors with status code context.
+            RuntimeError: On HTTP errors (with status code) or connection failures.
         """
         effective_timeout = timeout if timeout is not None else self._timeout
         data = json.dumps(payload).encode()
@@ -318,6 +327,10 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
             raise RuntimeError(
                 f"providers: OpenAI API returned HTTP {e.code}: {e.reason}"
             ) from e
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError(
+                f"providers: OpenAI request failed: {e.reason if hasattr(e, 'reason') else e}"
+            ) from e
 
     def embed(self, text: str) -> list[float]:
         """Embed a single text string via OpenAI /v1/embeddings.
@@ -329,7 +342,7 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
             A list of floats representing the embedding vector.
 
         Raises:
-            RuntimeError: On HTTP errors.
+            RuntimeError: On HTTP errors or connection failures.
         """
         result = self._make_request(
             "/v1/embeddings",
@@ -351,7 +364,7 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
             A list of embedding vectors, one per input text.
 
         Raises:
-            RuntimeError: On HTTP errors.
+            RuntimeError: On HTTP errors or connection failures.
         """
         result = self._make_request(
             "/v1/embeddings",
@@ -385,7 +398,7 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
             The generated text string.
 
         Raises:
-            RuntimeError: On HTTP errors.
+            RuntimeError: On HTTP errors or connection failures.
         """
         result = self._make_request(
             "/v1/chat/completions",
@@ -480,7 +493,7 @@ class AnthropicProvider(GenerateProvider):
             The generated text string.
 
         Raises:
-            RuntimeError: On HTTP errors with status code context.
+            RuntimeError: On HTTP errors or connection failures.
         """
         effective_timeout = timeout if timeout is not None else self._timeout
         payload = json.dumps(
@@ -507,6 +520,10 @@ class AnthropicProvider(GenerateProvider):
         except urllib.error.HTTPError as e:
             raise RuntimeError(
                 f"providers: Anthropic API returned HTTP {e.code}: {e.reason}"
+            ) from e
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError(
+                f"providers: Anthropic request failed: {e.reason if hasattr(e, 'reason') else e}"
             ) from e
         return data["content"][0]["text"]
 

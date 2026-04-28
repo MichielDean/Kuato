@@ -10,7 +10,7 @@ import logging
 import urllib.request
 import urllib.error
 
-from .url_validate import is_safe_url, safe_urlopen, sanitize_url_for_log
+from .url_validate import is_safe_url, safe_urlopen
 
 log = logging.getLogger(__name__)
 
@@ -51,9 +51,12 @@ def _call_ollama_generate(
 ) -> str:
     """Send a prompt to Ollama /api/generate and return the response text.
 
-    Raises RuntimeError with HTTP error details for HTTP errors.
-    Raises ValueError if base_url fails SSRF validation.
-    Returns the response text string for successful calls; never returns None.
+    Raises:
+        RuntimeError: On HTTP errors (with status code) or connection failures.
+        ValueError: If base_url fails SSRF validation.
+
+    Returns:
+        The response text string for successful calls; never returns None.
     """
     if not is_safe_url(base_url, allow_remote=True):
         raise ValueError(
@@ -80,5 +83,9 @@ def _call_ollama_generate(
         with safe_urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Ollama API returned HTTP {e.code}: {e.reason}") from e
+        raise RuntimeError(f"ollama: API returned HTTP {e.code}: {e.reason}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise RuntimeError(
+            f"ollama: generate request failed: {e.reason if hasattr(e, 'reason') else e}"
+        ) from e
     return data.get("response") or ""

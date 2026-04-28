@@ -503,3 +503,61 @@ class TestCallOllamaGenerate_NeverReturnsNone:
             )
         assert result == ""
         assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-6eq2d: _call_ollama_generate wraps URLError/OSError into RuntimeError
+# ---------------------------------------------------------------------------
+
+
+class TestCallOllamaGenerate_ConnectionErrors:
+    """_call_ollama_generate must wrap URLError and OSError into RuntimeError.
+
+    The documented contract says 'Raises RuntimeError'. Raw URLError/OSError
+    would violate that contract. Connection failures must be wrapped.
+    """
+
+    def test_url_error_wrapped_as_runtime_error(self):
+        """URLError (connection refused) must be wrapped in RuntimeError."""
+        with patch(
+            "memory.ollama.safe_urlopen",
+            side_effect=urllib.error.URLError("Connection refused"),
+        ):
+            with pytest.raises(RuntimeError, match="generate request failed"):
+                _call_ollama_generate(
+                    model="test",
+                    base_url="http://localhost:11434",
+                    prompt="test",
+                )
+
+    def test_os_error_wrapped_as_runtime_error(self):
+        """OSError (network unreachable) must be wrapped in RuntimeError."""
+        with patch(
+            "memory.ollama.safe_urlopen",
+            side_effect=OSError("Network is unreachable"),
+        ):
+            with pytest.raises(RuntimeError, match="generate request failed"):
+                _call_ollama_generate(
+                    model="test",
+                    base_url="http://localhost:11434",
+                    prompt="test",
+                )
+
+    def test_http_error_still_raises_runtime_error(self):
+        """HTTPError must still raise RuntimeError (existing behavior, unchanged)."""
+        with patch(
+            "memory.ollama.safe_urlopen",
+            side_effect=urllib.error.HTTPError(
+                url="http://localhost:11434/api/generate",
+                code=500,
+                msg="Internal Server Error",
+                hdrs=None,
+                fp=None,
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="HTTP 500"):
+                _call_ollama_generate(
+                    model="test",
+                    base_url="http://localhost:11434",
+                    prompt="test",
+                )
