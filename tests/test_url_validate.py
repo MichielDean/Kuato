@@ -599,3 +599,55 @@ class TestSafeRedirectHandler:
 
 import urllib.error
 import urllib.request
+
+
+# ---------------------------------------------------------------------------
+# Percent-encoded hostname SSRF bypass tests
+# ---------------------------------------------------------------------------
+
+
+class TestIsSafeURL_PercentEncodedSSRF:
+    """Percent-encoded IP hostnames must be blocked to prevent SSRF bypass.
+
+    An attacker can encode a private IP address (e.g. 127.0.0.1) as
+    percent-encoded octets (%31%32%37%2e%30%2e%30%2e%31). python-given
+    urlparse preserves the encoding in .hostname, so ip_address() fails,
+    DNS resolution fails, and allow_remote=True returned True — but urllib
+    normalizes the hostname and connects to the decoded private IP.
+    """
+
+    def test_percent_encoded_loopback_ollama_port_allowed_allow_remote(self):
+        """Percent-encoded 127.0.0.1 on Ollama port is allowed with allow_remote=True.
+
+        This is correct behavior — loopback addresses are trusted.
+        The SSRF bypass specifically targets private/link-local IPs.
+        """
+        # %31%32%37 = "127", %2e = ".", %30 = "0", %2e = ".", %30 = "0", %2e = ".", %31 = "1"
+        url = "http://%31%32%37%2e%30%2e%30%2e%31:11434/"
+        assert is_safe_url(url, allow_remote=True) is True
+
+    def test_percent_encoded_private_ip_blocked(self):
+        """Percent-encoded 10.0.0.1 must be blocked even with allow_remote=True.
+        Decodes to a private class A address.
+        """
+        # %31%30 = "10", %2e = ".", %30 = "0", %2e = ".", %30 = "0", %2e = ".", %31 = "1"
+        url = "http://%31%30%2e%30%2e%30%2e%31:11434/"
+        assert is_safe_url(url, allow_remote=True) is False
+
+    def test_percent_encoded_metadata_ip_blocked(self):
+        """Percent-encoded 169.254.169.254 (cloud metadata) must be blocked."""
+        # 169.254.169.254 encoded: %31%36%39%2e%32%35%34%2e%31%36%39%2e%32%35%34
+        url = "http://%31%36%39%2e%32%35%34%2e%31%36%39%2e%32%35%34:80/"
+        assert is_safe_url(url, allow_remote=True) is False
+
+    def test_percent_encoded_192_168_blocked(self):
+        """Percent-encoded 192.168.1.1 must be blocked even with allow_remote=True."""
+        url = "http://%31%39%32%2e%31%36%38%2e%31%2e%31:11434/"
+        assert is_safe_url(url, allow_remote=True) is False
+
+    def test_hostname_with_partial_encoding_still_checked(self):
+        """Mixed encoded/plain hostnames are also decoded and checked."""
+        # "127.0.0.1" with "127" percent-encoded but rest plain
+        url = "http://%31%32%37.0.0.1:11434/"
+        # This should be allowed because 127.0.0.1 on 11434 is OK
+        assert is_safe_url(url, allow_remote=True) is True

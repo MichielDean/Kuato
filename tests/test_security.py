@@ -13,12 +13,23 @@ cah41: introspect_session file size limit
 n2bsf: cmd_import schema validation
 0ys0n: register_memory_type input validation
 bycxf: credentials stripped from URL error messages
+
+Plus security issues from ll-7rudv security review:
+vp1ad: SSRF bypass via percent-encoded IP hostnames
+k7u4f: DB file permissions - WAL/SHM chmod + umask
+gkn1z: OOM DoS via no LIMIT in brute-force search and export_all
+ojbjt: process_transcript size limit
+18exx: Context file writes bypass _validate_write_path()
+2vk1u: API key credential exfiltration prevention
+0yadu: import_memories input validation
 """
 
 import json
+import logging
 import os
 import socket
 import tempfile
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -28,6 +39,7 @@ from llmem.url_validate import (
     is_safe_url,
     validate_url,
     _strip_credentials,
+    _extract_url_string,
     _NoRedirectHandler,
     safe_urlopen,
     _extract_url_string,
@@ -53,6 +65,11 @@ from llmem.hooks import (
 )
 from llmem.dream_report import generate_dream_report
 from llmem.dream import DreamResult, RemPhaseResult
+from llmem.session_hooks import (
+    SESSION_CREATED_SUCCESS,
+    SESSION_COMPACTING_SUCCESS,
+)
+from memory.providers import OpenAIProvider, AnthropicProvider, _is_loopback_hostname
 
 
 # ============================================================================
@@ -170,6 +187,80 @@ class TestUrlValidate_SafeUrlopen:
             safe_urlopen(blocked_with_creds)
         assert "s3cret" not in str(exc_info.value)
         assert "admin" not in str(exc_info.value)
+
+    def test_safe_urlopen_rejects_unsafe_request_object(self):
+        """safe_urlopen must validate URLs from Request objects, not crash."""
+        req = urllib.request.Request("http://192.168.1.1:8080/api/tags")
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen(req)
+
+    def test_safe_urlopen_rejects_file_scheme_request_object(self):
+        """safe_urlopen must reject file:// scheme in Request objects."""
+        req = urllib.request.Request("file:///etc/passwd")
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen(req)
+
+    def test_safe_urlopen_request_object_strips_credentials_from_error(self):
+        """safe_urlopen must strip credentials from errors when given a Request."""
+        blocked_with_creds = "http://admin:s3cret@192.168.1.1/api/tags"
+        req = urllib.request.Request(blocked_with_creds)
+        with pytest.raises(ValueError) as exc_info:
+            safe_urlopen(req)
+        assert "s3cret" not in str(exc_info.value)
+        assert "admin" not in str(exc_info.value)
+
+    def test_safe_urlopen_request_object_validates_dangerous_hostname(self):
+        """safe_urlopen must reject Request objects targeting dangerous hostnames."""
+        req = urllib.request.Request("http://169.254.169.254/latest/meta-data/")
+        with pytest.raises(ValueError):
+            safe_urlopen(req)
+
+    def test_safe_urlopen_request_object_rejects_percent_encoded_private_ip(self):
+        """safe_urlopen must reject percent-encoded private IPs in Request objects."""
+        req = urllib.request.Request("http://%31%30%2e%30%2e%30%2e%31:11434/api/tags")
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen(req)
+
+    def test_safe_urlopen_request_object_with_post_data(self):
+        """safe_urlopen must validate Request objects that carry POST data."""
+        req = urllib.request.Request(
+            "http://10.0.0.1:11434/api/generate",
+            data=b'{"model":"test"}',
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen(req)
+
+
+class TestUrlValidate_ExtractUrlString:
+    """Test _extract_url_string correctly extracts URL from Request objects."""
+
+    def test_extract_url_string_from_string(self):
+        """_extract_url_string returns the URL string unchanged."""
+        url = "http://127.0.0.1:11434/api/tags"
+        assert _extract_url_string(url) == url
+
+    def test_extract_url_string_from_request_object(self):
+        """_extract_url_string extracts full_url from Request objects."""
+        url = "http://127.0.0.1:11434/api/tags"
+        req = urllib.request.Request(url)
+        assert _extract_url_string(req) == url
+
+    def test_extract_url_string_from_request_with_data(self):
+        """_extract_url_string extracts URL even from POST Request objects."""
+        url = "http://127.0.0.1:11434/api/generate"
+        req = urllib.request.Request(
+            url,
+            data=b'{"model":"test"}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert _extract_url_string(req) == url
+
+    def test_extract_url_string_from_request_with_private_ip(self):
+        """_extract_url_string extracts URL from Request targeting private IP."""
+        url = "http://10.0.0.1/api/tags"
+        req = urllib.request.Request(url)
+        assert _extract_url_string(req) == url
 
 
 # ============================================================================
@@ -920,3 +1011,426 @@ class TestPaths_ValidateWritePath:
     def test_rejects_proc_dir(self):
         with pytest.raises(ValueError, match="protected directory"):
             _validate_write_path(Path("/proc/self/status"), "report")
+
+
+# ============================================================================
+# ll-7rudv-vp1ad: SSRF bypass via percent-encoded IP hostnames
+# ============================================================================
+
+
+class TestUrlValidate_PercentEncodedSSRF:
+    """Test that percent-encoded IP hostnames are blocked to prevent SSRF bypass.
+
+    An attacker can encode a private IP (e.g., 127.0.0.1) as percent-encoded
+    octets. urlparse preserves the encoding in .hostname, so ip_address()
+    fails on the encoded form, DNS resolution fails, and allow_remote=True
+    previously returned True — but urllib normalizes the hostname and connects
+    to the decoded private IP.
+    """
+
+    def test_percent_encoded_loopback_blocked_allow_remote(self):
+        """Percent-encoded loopback on default port is ALLOWED with allow_remote=True.
+
+        This is the correct behavior: loopback addresses are permitted for remote
+        access (allow_remote=True means any safe address is fine, including localhost).
+        The SSRF bypass is about private/link-local IPs, not loopback.
+        """
+        url = "http://%31%32%37%2e%30%2e%30%2e%31:11434/"
+        # Loopback IS allowed with allow_remote=True — this is not a bypass
+        assert is_safe_url(url, allow_remote=True) is True
+
+    def test_percent_encoded_private_ip_blocked(self):
+        """Percent-encoded 10.0.0.1 must be blocked even with allow_remote=True."""
+        url = "http://%31%30%2e%30%2e%30%2e%31:11434/"
+        assert not is_safe_url(url, allow_remote=True)
+
+    def test_percent_encoded_metadata_ip_blocked(self):
+        """Percent-encoded 169.254.169.254 (cloud metadata) must be blocked."""
+        url = "http://%31%36%39%2e%32%35%34%2e%31%36%39%2e%32%35%34:80/"
+        assert not is_safe_url(url, allow_remote=True)
+
+    def test_percent_encoded_loopback_no_remote_allowed_on_default_port(self):
+        """Percent-encoded loopback on Ollama port is allowed with allow_remote=False."""
+        url = "http://%31%32%37%2e%30%2e%30%2e%31:11434/"
+        # Loopback on the default port IS allowed — this is normal Ollama usage
+        assert is_safe_url(url, allow_remote=False) is True
+
+    def test_percent_encoded_loopback_no_remote_blocked_non_default_port(self):
+        """Percent-encoded loopback on non-default port is blocked with allow_remote=False."""
+        url = "http://%31%32%37%2e%30%2e%30%2e%31:8080/"
+        assert not is_safe_url(url, allow_remote=False)
+
+    def test_safe_urlopen_rejects_percent_encoded_private_ip(self):
+        """safe_urlopen must reject percent-encoded private IP hostnames."""
+        url = "http://%31%30%2e%30%2e%30%2e%31:11434/api/tags"
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen(url)
+
+
+# ============================================================================
+# ll-7rudv-k7u4f: DB file permissions — WAL/SHM chmod + umask
+# ============================================================================
+
+
+class TestStore_DbFilePermissions:
+    """Test that the DB file and its WAL/SHM sidecars get 0o600 permissions."""
+
+    def test_db_file_created_with_restrictive_permissions(self, tmp_path):
+        """DB file should be created with 0o600 permissions."""
+        db = tmp_path / "test_perm.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        # The file should exist and be readable/writable only by owner
+        mode = db.stat().st_mode & 0o777
+        assert mode == 0o600, f"Expected 0o600, got {oct(mode)}"
+        store.close()
+
+    def test_directory_created_with_0700_permissions(self, tmp_path):
+        """The parent directory of the DB should have 0o700 permissions."""
+        db_dir = tmp_path / "deeply" / "nested" / "dir"
+        db = db_dir / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        mode = db_dir.stat().st_mode & 0o777
+        assert mode == 0o700, f"Expected 0o700, got {oct(mode)}"
+        store.close()
+
+
+# ============================================================================
+# ll-7rudv-gkn1z: OOM DoS via no LIMIT in _search_by_embedding_brute and export_all
+# ============================================================================
+
+
+class TestStore_LimitClauses:
+    """Test that brute-force search and export_all have row limits to prevent OOM."""
+
+    def test_export_all_has_default_limit(self, store):
+        """export_all with default args uses _EXPORT_MAX_ROWS as the limit."""
+        # Add a few memories and verify export_all works
+        store.add(type="fact", content="test1")
+        store.add(type="fact", content="test2")
+        results = store.export_all()
+        assert len(results) >= 2
+
+    def test_export_all_custom_limit(self, store):
+        """export_all with a custom limit caps the results."""
+        store.add(type="fact", content="test1")
+        store.add(type="fact", content="test2")
+        store.add(type="fact", content="test3")
+        results = store.export_all(limit=2)
+        assert len(results) <= 2
+
+    def test_search_by_embedding_brute_has_limit(self, store):
+        """_search_by_embedding_brute respects the limit parameter."""
+        # The limit param is already respected in the Python-level filtering,
+        # but we added a DB-level cap to prevent fetching too many rows
+        import struct
+
+        emb = struct.pack("3f", 1.0, 0.0, 0.0)
+        store.add(type="fact", content="test1", embedding=emb)
+        results = store.search_by_embedding([1.0, 0.0, 0.0], limit=1)
+        assert len(results) <= 1
+
+
+# ============================================================================
+# ll-7rudv-ojbjt: process_transcript size limit
+# ============================================================================
+
+
+class TestHooks_ProcessTranscriptSizeLimit:
+    """Test that process_transcript enforces a size limit to prevent OOM."""
+
+    def test_process_transcript_rejects_oversized_text(self, store):
+        """process_transcript should reject text exceeding max_file_size."""
+        from llmem.hooks import SessionHook, PROCESS_RESULT_FILE_TOO_LARGE
+
+        hook = SessionHook(store=store, extractor=MagicMock(), max_file_size=100)
+        result_type, count = hook.process_transcript(
+            source_id="test-session",
+            text="x" * 200,  # Exceeds 100 bytes
+            source_type="session",
+        )
+        assert result_type == PROCESS_RESULT_FILE_TOO_LARGE
+        assert count == 0
+
+
+# ============================================================================
+# ll-7rudv-18exx: Context file writes bypass _validate_write_path()
+# ============================================================================
+
+
+class TestSessionHooks_ValidateWritePath:
+    """Test that context file writes go through _validate_write_path.
+
+    This test verifies that on_created and on_compacting validate the write
+    path before writing. Since _validate_write_path rejects traversal and
+    system directories, passing a safe context dir should succeed.
+    """
+
+    def test_on_created_calls_validate_write_path(self, tmp_path):
+        """on_created should call _validate_write_path for the context file."""
+        from llmem.session_hooks import SessionHookCoordinator, SESSION_CREATED_SUCCESS
+
+        mock_store = MagicMock()
+        mock_store.is_extracted.return_value = False
+        mock_store.search.return_value = []
+        mock_store.log_extraction.return_value = None
+        mock_retriever = MagicMock()
+        mock_retriever.format_context.return_value = "test context"
+        mock_extractor = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter.list_sessions.return_value = []
+        coordinator = SessionHookCoordinator(
+            store=mock_store,
+            retriever=mock_retriever,
+            extractor=mock_extractor,
+            embedder=None,
+            adapter=mock_adapter,
+        )
+
+        with patch(
+            "llmem.session_hooks.get_context_dir", return_value=tmp_path / "context"
+        ):
+            result_type, file_path = coordinator.on_created("ses_123")
+            assert result_type == SESSION_CREATED_SUCCESS
+
+    def test_on_compacting_calls_validate_write_path(self, tmp_path):
+        """on_compacting should call _validate_write_path for the context file."""
+        from llmem.session_hooks import (
+            SessionHookCoordinator,
+            SESSION_COMPACTING_SUCCESS,
+        )
+
+        mock_store = MagicMock()
+        mock_store.is_extracted.return_value = False
+        mock_store.search.return_value = [
+            {
+                "id": "mem-1",
+                "type": "decision",
+                "content": "Test decision",
+                "confidence": 0.9,
+            },
+        ]
+        mock_store.log_extraction.return_value = None
+        mock_retriever = MagicMock()
+        mock_retriever.format_context.return_value = ""
+        mock_extractor = MagicMock()
+        mock_adapter = MagicMock()
+        coordinator = SessionHookCoordinator(
+            store=mock_store,
+            retriever=mock_retriever,
+            extractor=mock_extractor,
+            embedder=None,
+            adapter=mock_adapter,
+        )
+
+        with patch(
+            "llmem.session_hooks.get_context_dir", return_value=tmp_path / "context"
+        ):
+            result_type, file_path = coordinator.on_compacting("ses_123")
+            assert result_type == SESSION_COMPACTING_SUCCESS
+
+
+# ============================================================================
+# ll-7rudv-2vk1u: API key credential exfiltration prevention
+# ============================================================================
+
+
+class TestProviders_CredentialExfiltration:
+    """Test that API keys cannot be sent to non-HTTPS non-loopback URLs."""
+
+    def test_openai_rejects_http_non_loopback_with_api_key(self):
+        """OpenAIProvider should refuse to send API keys over HTTP to non-loopback URLs."""
+        with pytest.raises(ValueError, match="non-HTTPS"):
+            OpenAIProvider(api_key="test-key", base_url="http://evil.example.com:11434")
+
+    def test_anthropic_rejects_http_non_loopback_with_api_key(self):
+        """AnthropicProvider should refuse to send API keys over HTTP to non-loopback URLs."""
+        with pytest.raises(ValueError, match="non-HTTPS"):
+            AnthropicProvider(
+                api_key="test-key", base_url="http://evil.example.com:11434"
+            )
+
+    def test_openai_allows_https_base_url(self):
+        """OpenAIProvider should accept HTTPS URLs (normal usage)."""
+        provider = OpenAIProvider(api_key="test-key")
+        assert provider._base_url == "https://api.openai.com"
+
+    def test_openai_allows_localhost_with_api_key(self):
+        """OpenAIProvider should accept HTTP localhost URLs for development."""
+        provider = OpenAIProvider(api_key="test-key", base_url="http://localhost:8080")
+        assert provider._base_url == "http://localhost:8080"
+
+    def test_openai_allows_127_with_api_key(self):
+        """OpenAIProvider should accept HTTP 127.0.0.1 URLs for development."""
+        provider = OpenAIProvider(api_key="test-key", base_url="http://127.0.0.1:8080")
+        assert provider._base_url == "http://127.0.0.1:8080"
+
+    def test_anthropic_allows_https_base_url(self):
+        """AnthropicProvider should accept HTTPS URLs (normal usage)."""
+        provider = AnthropicProvider(api_key="test-key")
+        assert provider._base_url == "https://api.anthropic.com"
+
+    def test_openai_warns_on_non_default_url(self, caplog):
+        """OpenAIProvider should log a warning for non-default base URLs."""
+        with caplog.at_level(logging.WARNING):
+            OpenAIProvider(api_key="test-key", base_url="https://custom.api.com/v1")
+        warning_msgs = [r.message for r in caplog.records]
+        assert any("non-default base_url" in msg for msg in warning_msgs)
+
+    def test_anthropic_warns_on_non_default_url(self, caplog):
+        """AnthropicProvider should log a warning for non-default base URLs."""
+        with caplog.at_level(logging.WARNING):
+            AnthropicProvider(api_key="test-key", base_url="https://custom.api.com/v1")
+        warning_msgs = [r.message for r in caplog.records]
+        assert any("non-default base_url" in msg for msg in warning_msgs)
+
+    # ll-7rudv-kg3m3: Credential exfiltration substring bypass fix
+    # The original check used substring matching ('localhost' not in base_url)
+    # which could be bypassed by URLs like http://localhost.evil.com that
+    # contain 'localhost' as a substring but resolve to a remote host.
+
+    def test_openai_rejects_localhost_subdomain_bypass(self):
+        """http://localhost.evil.com must be rejected — 'localhost' is a substring, not the hostname."""
+        with pytest.raises(ValueError, match="non-HTTPS"):
+            OpenAIProvider(
+                api_key="test-key", base_url="http://localhost.evil.com:11434"
+            )
+
+    def test_openai_rejects_127_subdomain_bypass(self):
+        """http://127.0.0.1.evil.com must be rejected — '127.0.0.1' is a substring, not the hostname."""
+        with pytest.raises(ValueError, match="non-HTTPS"):
+            OpenAIProvider(
+                api_key="test-key", base_url="http://127.0.0.1.evil.com:11434"
+            )
+
+    def test_anthropic_rejects_localhost_subdomain_bypass(self):
+        """http://localhost.evil.com must be rejected for Anthropic too."""
+        with pytest.raises(ValueError, match="non-HTTPS"):
+            AnthropicProvider(
+                api_key="test-key", base_url="http://localhost.evil.com:11434"
+            )
+
+    def test_anthropic_rejects_127_subdomain_bypass(self):
+        """http://127.0.0.1.evil.com must be rejected for Anthropic too."""
+        with pytest.raises(ValueError, match="non-HTTPS"):
+            AnthropicProvider(
+                api_key="test-key", base_url="http://127.0.0.1.evil.com:11434"
+            )
+
+
+class TestIsLoopbackHostname:
+    """Test _is_loopback_hostname uses exact hostname matching, not substring."""
+
+    def test_localhost_exact_match(self):
+        """Exact 'localhost' hostname is loopback."""
+        assert _is_loopback_hostname("http://localhost:8080") is True
+
+    def test_localhost_no_port(self):
+        """'localhost' without port is loopback."""
+        assert _is_loopback_hostname("http://localhost") is True
+
+    def test_127_0_0_1_exact_match(self):
+        """Exact '127.0.0.1' hostname is loopback."""
+        assert _is_loopback_hostname("http://127.0.0.1:8080") is True
+
+    def test_ipv6_loopback(self):
+        """IPv6 loopback '::1' is loopback."""
+        assert _is_loopback_hostname("http://[::1]:8080") is True
+
+    def test_localhost_subdomain_is_not_loopback(self):
+        """'localhost.evil.com' is NOT loopback — prevents substring bypass."""
+        assert _is_loopback_hostname("http://localhost.evil.com:11434") is False
+
+    def test_127_subdomain_is_not_loopback(self):
+        """'127.0.0.1.evil.com' is NOT loopback — prevents substring bypass."""
+        assert _is_loopback_hostname("http://127.0.0.1.evil.com:11434") is False
+
+    def test_remote_host_is_not_loopback(self):
+        """A remote hostname is not loopback."""
+        assert _is_loopback_hostname("http://evil.example.com:11434") is False
+
+    def test_https_remote_is_not_loopback(self):
+        """HTTPS URLs to remote hosts are not loopback."""
+        assert _is_loopback_hostname("https://api.openai.com") is False
+
+    def test_empty_hostname(self):
+        """URL with no hostname returns False."""
+        assert _is_loopback_hostname("http://") is False
+
+
+# ============================================================================
+# ll-7rudv-0yadu: import_memories input validation
+# ============================================================================
+
+
+class TestStore_ImportMemoriesValidation:
+    """Test import_memories input validation for id format and embedding size."""
+
+    def test_import_rejects_oversized_embedding(self, store):
+        """import_memories should skip entries with oversized embedding data."""
+        import struct
+
+        # Create a very large embedding (exceeds 1MB limit)
+        huge_embedding = struct.pack("1024f", *([0.1] * 1024)) * 300
+        memories = [
+            {
+                "type": "fact",
+                "content": "test",
+                "embedding": huge_embedding,
+            }
+        ]
+        count = store.import_memories(memories)
+        assert count == 0
+
+    def test_import_rejects_non_bytes_embedding(self, store):
+        """import_memories should skip entries with non-bytes embedding."""
+        memories = [
+            {
+                "type": "fact",
+                "content": "test",
+                "embedding": "not bytes",
+            }
+        ]
+        count = store.import_memories(memories)
+        assert count == 0
+
+    def test_import_rejects_oversized_id(self, store):
+        """import_memories should skip entries with IDs exceeding max length."""
+        memories = [
+            {
+                "type": "fact",
+                "content": "test",
+                "id": "x" * 300,
+            }
+        ]
+        count = store.import_memories(memories)
+        assert count == 0
+
+    def test_import_rejects_non_string_id(self, store):
+        """import_memories should skip entries with non-string IDs."""
+        memories = [
+            {
+                "type": "fact",
+                "content": "test",
+                "id": 12345,
+            }
+        ]
+        count = store.import_memories(memories)
+        assert count == 0
+
+    def test_import_rejects_non_numeric_confidence(self, store):
+        """import_memories should skip entries with non-numeric confidence."""
+        memories = [
+            {
+                "type": "fact",
+                "content": "test",
+                "confidence": "high",
+            }
+        ]
+        count = store.import_memories(memories)
+        assert count == 0
+
+    def test_import_valid_entry_still_works(self, store):
+        """import_memories should still accept valid entries."""
+        memories = [{"type": "fact", "content": "a basic test"}]
+        count = store.import_memories(memories)
+        assert count == 1

@@ -117,11 +117,20 @@ class SessionHook:
     ) -> tuple[str, int]:
         """Process transcript text directly.
 
+        Args:
+            source_id: Identifier for deduplication.
+            text: The transcript text to process.
+            source_type: Source type label (default: 'session').
+
         Returns:
             Tuple of (result_type, count).
         """
         if not self._force and self._store.is_extracted(source_type, source_id):
             return PROCESS_RESULT_ALREADY_PROCESSED, 0
+
+        # Enforce the same size limit as process_file to prevent OOM
+        if len(text.encode("utf-8")) > self._max_file_size:
+            return PROCESS_RESULT_FILE_TOO_LARGE, 0
 
         return self._process_text(source_id, text, source_type=source_type)
 
@@ -186,18 +195,10 @@ class IntrospectionAnalyzer:
     """Analyze session transcripts for self-assessment patterns."""
 
     def __init__(self, model: str = DEFAULT_MODEL, base_url: str = OLLAMA_BASE):
-        from .url_validate import is_safe_url, _strip_credentials
+        from .url_validate import validate_base_url
 
         self._model = model
-        self._base_url = base_url.rstrip("/")
-        if not self._base_url.startswith(("http://", "https://")):
-            raise ValueError(
-                f"llmem: introspection: unsafe Ollama URL: {_strip_credentials(self._base_url)!r}"
-            )
-        if not is_safe_url(self._base_url, allow_remote=True):
-            raise ValueError(
-                f"llmem: introspection: unsafe Ollama URL: {_strip_credentials(self._base_url)!r}"
-            )
+        self._base_url = validate_base_url(base_url, module="introspection")
 
     @property
     def model(self) -> str:

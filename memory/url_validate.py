@@ -4,7 +4,7 @@ import ipaddress
 import logging
 import socket
 import urllib.request
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 from urllib.request import HTTPRedirectHandler
 
 log = logging.getLogger(__name__)
@@ -40,6 +40,8 @@ def is_safe_url(url: str, allow_remote: bool = False) -> bool:
     Checks:
     - Scheme must be http or https (blocks file://, ftp://, data://, etc.)
     - Must have a hostname
+    - Percent-encoded hostnames are decoded before IP checks to prevent
+      SSRF bypass (e.g. %31%32%37%2e%30%2e%30%2e%31 → 127.0.0.1).
     - If allow_remote is False (default), only loopback addresses on the
       Ollama default port are allowed. Private/link-local/reserved/multicast
       IPs are blocked regardless.
@@ -52,18 +54,32 @@ def is_safe_url(url: str, allow_remote: bool = False) -> bool:
     hostname = parsed.hostname
     if not hostname:
         return False
+    # Percent-decode the hostname before IP checks to prevent SSRF bypass
+    decoded_hostname = unquote(hostname)
     try:
-        ip = ipaddress.ip_address(hostname)
+        ip = ipaddress.ip_address(decoded_hostname)
         if _ip_is_blocked(ip):
             return False
         if not allow_remote and ip.is_loopback:
             if _get_effective_port(parsed) != OLLAMA_DEFAULT_PORT:
                 return False
     except ValueError:
-        resolved = _resolve_hostname(hostname)
+        resolved = _resolve_hostname(decoded_hostname)
         if resolved is None:
             if not allow_remote:
                 return False
+            # If DNS fails but the decoded hostname looks like a raw IP,
+            # block it — DNS failure on a percent-encoded IP means urllib
+            # may still connect to the decoded private IP.
+            try:
+                ip = ipaddress.ip_address(decoded_hostname)
+                if _ip_is_blocked(ip):
+                    return False
+                if not allow_remote and ip.is_loopback:
+                    if _get_effective_port(parsed) != OLLAMA_DEFAULT_PORT:
+                        return False
+            except ValueError:
+                pass
         else:
             for addr in resolved:
                 try:

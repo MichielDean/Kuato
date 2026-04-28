@@ -1,0 +1,23 @@
+{
+  "name": "opencode-llmem",
+  "version": "1.0.0",
+  "description": "LLMem session hooks for OpenCode: memory injection on session lifecycle events",
+  "main": "src/index.js",
+  "license": "MIT",
+  "scripts": {
+    "postinstall": "node install.js",
+    "test": "node test.js"
+  },
+  "files": [
+    "src/",
+    "install.js",
+    "test.js"
+  ],
+  "keywords": [
+    "opencode",
+    "llmem",
+    "memory",
+    "session-hooks",
+    "agent"
+  ]
+}
