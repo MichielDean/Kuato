@@ -89,7 +89,7 @@ These mappings are advisory — the agent should pick the most meaningful catego
 
 ## Content Format
 
-Memories created by `llmem track-review` use the `SELF_ASSESSMENT_FIELDS` format from `llmem/taxonomy.py:29-38`, ensuring format parity with the `llmem introspect` manual mode:
+Memories created by `llmem track-review` use the `SELF_ASSESSMENT_FIELDS` format from `llmem/taxonomy.py:29-39`, ensuring format parity with the `llmem introspect` manual mode:
 
 ```
 Category: <ERROR_TAXONOMY category>
@@ -99,8 +99,8 @@ Outcomes: <results or "all clear" for clean reviews>
 What_caught_it: <how discovered, e.g. "self-review">
 Estimates_vs_actual: <optional>
 Recurring: <"yes" or "no">
-Iteration_count: <optional integer>
 Proposed_update: <optional>
+Iteration_count: <optional integer>
 ```
 
 ## Key References
@@ -109,6 +109,6 @@ Proposed_update: <optional>
 - **CLI command**: `llmem suggest-categories` — list categories for a severity tier
 - **Error taxonomy categories**: `llmem/taxonomy.py:3-15` → `ERROR_TAXONOMY`
 - **Severity mapping**: `llmem/taxonomy.py:21-27` → `REVIEW_SEVERITY_TAXONOMY`
-- **Self-assessment fields**: `llmem/taxonomy.py:29-38` → `SELF_ASSESSMENT_FIELDS`
+- **Self-assessment fields**: `llmem/taxonomy.py:29-39` → `SELF_ASSESSMENT_FIELDS`
 - **Reviewer severity tiers**: Defined by the adversarial review skill (e.g., Blocking, Required, Strong Suggestions, Noted, Passed) — see your review skill's Severity Tiers section
 - **llmem introspect command**: `skills/llmem/SKILL.md:152-164`

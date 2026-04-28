@@ -149,7 +149,7 @@ These triggers correspond to the keywords in the `description` field: "introspec
 
 ## Key References
 
-- **Error taxonomy (source of truth):** `llmem/taxonomy.py:3-15` (`ERROR_TAXONOMY`), `llmem/taxonomy.py:21-27` (`REVIEW_SEVERITY_TAXONOMY`), `llmem/taxonomy.py:29-38` (`SELF_ASSESSMENT_FIELDS`).
+- **Error taxonomy (source of truth):** `llmem/taxonomy.py:3-15` (`ERROR_TAXONOMY`), `llmem/taxonomy.py:21-27` (`REVIEW_SEVERITY_TAXONOMY`), `llmem/taxonomy.py:29-39` (`SELF_ASSESSMENT_FIELDS`).
 - **Review-specific questions:** Apply the outside-view questions from your agent framework's adversarial code-review skill (Section 7, if available).
 - **Pre-PR introspection illusion check:** Apply the introspection illusion checks from your agent framework's pre-PR review skill (if available).
 - **Review outcome persistence:** `skills/introspection-review-tracker/SKILL.md` — Convert review findings to `self_assessment` memories.
