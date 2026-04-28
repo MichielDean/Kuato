@@ -9,6 +9,7 @@
   },
   "files": [
     "skills/",
+    "templates/",
     "install.js",
     "test.js"
   ],
