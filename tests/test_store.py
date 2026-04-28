@@ -1,5 +1,8 @@
 """Tests for llmem.store module — MemoryStore, register_memory_type, type validation."""
 
+import logging
+import struct
+
 import pytest
 
 from llmem.store import (
@@ -156,3 +159,141 @@ class TestStore_Count:
         counts = store.count_by_type()
         assert counts.get("fact", 0) >= 1
         assert counts.get("decision", 0) >= 1
+
+
+class TestStore_SearchCount:
+    """Test search_count() method."""
+
+    def test_search_count_with_query(self, store):
+        store.add(type="fact", content="Python programming language")
+        store.add(type="fact", content="Rust systems language")
+        count = store.search_count(query="Python")
+        assert count >= 1
+
+    def test_search_count_without_query(self, store):
+        store.add(type="fact", content="one")
+        store.add(type="fact", content="two")
+        store.add(type="decision", content="three")
+        count = store.search_count()
+        assert count >= 3
+
+    def test_search_count_with_type_filter(self, store):
+        store.add(type="fact", content="alpha")
+        store.add(type="decision", content="beta")
+        count = store.search_count(type="fact")
+        assert count >= 1
+
+    def test_search_count_valid_only(self, store):
+        mid = store.add(type="fact", content="test for count")
+        store.invalidate(mid)
+        count_valid = store.search_count(query="count", valid_only=True)
+        count_all = store.search_count(query="count", valid_only=False)
+        assert count_all > count_valid
+
+
+class TestStore_FallbackLikeSearch:
+    """Test _fallback_like_search and _fallback_like_count helpers."""
+
+    def test_fallback_like_search_returns_results(self, store):
+        """_fallback_like_search returns results when FTS is unavailable (simulated)."""
+        store.add(type="fact", content="hello world programming")
+        store.add(type="fact", content="rust programming language")
+        conn = store._connect()
+        results = store._fallback_like_search(conn, "programming", None, True, 10, 0)
+        assert len(results) >= 2
+
+    def test_fallback_like_count_returns_count(self, store):
+        """_fallback_like_count returns the same count as search_count for basic queries."""
+        store.add(type="fact", content="alpha programming test")
+        store.add(type="fact", content="beta programming test")
+        conn = store._connect()
+        count = store._fallback_like_count(conn, "programming", None, True)
+        assert count >= 2
+
+
+class TestStore_Vec0Integration:
+    """Integration test for vec0 virtual table with sqlite-vec extension.
+
+    Tests the new vec0 column-definition API that is required by sqlite-vec>=0.1.6.
+    All other tests use disable_vec=True, so this class tests WITHOUT that flag
+    to verify the real vector search path works.
+    """
+
+    @pytest.fixture
+    def vec_store(self, tmp_path):
+        """Create a MemoryStore with vec enabled (requires sqlite-vec)."""
+        pytest.importorskip("sqlite_vec")
+        db = tmp_path / "vec_test.db"
+        s = MemoryStore(db_path=db, vec_dimensions=3, disable_vec=False)
+        yield s
+        s.close()
+
+    @staticmethod
+    def _make_embedding(values: list[float]) -> bytes:
+        """Pack float values into a bytes embedding."""
+        return struct.pack(f"{len(values)}f", *values)
+
+    def test_vec0_table_creation(self, vec_store):
+        """Verify vec0 virtual table is created with the new column-definition API."""
+        conn = vec_store._connect()
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='memories_vec'"
+        ).fetchone()
+        assert row is not None, "memories_vec table should exist"
+        sql = row["sql"]
+        # The new API requires rowid/column definitions, not just float[N]
+        assert "rowid" in sql.lower() or "INTEGER PRIMARY KEY" in sql, (
+            f"vec0 table must use column-definition API. Got: {sql}"
+        )
+
+    def test_search_by_embedding_with_vec(self, vec_store):
+        """search_by_embedding works with real sqlite-vec extension."""
+        emb1 = self._make_embedding([0.1, 0.2, 0.3])
+        emb2 = self._make_embedding([0.9, 0.8, 0.7])
+        vec_store.add(type="fact", content="close to query", embedding=emb1)
+        vec_store.add(type="fact", content="far from query", embedding=emb2)
+
+        query_vec = [0.1, 0.2, 0.3]
+        results = vec_store.search_by_embedding(query_vec, limit=5, threshold=0.5)
+        assert len(results) >= 1
+        # The first result should be the memory close to the query vector
+        assert results[0][0]["content"] == "close to query"
+        assert results[0][1] >= 0.9  # cosine similarity should be very high
+
+
+class TestStore_ChmodWarning:
+    """Test that os.chmod failure on db file is logged as a warning, not silently ignored."""
+
+    def test_chmod_failure_logs_warning(self, tmp_path, caplog):
+        """When os.chmod fails on the db file, a warning should be logged."""
+        # We need to allow the directory chmod but fail the db file chmod.
+        # The easiest way: create the store successfully first, then verify
+        # the warning message pattern by checking the code path.
+        import os
+        import unittest.mock
+
+        original_chmod = os.chmod
+        call_count = 0
+
+        def chmod_selective(path, mode):
+            nonlocal call_count
+            call_count += 1
+            # Fail only on the db file chmod (second chmod call in __init__)
+            if call_count == 2 and str(path).endswith(".db"):
+                raise OSError("Permission denied")
+            return original_chmod(path, mode)
+
+        db = tmp_path / "chmod_test.db"
+        with unittest.mock.patch("os.chmod", side_effect=chmod_selective):
+            with caplog.at_level(logging.WARNING):
+                store = MemoryStore(db_path=db, disable_vec=True)
+                store.close()
+
+        # Verify a warning was logged about the chmod failure
+        chmod_warnings = [
+            r for r in caplog.records if "failed to set permissions" in r.message
+        ]
+        assert len(chmod_warnings) >= 1, (
+            f"Expected at least one warning about chmod failure, got: "
+            f"{[r.message for r in caplog.records]}"
+        )

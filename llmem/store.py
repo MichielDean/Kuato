@@ -195,8 +195,10 @@ class MemoryStore:
         if str(self.db_path) != ":memory:":
             try:
                 os.chmod(str(self.db_path), 0o600)
-            except OSError:
-                pass
+            except OSError as e:
+                logger.warning(
+                    "llmem: store: failed to set permissions on %s: %s", self.db_path, e
+                )
 
     def __enter__(self):
         return self
@@ -252,7 +254,7 @@ class MemoryStore:
                     )
         else:
             conn.execute(
-                f'CREATE VIRTUAL TABLE "memories_vec" USING vec0("embedding" float[{self._vec_dimensions}] distance_metric=cosine)'
+                f'CREATE VIRTUAL TABLE "memories_vec" USING vec0(rowid INTEGER PRIMARY KEY, embedding float[{self._vec_dimensions}] distance_metric=cosine)'
             )
             conn.commit()
         vec_count = conn.execute('SELECT count(*) FROM "memories_vec"').fetchone()[0]
@@ -598,26 +600,7 @@ class MemoryStore:
                 ).fetchone()
                 return row[0]
             except sqlite3.OperationalError:
-                like_clauses = []
-                like_vals: list = []
-                like_clauses.append(
-                    "(m.\"content\" LIKE ? ESCAPE '\\' OR m.\"summary\" LIKE ? ESCAPE '\\' OR m.\"hints\" LIKE ? ESCAPE '\\')"
-                )
-                like_escaped = self._escape_like(query)
-                like_vals.extend(
-                    [f"%{like_escaped}%", f"%{like_escaped}%", f"%{like_escaped}%"]
-                )
-                if valid_only:
-                    like_clauses.append('m."valid_until" IS NULL')
-                if type:
-                    like_clauses.append('m."type" = ?')
-                    like_vals.append(type)
-                like_where = " AND ".join(like_clauses)
-                row = conn.execute(
-                    f'SELECT COUNT(*) FROM "memories" AS m WHERE {like_where}',
-                    like_vals,
-                ).fetchone()
-                return row[0]
+                return self._fallback_like_count(conn, query, type, valid_only)
         clauses = []
         vals = []
         if valid_only:
@@ -1030,6 +1013,48 @@ class MemoryStore:
         limit: int,
         offset: int,
     ) -> list[sqlite3.Row]:
+        clauses, vals = self._build_like_clauses(conn, query, type, valid_only)
+        rows = conn.execute(
+            f"SELECT m.*, 0.0 AS _fts_rank "
+            f'FROM "memories" AS m WHERE {clauses} '
+            f'ORDER BY m."updated_at" DESC LIMIT ? OFFSET ?',
+            vals + [limit, offset],
+        ).fetchall()
+        return rows
+
+    def _fallback_like_count(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        type: str | None,
+        valid_only: bool,
+    ) -> int:
+        """Count matching rows using LIKE fallback (mirrors _fallback_like_search logic).
+
+        Used by search_count() when FTS5 is unavailable.
+        """
+        clauses, vals = self._build_like_clauses(conn, query, type, valid_only)
+        row = conn.execute(
+            f'SELECT COUNT(*) FROM "memories" AS m WHERE {clauses}',
+            vals,
+        ).fetchone()
+        return row[0]
+
+    def _build_like_clauses(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        type: str | None,
+        valid_only: bool,
+    ) -> tuple[str, list]:
+        """Build WHERE clause and parameter list for LIKE-based search.
+
+        Extracted to avoid DRY violation between _fallback_like_search and
+        _fallback_like_count.
+
+        Returns:
+            A (where_clause, params) tuple.
+        """
         clauses = []
         vals: list = []
         clauses.append(
@@ -1043,13 +1068,7 @@ class MemoryStore:
             clauses.append('m."type" = ?')
             vals.append(type)
         where = " AND ".join(clauses)
-        rows = conn.execute(
-            f"SELECT m.*, 0.0 AS _fts_rank "
-            f'FROM "memories" AS m WHERE {where} '
-            f'ORDER BY m."updated_at" DESC LIMIT ? OFFSET ?',
-            vals + [limit, offset],
-        ).fetchall()
-        return rows
+        return where, vals
 
     def _touch(self, mem_id: str, *, now: str | None = None):
         now = now or datetime.now(timezone.utc).isoformat()

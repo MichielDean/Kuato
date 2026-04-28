@@ -78,13 +78,25 @@ DEFAULTS = {
 }
 
 
+_resolved_defaults_cache: dict | None = None
+
+
 def _resolve_defaults() -> dict:
     """Resolve path-based defaults that depend on get_llmem_home().
 
-    Returns a deep copy of DEFAULTS with path-based defaults resolved.
-    Each nested dict is independently copied to avoid shared references
-    with the module-level DEFAULTS constant.
+    Returns a dict with path-based defaults resolved. The result is cached
+    after the first call — DEFAULTS is immutable after module load, so
+    there is no need for repeated deep copies. Each nested value is an
+    independent copy of the module-level DEFAULTS constant.
+
+    Returns:
+        A dict with resolved path defaults. Callers should NOT mutate
+        the returned dict — it is shared across calls for performance.
     """
+    global _resolved_defaults_cache
+    if _resolved_defaults_cache is not None:
+        return _resolved_defaults_cache
+
     from .paths import (
         get_db_path as _get_db_path,
         get_dream_diary_path,
@@ -95,11 +107,13 @@ def _resolve_defaults() -> dict:
     # Deep copy to avoid shared mutable references with module-level DEFAULTS.
     # dict(v) only copies one level — list values (e.g. session_dirs) would
     # still alias the original. copy.deepcopy handles all nesting levels.
+    # This is done once and cached — callers only read, never mutate.
     defaults = copy.deepcopy(DEFAULTS)
     defaults["memory"]["db"] = str(_get_db_path())
     defaults["dream"]["diary_path"] = str(get_dream_diary_path())
     defaults["dream"]["proposed_changes_path"] = str(get_proposed_changes_path())
     defaults["opencode"]["context_dir"] = str(get_context_dir())
+    _resolved_defaults_cache = defaults
     return defaults
 
 
@@ -132,14 +146,36 @@ def load_config(config_path: Path | None = None) -> dict:
 
 
 def get_config_value(key_path: str, config_path: Path | None = None) -> object:
-    config = load_config(config_path)
+    """Look up a config value by dot-separated key path, merging with defaults.
+
+    The key_path (e.g. 'memory.db') is looked up in the loaded config first.
+    If not found, falls back to the corresponding default from _resolve_defaults().
+
+    Args:
+        key_path: Dot-separated path (e.g., 'memory.ollama_url').
+        config_path: Optional path to config.yaml.
+
+    Returns:
+        The config value if found in user config or defaults, otherwise None.
+    """
+    config = _resolve_config(config_path)
+    defaults = _resolve_defaults()
     keys = key_path.split(".")
+
+    # Try user config first
     current = config
     for k in keys:
         if isinstance(current, dict) and k in current:
             current = current[k]
         else:
-            return None
+            # Not in user config — fall back to defaults
+            current = defaults
+            for dk in keys:
+                if isinstance(current, dict) and dk in current:
+                    current = current[dk]
+                else:
+                    return None
+            return current
     return current
 
 
