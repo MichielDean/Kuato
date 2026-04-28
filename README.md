@@ -627,6 +627,104 @@ The `hooks` module provides automatic extraction from session transcripts:
 
 The `extract` module uses Ollama (default: `qwen2.5:1.5b`) to extract structured memories from text. The `embed` module generates embeddings using Ollama (default: `nomic-embed-text`).
 
+## OpenCode Custom Tools
+
+LLMem ships six type-safe OpenCode tools that replace raw `llmem` CLI calls with described, schema-validated tool invocations. Tools run `llmem` as a subprocess and return strings — errors are prefixed with `Error:`.
+
+| Tool | CLI Equivalent | Description |
+|------|----------------|-------------|
+| `llmem-search` | `llmem search <query> --json` | Search memories via FTS5; returns JSON array |
+| `llmem-add` | `llmem add --type T --content C` | Add a new memory; returns ID and type |
+| `llmem-context` | `llmem search <query> --json --limit 20` | Retrieve formatted context for a topic; returns a context block truncated to a character budget |
+| `llmem-invalidate` | `llmem invalidate <ID>` | Invalidate a memory by ID with optional reason |
+| `llmem-stats` | `llmem stats` | Show memory statistics (total, active, expired, by type) |
+| `llmem-hook` | `llmem hook` | Run the extraction hook on session transcripts |
+
+### `llmem-search`
+
+```
+llmem-search(query: string, type?: string, limit?: number)
+```
+
+- `query` (required): Search query for FTS5 full-text search.
+- `type` (optional): Filter by memory type (fact, decision, preference, etc.).
+- `limit` (optional, min 1): Maximum number of results (default: 20).
+
+Returns a JSON string of matching memory objects on success, or an `Error:` string on failure (CLI error, invalid JSON, non-array response).
+
+### `llmem-add`
+
+```
+llmem-add(type: string, content: string, source?: string, confidence?: number)
+```
+
+- `type` (required): Memory type (`fact`, `decision`, `preference`, `event`, `project_state`, `procedure`, `conversation`, `self_assessment`).
+- `content` (required): Memory content text.
+- `source` (optional): Source of memory (default: `manual`).
+- `confidence` (optional, 0–1): Confidence score (default: 0.8).
+
+Returns the memory ID and type on success, or an `Error:` string on failure (invalid type, CLI error).
+
+### `llmem-context`
+
+```
+llmem-context(query: string, budget?: number)
+```
+
+- `query` (required): Topic or query to recall context for.
+- `budget` (optional, min 0): Character budget for the returned context block (default: 4000).
+
+Searches memories and formats results as a context block suitable for LLM injection:
+
+```
+- [fact] Project uses SQLite with WAL mode
+- [decision] Use pytest for testing (summary: Testing framework choice)
+```
+
+Returns `"No memories found."` if no results match, or an `Error:` string on failure. Truncation is Unicode-safe (splits on code points, not UTF-16 code units).
+
+### `llmem-invalidate`
+
+```
+llmem-invalidate(id: string, reason?: string)
+```
+
+- `id` (required): Memory ID to invalidate.
+- `reason` (optional): Reason for invalidation.
+
+Returns a confirmation string on success, or an `Error:` string if the memory is not found or the CLI fails.
+
+### `llmem-stats`
+
+```
+llmem-stats()
+```
+
+Takes no arguments. Returns a formatted statistics string (total, active, expired counts, and breakdown by type), or an `Error:` string on failure.
+
+### `llmem-hook`
+
+```
+llmem-hook(force?: boolean, noEmbed?: boolean, noIntrospect?: boolean, file?: string, directory?: string)
+```
+
+- `force` (optional): Force re-extraction of already-processed sessions.
+- `noEmbed` (optional): Skip embedding generation (faster, no Ollama required).
+- `noIntrospect` (optional): Skip introspection for trivial sessions.
+- `file` (optional): Path to a specific transcript file. Resolved relative to `context.directory`; paths escaping the directory scope are rejected.
+- `directory` (optional): Path to a directory of transcript files. Same containment check as `file`.
+
+Returns the extraction result on success, or an `Error:` string on failure (path traversal, CLI error).
+
+### Error Handling
+
+All tools follow a consistent contract:
+
+- **Success**: returns the CLI output as a string.
+- **Error**: returns a string starting with `Error:`.
+- **CLI not found**: returns `"Error: llmem CLI not found on PATH"` (exit code 127).
+- Tools never throw — all errors are returned as strings.
+
 ## Security
 
 - `LMEM_HOME` is validated against path traversal, system directories, and symlink attacks.
