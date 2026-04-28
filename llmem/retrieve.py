@@ -195,6 +195,7 @@ class Retriever:
         type_filter: str | None = None,
         traverse_relations: bool = False,
         relation_depth: int = 1,
+        track_access: bool = True,
     ) -> list[dict]:
         """Search memories with ranking.
 
@@ -204,6 +205,8 @@ class Retriever:
             type_filter: Filter by memory type.
             traverse_relations: Include related memories.
             relation_depth: Max relation traversal depth.
+            track_access: If True, increment access_count and update
+                accessed_at for each result. Defaults to True.
 
         Returns:
             List of memory dicts sorted by relevance.
@@ -213,7 +216,7 @@ class Retriever:
         )
 
         # Track access for each result (best-effort, never raises)
-        self._track_access(results)
+        self._track_access(results, track_access=track_access)
 
         if traverse_relations and results:
             mem_ids = [r["id"] for r in results]
@@ -238,6 +241,7 @@ class Retriever:
         type_filter: str | None = None,
         alpha: float = DEFAULT_ALPHA,
         search_mode: str = "hybrid",
+        track_access: bool = True,
     ) -> list[dict]:
         """Search memories using hybrid RRF fusion of FTS5 and semantic results.
 
@@ -251,6 +255,8 @@ class Retriever:
                 - "hybrid": Run both FTS5 and semantic search, merge via RRF.
                 - "fts": Run FTS5 only.
                 - "semantic": Run semantic search only (requires embedder).
+            track_access: If True, increment access_count and update
+                accessed_at for each result. Defaults to True.
 
         Returns:
             List of memory dicts sorted by descending RRF score. Each dict
@@ -291,7 +297,7 @@ class Retriever:
             results = self._apply_reranking(results, now)
 
             # Track access for each result (best-effort, never raises)
-            self._track_access(results)
+            self._track_access(results, track_access=track_access)
 
             return results[:limit]
 
@@ -322,7 +328,7 @@ class Retriever:
             results = self._apply_reranking(results, now)
 
             # Track access for each result (best-effort, never raises)
-            self._track_access(results)
+            self._track_access(results, track_access=track_access)
 
             return results[:limit]
 
@@ -337,6 +343,7 @@ class Retriever:
                 type_filter=type_filter,
                 alpha=alpha,
                 search_mode="fts",
+                track_access=track_access,
             )
         fts_results = self._store.search(
             query=query, type=type_filter, limit=limit, _include_rank=True
@@ -364,6 +371,7 @@ class Retriever:
                 type_filter=type_filter,
                 alpha=alpha,
                 search_mode="fts",
+                track_access=track_access,
             )
 
         # Compute RRF scores
@@ -396,7 +404,7 @@ class Retriever:
         results = self._apply_reranking(results, now)
 
         # Track access for each result (best-effort, never raises)
-        self._track_access(results)
+        self._track_access(results, track_access=track_access)
 
         return results[:limit]
 
@@ -428,22 +436,29 @@ class Retriever:
         results.sort(key=lambda x: (-x.get("_rerank_score", 0.0), x.get("id", "")))
         return results
 
-    def _track_access(self, results: list[dict]) -> None:
-        """Track access for each result by calling store.touch().
+    def _track_access(self, results: list[dict], track_access: bool = True) -> None:
+        """Track access for each result by calling store.touch_batch().
 
         Best-effort: errors are caught and logged, never propagated.
+        When track_access is False, returns immediately without touching.
 
         Args:
             results: List of result dicts, each with an 'id' key.
+            track_access: If True, increment access_count and update
+                accessed_at for each result. If False, skip access tracking.
         """
-        for r in results:
-            try:
-                self._store.touch(r["id"])
-            except Exception:
-                log.debug(
-                    "llmem: retrieve: failed to track access for %s",
-                    r.get("id", "unknown"),
-                )
+        if not track_access:
+            return
+        if not results:
+            return
+        try:
+            ids = [r["id"] for r in results]
+            self._store.touch_batch(ids)
+        except Exception:
+            log.debug(
+                "llmem: retrieve: failed to track access for %d results",
+                len(results),
+            )
 
     def format_context(
         self, query: str, budget: int = 4000, type_filter: str | None = None
