@@ -1,0 +1,22 @@
+{
+  "name": "opencode-kuato",
+  "version": "1.0.0",
+  "description": "Generic skills for OpenCode: git-sync, task-intake, test-and-verify, branch-strategy, critical-code-reviewer, pre-pr-review, visual-explainer",
+  "license": "MIT",
+  "scripts": {
+    "postinstall": "node install.js",
+    "test": "node test.js"
+  },
+  "files": [
+    "skills/",
+    "install.js"
+  ],
+  "keywords": [
+    "opencode",
+    "skills",
+    "agent",
+    "git",
+    "code-review",
+    "testing"
+  ]
+}
