@@ -451,9 +451,12 @@ from llmem import (
     get_llmem_home,
     migrate_from_lobsterdog,
     load_config,
+    validate_session_id,
     SessionAdapter,
     OpenCodeAdapter,
     register_session_adapter,
+    register_session_hook,
+    get_registered_session_hooks,
     register_dream_hook,
     register_cli_plugin,
 )
@@ -513,8 +516,9 @@ relations = store.get_relations(mem_id_a)
 related = store.traverse_relations(mem_id_a, relation_type="supersedes", max_depth=3)
 
 # Export / Import
-data = store.export_all()
-count = store.import_memories(data)
+data = store.export_all()                    # default cap: 50,000 rows
+data = store.export_all(limit=1000)          # custom limit
+count = store.import_memories(data)          # validates id, embedding, confidence
 
 # Type registry
 register_memory_type("custom_type")
@@ -590,6 +594,51 @@ class MyAdapter(SessionAdapter):
         ...
 ```
 
+### Session Hooks
+
+Session hooks inject relevant memories when an OpenCode session lifecycle event occurs, and extract memories when a session goes idle. Three events are supported:
+
+| Event | Hook | Behavior |
+|-------|------|----------|
+| `session.created` | `on_created(session_id)` | Queries the memory store for relevant memories and writes a context file (`{session_id}.md`). Returns `("success", file_path)`, `("already_processed", None)`, or `("error", None)`. |
+| `session.idle` | `on_idle(session_id)` | Extracts memories from the session transcript with 30-second debounce. Returns `("success", count)`, `("debounced", 0)`, or `("no_transcript", 0)`. |
+| `session.compacting` | `on_compacting(session_id)` | Injects high-confidence key memories (`decision`, `preference`, `procedure`, `project_state` with confidence ≥ 0.7) to preserve context during compaction. Returns `("success", file_path)` or `("no_memories", None)`. |
+
+`SessionHookCoordinator` orchestrates the three hooks:
+
+```python
+from llmem.session_hooks import create_session_hook_coordinator
+
+coordinator = create_session_hook_coordinator()  # uses default config
+# or with custom config:
+coordinator = create_session_hook_coordinator(config=my_config)
+
+result_type, path = coordinator.on_created("session-abc123")
+result_type, count = coordinator.on_idle("session-abc123")
+result_type, path = coordinator.on_compacting("session-abc123")
+```
+
+`SessionEventManager` dispatches events to registered hooks:
+
+```python
+from llmem.session_hooks import SessionEventManager
+
+manager = SessionEventManager()
+manager.emit("created", "session-abc123")  # calls registered "created" hook
+manager.emit("idle", "session-abc123")     # calls registered "idle" hook
+manager.emit("compacting", "session-abc123")  # calls registered "compacting" hook
+```
+
+`validate_session_id()` rejects session IDs containing `/`, `\`, or `..` to prevent path traversal attacks on context file paths:
+
+```python
+from llmem import validate_session_id
+
+validate_session_id("abc123")    # returns "abc123"
+validate_session_id("../etc/passwd")  # raises ValueError
+validate_session_id("foo/bar")   # raises ValueError
+```
+
 ## Extension Points
 
 LLMem provides a registry system that allows harnesses and external tools to plug in domain-specific behavior without modifying core code. All registry functions validate their inputs and raise `ValueError` or `TypeError` on invalid arguments.
@@ -633,6 +682,27 @@ register_dream_hook("light", my_light_hook)
 ```
 
 Valid phases: `"light"`, `"deep"`, `"rem"`. Only one hook per phase is allowed; registering a duplicate raises `ValueError`.
+
+### Session Hook Registry
+
+Register a callback function for session lifecycle events. When `SessionEventManager.emit()` is called, the corresponding hook is invoked with the session ID.
+
+```python
+from llmem import register_session_hook, get_registered_session_hooks
+
+def on_session_created(session_id):
+    print(f"Session {session_id} was created")
+
+register_session_hook("created", on_session_created)
+```
+
+Valid event types: `"created"`, `"idle"`, `"compacting"`. Only one hook per event type is allowed; registering a duplicate raises `ValueError`. The hook function must be callable; otherwise `TypeError` is raised.
+
+List registered hooks:
+
+```python
+hooks = get_registered_session_hooks()  # dict mapping event type to hook function
+```
 
 ### CLI Plugin Registry
 
@@ -788,25 +858,73 @@ All tools follow a consistent contract:
 - **CLI not found**: returns `"Error: llmem CLI not found on PATH"` (exit code 127).
 - Tools never throw — all errors are returned as strings.
 
+## OpenCode Integration (npm)
+
+The `opencode-llmem` npm package provides a JavaScript plugin that integrates LLMem session hooks into OpenCode via its plugin interface.
+
+### Installation
+
+```bash
+npm install opencode-llmem
+```
+
+The `postinstall` script copies the hook source files to `~/.agents/plugins/llmem/` so OpenCode can discover and load them.
+
+### Usage
+
+Register all three session lifecycle hooks on an OpenCode session object:
+
+```javascript
+const llmem = require("opencode-llmem");
+
+// In your OpenCode plugin setup:
+llmem.register(session);
+```
+
+This registers handlers for the `session.created`, `session.idle`, and `session.compacting` events. Each handler:
+
+- Validates the session ID against path traversal attacks.
+- Rate-limits process spawning to prevent flooding (1-second cooldown).
+- Calls the `llmem` CLI via `execFileSync` (no shell, no injection risk).
+- Writes the resulting context to the LLMem context directory.
+- Degrades gracefully — errors are logged but never block the session.
+
+### Configuration
+
+The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.config/llmem/config.yaml` by default). The `opencode.context_dir` key controls where context files are written.
+
 ## Security
 
 - `LMEM_HOME` is validated against path traversal, system directories, and symlink attacks.
 - Write paths are validated against system directories and symbolic links.
-- URL validation (`is_safe_url`) blocks private/reserved IPs and SSRF vectors. `safe_urlopen` enforces URL validation, blocks redirects, mitigates DNS rebinding, and strips credentials from error messages. It accepts both string URLs and `urllib.request.Request` objects, and requires an explicit `allow_remote` parameter (defaults to `False`) for non-loopback addresses.
+- `validate_session_id()` rejects session IDs containing `/`, `\`, or `..` to prevent path traversal when constructing context file paths.
+- URL validation (`is_safe_url`) blocks private/reserved IPs and SSRF vectors, including percent-encoded IP hostnames (e.g. `%31%32%37%2e%30%2e%30%2e%31` is decoded before IP checks). `safe_urlopen` enforces URL validation, blocks redirects, mitigates DNS rebinding, and strips credentials from error messages. It accepts both string URLs and `urllib.request.Request` objects, and requires an explicit `allow_remote` parameter (defaults to `False`) for non-loopback addresses.
 - API keys are masked in `__repr__` on provider instances (`***masked***`).
+- API keys are refused over plain HTTP to non-loopback hosts. `OpenAIProvider` and `AnthropicProvider` raise `ValueError` if `base_url` is `http://` and the hostname is not an exact loopback address (`localhost`, `127.0.0.1`, or `::1`). Substring matches like `localhost.evil.com` are blocked.
+- A warning is logged when API keys are sent to a non-default base URL to alert the user of potential credential exfiltration risk.
 - Validation error messages use generic strings (never embed user-supplied URLs).
 - All SQL queries use parameterized statements (no injection risk).
-- Database files are created with mode `0600`; parent directories with `0o700`.
+- Database files are created with `umask(0o177)` before creation, then `chmod(0o600)` applied to the DB file and its WAL/SHM sidecars (prevents a race window where sensitive memory content is world-readable on multi-user systems). Parent directories use `0o700`.
+- `import_memories()` validates entry IDs (string, max 256 chars), embeddings (bytes, max 1 MB), and confidence (numeric) before insertion. Invalid entries are skipped with warnings rather than crashing.
+- `export_all()` caps results at 50,000 rows by default to prevent OOM on large databases.
+- `_search_by_embedding_brute()` uses a `LIMIT` clause (10,000 rows max) to prevent OOM on large databases.
+- `process_transcript()` enforces the same size limit as `process_file()` to prevent OOM from large session transcripts.
+- JavaScript hooks use `execFileSync` (not shell-based `execSync`) and `validateSessionId()` for path traversal protection, with `canSpawnProcess()` rate limiting.
 - Migration from `~/.lobsterdog/` skips symlinks (using `follow_symlinks=False`).
 
 ## Module Reference
 
 | Module | Description |
 |--------|-------------|
-| `memory.providers` | Abstract base classes, concrete providers, `resolve_provider()` |
+| `memory.providers` | Abstract base classes, concrete providers, `resolve_provider()`, `_is_loopback_hostname()` |
 | `memory.ollama` | `check_ollama_model()`, `_call_ollama_generate()` |
-| `memory.url_validate` | `is_safe_url()`, `safe_urlopen()`, `sanitize_url_for_log()` |
+| `memory.url_validate` | `is_safe_url()`, `safe_urlopen()`, `sanitize_url_for_log()`, `validate_base_url()` |
 | `memory.config` | Configuration loading, defaults, typed accessors (e.g. `get_provider_config()`) |
+| `llmem.session_hooks` | `SessionHookCoordinator`, `SessionEventManager`, `create_session_hook_coordinator()`, result constants |
+| `llmem.url_validate` | `is_safe_url()`, `safe_urlopen()`, `validate_base_url()`, `_extract_url_string()` (mirrors `memory.url_validate`) |
+| `llmem.paths` | `validate_session_id()`, `get_context_dir()`, `_validate_write_path()` |
+| `llmem.registry` | `register_session_hook()`, `get_registered_session_hooks()`, `VALID_SESSION_EVENT_TYPES` |
+| `llmem.store` | `MemoryStore` with `export_all(limit=)`, `import_memories()` validation, brute-force/embedding caps |
 
 ## Running Tests
 
@@ -814,7 +932,7 @@ All tools follow a consistent contract:
 python -m pytest
 ```
 
-312 tests covering all providers, URL validation, configuration, and edge cases.
+660 Python tests and 53 JavaScript tests covering all providers, URL validation, configuration, security, session hooks, and edge cases.
 
 ## License
 
