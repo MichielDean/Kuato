@@ -479,3 +479,126 @@ class TestCodeIndex_Close:
         idx = CodeIndex(db_path=db, disable_vec=True)
         idx.close()
         idx.close()  # Should not raise
+
+
+class TestCodeIndex_DisableVecDoesNotDropTriggers:
+    """Issue ll-67q3p-7drzy: disable_vec must NOT drop vec triggers.
+
+    CodeIndex(disable_vec=True) was dropping vec triggers during a
+    read-only search, which is a destructive side effect. Now disable_vec
+    only controls whether the sqlite-vec extension is loaded; it must never
+    drop existing triggers.
+    """
+
+    def test_disable_vec_does_not_drop_fts_triggers(self, tmp_path):
+        """disable_vec=True must not drop FTS triggers from the database."""
+        db = tmp_path / "test.db"
+        # First, create the index with vec disabled, which initializes
+        # FTS triggers. Then close and re-open with disable_vec again.
+        # The FTS triggers must still be present after the second open.
+        idx = CodeIndex(db_path=db, disable_vec=True)
+        idx.add_chunk(
+            file_path="test.py",
+            start_line=1,
+            end_line=5,
+            content="hello world",
+            language="python",
+        )
+        idx.close()
+
+        # Re-open with disable_vec=True — FTS triggers must survive
+        idx2 = CodeIndex(db_path=db, disable_vec=True)
+        conn = idx2._connect()
+        triggers = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger'"
+            ).fetchall()
+        }
+        idx2.close()
+        # FTS triggers must exist and not be dropped
+        assert "code_chunks_fts_insert" in triggers
+        assert "code_chunks_fts_update" in triggers
+        assert "code_chunks_fts_delete" in triggers
+
+
+class TestCodeIndex_LikeEscapesWildcards:
+    """Issue ll-67q3p-0wsee: LIKE fallback must escape % and _ wildcards.
+
+    The LIKE fallback in search_content was using f"%{query}%" without
+    escaping SQL LIKE wildcards in the user query. This meant searching
+    for "100%" would match any string containing "100" followed by anything,
+    and "my_name" would match "myXname".
+    """
+
+    def test_search_content_like_escapes_percent(self, tmp_path):
+        """LIKE fallback escapes % wildcard in query."""
+        db = tmp_path / "test.db"
+        idx = CodeIndex(db_path=db, disable_vec=True)
+        # Add two chunks: one with "100%" and one with "100" followed by
+        # other text that % would match as a wildcard
+        idx.add_chunk(
+            file_path="report.py",
+            start_line=1,
+            end_line=5,
+            content="progress is at 100% completion",
+            language="python",
+        )
+        idx.add_chunk(
+            file_path="calc.py",
+            start_line=1,
+            end_line=5,
+            content="value is 100 percent done",
+            language="python",
+        )
+        # Drop the FTS table to force LIKE fallback
+        conn = idx._connect()
+        conn.execute("DROP TABLE IF EXISTS code_chunks_fts")
+        conn.commit()
+
+        # Search for "100%" should match only the chunk containing literal "100%"
+        try:
+            results = idx.search_content("100%", limit=10)
+            # Should match the chunk with literal "100%"
+            # Without escaping, "%" in "100%" would be treated as wildcard
+            # and match both chunks
+            assert all("100%" in r["content"] for r in results)
+        finally:
+            idx.close()
+
+    def test_search_content_like_escapes_underscore(self, tmp_path):
+        """LIKE fallback escapes _ wildcard in query."""
+        db = tmp_path / "test.db"
+        idx = CodeIndex(db_path=db, disable_vec=True)
+        idx.add_chunk(
+            file_path="vars.py",
+            start_line=1,
+            end_line=3,
+            content="my_name = 'john'",
+            language="python",
+        )
+        idx.add_chunk(
+            file_path="other.py",
+            start_line=1,
+            end_line=3,
+            content="myXname = 'jane'",
+            language="python",
+        )
+        # Drop the FTS table to force LIKE fallback
+        conn = idx._connect()
+        conn.execute("DROP TABLE IF EXISTS code_chunks_fts")
+        conn.commit()
+
+        # Search for "my_name" should only match the literal "my_name"
+        try:
+            results = idx.search_content("my_name", limit=10)
+            assert all("my_name" in r["content"] for r in results)
+        finally:
+            idx.close()
+
+    def test_sanitize_fts_query_handles_special_chars(self):
+        """_sanitize_fts_query produces safe FTS5 queries."""
+        result = CodeIndex._sanitize_fts_query("hello & world | test")
+        # Special FTS chars are stripped, words joined with OR
+        assert "&" not in result
+        assert "|" not in result

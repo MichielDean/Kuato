@@ -67,16 +67,6 @@ class CodeIndex:
         # Init vec0 virtual table if available
         if self._vec_available:
             self._init_vec_table(conn)
-        elif self._disable_vec:
-            # Drop vec triggers if vec is disabled
-            for trigger in (
-                "code_chunks_vec_insert",
-                "code_chunks_vec_update",
-                "code_chunks_vec_update_null",
-                "code_chunks_vec_delete",
-            ):
-                conn.execute(f'DROP TRIGGER IF EXISTS "{trigger}"')
-            conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
         """Get or create the SQLite connection."""
@@ -586,7 +576,11 @@ class CodeIndex:
             ).fetchall()
         except sqlite3.OperationalError:
             # FTS not available, fall back to LIKE search
-            like_pattern = f"%{query}%"
+            # Escape LIKE wildcards (% and _) in the user query
+            escaped_query = (
+                query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            like_pattern = f"%{escaped_query}%"
             where = "WHERE \"content\" LIKE ? ESCAPE '\\'"
             params_like: list = [like_pattern]
             if language:

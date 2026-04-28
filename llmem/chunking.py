@@ -55,7 +55,6 @@ _EXTENSION_LANGUAGE_MAP: dict[str, str] = {
     ".md": "markdown",
     ".txt": "text",
     ".r": "r",
-    ".R": "r",
     ".lua": "lua",
     ".php": "php",
     ".dart": "dart",

@@ -134,8 +134,9 @@ def cmd_search(args):
     code_results: list[dict] = []
     if getattr(args, "include_code", False):
         from .code_index import CodeIndex
+        from .retrieve import _rrf_score as _compute_rrf_score, DEFAULT_RRF_K
 
-        code_index = CodeIndex(db_path=args.db, disable_vec=True)
+        code_index = CodeIndex(db_path=args.db)
         try:
             code_results = code_index.search_content(query=args.query, limit=args.limit)
         except Exception as e:
@@ -143,10 +144,14 @@ def cmd_search(args):
         finally:
             code_index.close()
 
-        # Merge with code results
-        for cr in code_results:
+        # Merge with code results, assigning RRF scores based on FTS rank
+        for i, cr in enumerate(code_results):
             cr["_source"] = "code"
-            cr.setdefault("_rrf_score", 0.0)
+            # Assign RRF score based on FTS rank position (1-based).
+            # Using alpha=0.0 (pure FTS) and default k to match the FTS-only
+            # scoring pattern used by the Retriever for consistency.
+            fts_rank = i + 1
+            cr["_rrf_score"] = (1 - 0.0) * (1 / (DEFAULT_RRF_K + fts_rank))
 
     # Mark memory results with source
     for m in results:
@@ -364,10 +369,10 @@ def cmd_learn(args):
         return
 
     # Initialize code index (shares the same database as MemoryStore)
-    code_index = CodeIndex(
-        db_path=args.db,
-        disable_vec=args.no_embed if hasattr(args, "no_embed") else False,
-    )
+    # NOTE: disable_vec controls sqlite-vec extension loading only.
+    # --no-embed skips embedding generation but should NOT disable vec,
+    # since vec triggers are needed for existing embedding searches.
+    code_index = CodeIndex(db_path=args.db)
     total_chunks = 0
     total_files = 0
     embedder = None

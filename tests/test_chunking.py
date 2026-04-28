@@ -325,6 +325,17 @@ class TestChunking_DetectLanguage:
     def test_no_extension(self):
         assert detect_language("Makefile") is None
 
+    def test_r_extension_case_insensitive(self):
+        """Issue ll-67q3p-juc0m: .R (uppercase) must detect as 'r'.
+
+        detect_language lowercases extensions before lookup, so both
+        .r and .R should map to 'r'. The duplicate .R entry in the map
+        was removed since .R is unreachable — .R is lowercased to .r
+        before lookup.
+        """
+        assert detect_language("script.r") == "r"
+        assert detect_language("script.R") == "r"
+
 
 class TestChunking_GitignoreParser:
     """Test .gitignore parsing and matching."""
