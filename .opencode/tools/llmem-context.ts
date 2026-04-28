@@ -7,7 +7,8 @@ import { runLlmem } from "./lib/_llmem";
  * Invokes `llmem search <query> --json --limit 20` and formats
  * results into a context block suitable for LLM injection,
  * truncated to the given character budget.
- * Returns 'No memories found.' sentinel if no results. On error, returns error string.
+ * Returns 'No memories found.' sentinel if no results. Returns 'Error: ...' string
+ * for non-array JSON or parse failures.
  */
 export default tool({
   name: "llmem-context",
@@ -44,7 +45,11 @@ export default tool({
       return `Error: failed to parse llmem JSON output: ${snippet}`;
     }
 
-    if (!Array.isArray(memories) || memories.length === 0) {
+    if (!Array.isArray(memories)) {
+      return `Error: failed to parse llmem JSON output: expected array, got ${typeof memories}`;
+    }
+
+    if (memories.length === 0) {
       return "No memories found.";
     }
 
