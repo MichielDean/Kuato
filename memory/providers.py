@@ -72,7 +72,7 @@ class GenerateProvider(abc.ABC):
         prompt: str,
         temperature: float = 0.1,
         max_tokens: int = 2048,
-        timeout: int = 60,
+        timeout: int | None = None,
     ) -> str:
         """Generate text from a prompt.
 
@@ -80,7 +80,8 @@ class GenerateProvider(abc.ABC):
             prompt: The prompt text.
             temperature: Sampling temperature. Defaults to 0.1.
             max_tokens: Maximum tokens to generate. Defaults to 2048.
-            timeout: Request timeout in seconds. Defaults to 60.
+            timeout: Request timeout in seconds. Defaults to None, which
+                uses the constructor-configured timeout.
 
         Returns:
             The generated text string.
@@ -193,7 +194,7 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
         prompt: str,
         temperature: float = 0.1,
         max_tokens: int = 2048,
-        timeout: int = 60,
+        timeout: int | None = None,
     ) -> str:
         """Generate text from a prompt via Ollama /api/generate.
 
@@ -203,7 +204,8 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
             prompt: The prompt text.
             temperature: Sampling temperature. Defaults to 0.1.
             max_tokens: Maximum tokens to generate. Defaults to 2048.
-            timeout: Request timeout in seconds. Defaults to 60.
+            timeout: Request timeout in seconds. Defaults to None, which
+                uses the constructor-configured timeout.
 
         Returns:
             The generated text string.
@@ -212,13 +214,14 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
             RuntimeError: On HTTP errors with status code context.
             ValueError: On URL validation failures.
         """
+        effective_timeout = timeout if timeout is not None else self._timeout
         return _call_ollama_generate(
             model=self._generate_model,
             base_url=self._base_url,
             prompt=prompt,
             temperature=temperature,
             max_tokens=max_tokens,
-            timeout=timeout,
+            timeout=effective_timeout,
         )
 
     def check_available(self) -> bool:
@@ -365,7 +368,7 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
         prompt: str,
         temperature: float = 0.1,
         max_tokens: int = 2048,
-        timeout: int = 60,
+        timeout: int | None = None,
     ) -> str:
         """Generate text from a prompt via OpenAI /v1/chat/completions.
 
@@ -373,7 +376,8 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
             prompt: The prompt text.
             temperature: Sampling temperature. Defaults to 0.1.
             max_tokens: Maximum tokens to generate. Defaults to 2048.
-            timeout: Request timeout in seconds. Defaults to 60.
+            timeout: Request timeout in seconds. Defaults to None, which
+                uses the constructor-configured timeout.
 
         Returns:
             The generated text string.
@@ -459,7 +463,7 @@ class AnthropicProvider(GenerateProvider):
         prompt: str,
         temperature: float = 0.1,
         max_tokens: int = 2048,
-        timeout: int = 60,
+        timeout: int | None = None,
     ) -> str:
         """Generate text from a prompt via Anthropic /v1/messages.
 
@@ -467,7 +471,8 @@ class AnthropicProvider(GenerateProvider):
             prompt: The prompt text.
             temperature: Sampling temperature. Defaults to 0.1.
             max_tokens: Maximum tokens to generate. Defaults to 2048.
-            timeout: Request timeout in seconds. Defaults to 60.
+            timeout: Request timeout in seconds. Defaults to None, which
+                uses the constructor-configured timeout.
 
         Returns:
             The generated text string.
@@ -475,6 +480,7 @@ class AnthropicProvider(GenerateProvider):
         Raises:
             RuntimeError: On HTTP errors with status code context.
         """
+        effective_timeout = timeout if timeout is not None else self._timeout
         payload = json.dumps(
             {
                 "model": self._model,
@@ -494,7 +500,7 @@ class AnthropicProvider(GenerateProvider):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
                 data = json.loads(resp.read())
         except urllib.error.HTTPError as e:
             raise RuntimeError(
@@ -576,7 +582,7 @@ class NoneProvider(EmbedProvider, GenerateProvider):
         prompt: str,
         temperature: float = 0.1,
         max_tokens: int = 2048,
-        timeout: int = 60,
+        timeout: int | None = None,
     ) -> str:
         """Return an empty string.
 
@@ -695,11 +701,11 @@ def _resolve_embed_provider(
             log.info(
                 "providers: ollama embed config invalid (bad URL), trying fallback"
             )
-            return _fallback_embed_provider(config, ollama_base_url)
+            return _fallback_embed_provider(config)
         if provider.check_available():
             return provider
         log.info("providers: ollama embed not available, trying fallback")
-        return _fallback_embed_provider(config, ollama_base_url)
+        return _fallback_embed_provider(config)
     elif name == "openai":
         provider_cfg = config.get("provider", {})
         openai_cfg = provider_cfg.get("openai", {})
@@ -708,7 +714,7 @@ def _resolve_embed_provider(
             log.info(
                 "providers: openai embed not available (no API key), trying fallback"
             )
-            return _fallback_embed_provider(config, ollama_base_url, skip_openai=True)
+            return _fallback_embed_provider(config, skip_openai=True)
         try:
             return OpenAIProvider(
                 embed_model=model_override
@@ -721,12 +727,15 @@ def _resolve_embed_provider(
             log.info(
                 "providers: openai embed config invalid (bad URL), trying fallback"
             )
-            return _fallback_embed_provider(config, ollama_base_url, skip_openai=True)
+            return _fallback_embed_provider(config, skip_openai=True)
+    elif name == "anthropic":
+        log.info("providers: anthropic has no embedding API, trying fallback")
+        return _fallback_embed_provider(config)
     elif name == "none":
         return NoneProvider()
     else:
         log.warning("providers: unknown embed provider name %r, falling back", name)
-        return _fallback_embed_provider(config, ollama_base_url)
+        return _fallback_embed_provider(config)
 
 
 def _resolve_generate_provider(
@@ -759,11 +768,11 @@ def _resolve_generate_provider(
             log.info(
                 "providers: ollama generate config invalid (bad URL), trying fallback"
             )
-            return _fallback_generate_provider(config, ollama_base_url)
+            return _fallback_generate_provider(config)
         if provider.check_available():
             return provider
         log.info("providers: ollama generate not available, trying fallback")
-        return _fallback_generate_provider(config, ollama_base_url)
+        return _fallback_generate_provider(config)
     elif name == "openai":
         provider_cfg = config.get("provider", {})
         openai_cfg = provider_cfg.get("openai", {})
@@ -772,9 +781,7 @@ def _resolve_generate_provider(
             log.info(
                 "providers: openai generate not available (no API key), trying fallback"
             )
-            return _fallback_generate_provider(
-                config, ollama_base_url, skip_openai=True
-            )
+            return _fallback_generate_provider(config, skip_openai=True)
         try:
             return OpenAIProvider(
                 generate_model=model_override
@@ -787,9 +794,7 @@ def _resolve_generate_provider(
             log.info(
                 "providers: openai generate config invalid (bad URL), trying fallback"
             )
-            return _fallback_generate_provider(
-                config, ollama_base_url, skip_openai=True
-            )
+            return _fallback_generate_provider(config, skip_openai=True)
     elif name == "anthropic":
         provider_cfg = config.get("provider", {})
         anthropic_cfg = provider_cfg.get("anthropic", {})
@@ -798,9 +803,7 @@ def _resolve_generate_provider(
             log.info(
                 "providers: anthropic generate not available (no API key), trying fallback"
             )
-            return _fallback_generate_provider(
-                config, ollama_base_url, skip_anthropic=True
-            )
+            return _fallback_generate_provider(config, skip_anthropic=True)
         try:
             return AnthropicProvider(
                 model=model_override
@@ -813,26 +816,22 @@ def _resolve_generate_provider(
             log.info(
                 "providers: anthropic generate config invalid (bad URL), trying fallback"
             )
-            return _fallback_generate_provider(
-                config, ollama_base_url, skip_anthropic=True
-            )
+            return _fallback_generate_provider(config, skip_anthropic=True)
     elif name == "none":
         return NoneProvider()
     else:
         log.warning("providers: unknown generate provider name %r, falling back", name)
-        return _fallback_generate_provider(config, ollama_base_url)
+        return _fallback_generate_provider(config)
 
 
 def _fallback_embed_provider(
     config: dict,
-    ollama_base_url: str,
     skip_openai: bool = False,
 ) -> EmbedProvider:
     """Try fallback embed providers: openai, then none.
 
     Args:
         config: The full config dict.
-        ollama_base_url: The Ollama base URL.
         skip_openai: If True, skip OpenAI fallback.
 
     Returns:
@@ -854,7 +853,6 @@ def _fallback_embed_provider(
 
 def _fallback_generate_provider(
     config: dict,
-    ollama_base_url: str,
     skip_openai: bool = False,
     skip_anthropic: bool = False,
 ) -> GenerateProvider:
@@ -862,7 +860,6 @@ def _fallback_generate_provider(
 
     Args:
         config: The full config dict.
-        ollama_base_url: The Ollama base URL.
         skip_openai: If True, skip OpenAI fallback.
         skip_anthropic: If True, skip Anthropic fallback.
 

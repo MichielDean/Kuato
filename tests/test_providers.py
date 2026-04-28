@@ -742,6 +742,8 @@ class TestOpenAIProvider_TimeoutPassedToMakeRequest:
         )
 
     def test_generate_passes_default_timeout_to_make_request(self):
+        """When generate() is called without timeout, None is passed to _make_request
+        which resolves to the constructor timeout."""
         provider = OpenAIProvider(api_key="test-key")
         with patch.object(
             provider,
@@ -752,8 +754,9 @@ class TestOpenAIProvider_TimeoutPassedToMakeRequest:
         ) as mock_req:
             provider.generate("test prompt")
         call_kwargs = mock_req.call_args[1]
-        assert call_kwargs.get("timeout") == 60, (
-            f"Expected default timeout=60 passed to _make_request, got kwargs={call_kwargs}"
+        assert call_kwargs.get("timeout") is None, (
+            f"Expected timeout=None (use constructor default) passed to _make_request, "
+            f"got kwargs={call_kwargs}"
         )
 
     def test_embed_passes_timeout_to_make_request(self):
@@ -1003,6 +1006,8 @@ class TestAnthropicProvider_TimeoutPassthrough:
         )
 
     def test_generate_passes_default_timeout(self):
+        """When generate() is called without explicit timeout, the constructor
+        default (60s) should be used."""
         provider = AnthropicProvider(api_key="test-key")
         with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
             mock_resp = MagicMock()
@@ -1015,11 +1020,12 @@ class TestAnthropicProvider_TimeoutPassthrough:
             provider.generate("test")
         call_kwargs = mock_urlopen.call_args[1]
         assert call_kwargs.get("timeout") == 60, (
-            f"Expected default timeout=60, got kwargs={call_kwargs}"
+            f"Expected constructor default timeout=60, got kwargs={call_kwargs}"
         )
 
     def test_generate_with_custom_constructor_timeout(self):
-        """generate() default timeout param is 60, overriding constructor timeout."""
+        """When generate() is called without an explicit timeout, it should
+        use the constructor-configured timeout (not the old method default of 60)."""
         provider = AnthropicProvider(api_key="test-key", timeout=45)
         with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
             mock_resp = MagicMock()
@@ -1031,9 +1037,9 @@ class TestAnthropicProvider_TimeoutPassthrough:
             mock_urlopen.return_value = mock_resp
             provider.generate("test")
         call_kwargs = mock_urlopen.call_args[1]
-        assert call_kwargs.get("timeout") == 60, (
-            "generate() default timeout param is 60, not constructor timeout. "
-            f"Got kwargs={call_kwargs}"
+        assert call_kwargs.get("timeout") == 45, (
+            "generate() without explicit timeout should use constructor timeout (45), "
+            f"not method default. Got kwargs={call_kwargs}"
         )
 
 
@@ -1092,3 +1098,99 @@ class TestNoneProvider_IgnoresGenerateParams:
         provider = NoneProvider()
         assert provider.embed("") == [0.0] * 768
         assert provider.embed("some text") == [0.0] * 768
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-rjf46: _resolve_embed_provider 'anthropic' branch
+# ---------------------------------------------------------------------------
+
+
+class TestResolveEmbedProvider_AnthropicBranch:
+    """When provider.default='anthropic' is used for embed, it should
+    explicitly fall back because Anthropic provides no embedding API,
+    rather than falling through to the 'unknown' else branch.
+    """
+
+    def test_anthropic_embed_falls_back_to_none(self):
+        """Anthropic has no embedding API — should fall back to NoneProvider."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            config = {"provider": {"default": "anthropic"}}
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, NoneProvider)
+
+    def test_anthropic_embed_falls_back_to_openai_if_key_available(self):
+        """If OPENAI_API_KEY is set, anthropic embed fallback should try OpenAI."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False):
+            os.environ["OPENAI_API_KEY"] = "test-key"
+            config = {"provider": {"default": "anthropic"}}
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, OpenAIProvider)
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-cj1li: generate() uses constructor timeout, not method default
+# ---------------------------------------------------------------------------
+
+
+class TestOllamaProvider_ConstructorTimeout:
+    """OllamaProvider.generate() should use self._timeout when no explicit
+    timeout is provided, not a hardcoded method default of 60.
+    """
+
+    def test_generate_uses_constructor_timeout_when_not_specified(self):
+        provider = OllamaProvider(timeout=45)
+        with patch(
+            "memory.providers._call_ollama_generate", return_value="ok"
+        ) as mock_gen:
+            provider.generate("test prompt")
+        call_kwargs = mock_gen.call_args[1]
+        assert call_kwargs.get("timeout") == 45, (
+            f"Expected constructor timeout=45, got {call_kwargs}"
+        )
+
+    def test_generate_explicit_timeout_overrides_constructor(self):
+        provider = OllamaProvider(timeout=45)
+        with patch(
+            "memory.providers._call_ollama_generate", return_value="ok"
+        ) as mock_gen:
+            provider.generate("test prompt", timeout=120)
+        call_kwargs = mock_gen.call_args[1]
+        assert call_kwargs.get("timeout") == 120, (
+            f"Expected explicit timeout=120, got {call_kwargs}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-njsot: _fallback functions don't take ollama_base_url
+# ---------------------------------------------------------------------------
+
+
+class TestFallbackFunctions_NoOllamaBaseBaseUrl:
+    """_fallback_embed_provider and _fallback_generate_provider should not
+    accept ollama_base_url — it was a dead documented parameter that was
+    never used in the function body.
+    """
+
+    def test_fallback_embed_no_ollama_base_url_param(self):
+        """_fallback_embed_provider should work with just config and skip_openai."""
+        import inspect
+        from memory.providers import _fallback_embed_provider
+
+        sig = inspect.signature(_fallback_embed_provider)
+        assert "ollama_base_url" not in sig.parameters, (
+            f"_fallback_embed_provider should not have ollama_base_url param, "
+            f"got params: {list(sig.parameters.keys())}"
+        )
+
+    def test_fallback_generate_no_ollama_base_url_param(self):
+        """_fallback_generate_provider should work with just config, skip_openai, skip_anthropic."""
+        import inspect
+        from memory.providers import _fallback_generate_provider
+
+        sig = inspect.signature(_fallback_generate_provider)
+        assert "ollama_base_url" not in sig.parameters, (
+            f"_fallback_generate_provider should not have ollama_base_url param, "
+            f"got params: {list(sig.parameters.keys())}"
+        )
