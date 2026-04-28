@@ -16,6 +16,7 @@ from llmem.paths import (
     get_context_dir,
     migrate_from_lobsterdog,
     _validate_home_path,
+    BLOCKED_SYSTEM_PREFIXES,
 )
 
 
@@ -215,3 +216,57 @@ class TestPaths_ValidateHomePath_SymlinkCheck:
         """_validate_home_path rejects paths targeting system directories."""
         with pytest.raises(ValueError, match="system directory"):
             _validate_home_path(Path("/etc/something"), "test")
+
+
+class TestPaths_BlockedSystemPrefixesShared:
+    """Test that BLOCKED_SYSTEM_PREFIXES is used consistently (DRY)."""
+
+    def test_blocked_prefixes_is_tuple(self):
+        """BLOCKED_SYSTEM_PREFIXES must be an immutable tuple."""
+        from llmem.paths import BLOCKED_SYSTEM_PREFIXES
+
+        assert isinstance(BLOCKED_SYSTEM_PREFIXES, tuple)
+
+    def test_blocked_prefixes_contains_essential_dirs(self):
+        """BLOCKED_SYSTEM_PREFIXES must include essential system directories."""
+        from llmem.paths import BLOCKED_SYSTEM_PREFIXES
+
+        essential = {"/etc", "/var", "/proc", "/dev", "/root"}
+        assert essential.issubset(set(BLOCKED_SYSTEM_PREFIXES))
+
+    def test_opencode_adapter_uses_shared_constant(self):
+        """OpenCodeAdapter must use BLOCKED_SYSTEM_PREFIXES, not a local copy."""
+        from llmem.adapters.opencode import OpenCodeAdapter
+        from llmem.paths import BLOCKED_SYSTEM_PREFIXES
+
+        # OpenCodeAdapter must not have its own _BLOCKED_PREFIXES
+        assert not hasattr(OpenCodeAdapter, "_BLOCKED_PREFIXES")
+
+    def test_validate_home_path_uses_shared_constant(self):
+        """_validate_home_path must reject all BLOCKED_SYSTEM_PREFIXES."""
+        for prefix in BLOCKED_SYSTEM_PREFIXES:
+            test_path = Path(prefix + "/llmem_test")
+            try:
+                if test_path.is_symlink():
+                    continue
+            except (PermissionError, OSError):
+                # Cannot stat the path — but _validate_home_path should
+                # still reject it via the blocked-prefix check (which
+                # runs on the resolved path, not on is_symlink).
+                pass
+            with pytest.raises(ValueError, match="system directory"):
+                _validate_home_path(test_path, "test")
+
+    def test_validate_write_path_uses_shared_constant(self):
+        """_validate_write_path must reject all BLOCKED_SYSTEM_PREFIXES."""
+        from llmem.paths import _validate_write_path, BLOCKED_SYSTEM_PREFIXES
+
+        for prefix in BLOCKED_SYSTEM_PREFIXES:
+            test_path = Path(prefix + "/llmem_test.html")
+            try:
+                if test_path.is_symlink():
+                    continue
+            except (PermissionError, OSError):
+                pass
+            with pytest.raises(ValueError, match="protected directory"):
+                _validate_write_path(test_path, "test")

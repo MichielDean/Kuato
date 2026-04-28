@@ -564,6 +564,19 @@ class TestDefaultUrlopenTimeout:
 class TestSafeUrlopen:
     """Verify safe_urlopen validates URLs, sets timeout, and blocks redirects."""
 
+    def test_safe_urlopen_return_type_annotation(self):
+        """safe_urlopen return type must be http.client.HTTPResponse, not OpenerDirector.
+
+        The return type annotation must match the actual return type —
+        OpenerDirector.open() returns an HTTPResponse. An incorrect
+        annotation breaks static type checking for all call sites.
+        """
+        import http.client
+        import inspect
+
+        sig = inspect.signature(safe_urlopen)
+        assert sig.return_annotation is http.client.HTTPResponse
+
     def test_rejects_unsafe_url(self):
         """safe_urlopen raises ValueError for URLs that fail is_safe_url."""
         with pytest.raises(ValueError, match="URL rejected"):

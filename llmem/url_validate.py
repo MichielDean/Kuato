@@ -2,10 +2,13 @@
 
 import http.client
 import ipaddress
+import logging
 import socket
 import urllib.request
 import urllib.error
 from urllib.parse import urlparse, urlunparse, unquote
+
+log = logging.getLogger(__name__)
 
 OLLAMA_DEFAULT_PORT = 11434
 
@@ -83,17 +86,6 @@ def _strip_credentials(url: str) -> str:
     Turns 'http://user:pass@host/path' into 'http://host/path'.
     """
     parsed = urlparse(url)
-    # Rebuild URL without userinfo
-    safe = urlunparse(
-        (
-            parsed.scheme,
-            parsed.hostname or "",
-            parsed.path,
-            parsed.params,
-            parsed.query,
-            parsed.fragment,
-        )
-    )
     port_str = f":{parsed.port}" if parsed.port else ""
     # Reconstruct with hostname + port but no credentials
     netloc = f"{parsed.hostname or ''}{port_str}"
@@ -176,6 +168,11 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        log.warning(
+            "url_validate: blocked SSRF redirect from %s to %s",
+            _strip_credentials(req.full_url),
+            _strip_credentials(newurl),
+        )
         return None  # Block all redirects
 
 

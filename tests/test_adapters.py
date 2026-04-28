@@ -75,6 +75,17 @@ class TestOpenCodeAdapter_Ctor:
         with pytest.raises(ValueError, match="symlink"):
             OpenCodeAdapter(db_path=link_path)
 
+    def test_ctor_checks_blocked_prefix_before_symlink(self):
+        """Blocked-prefix check must happen before symlink check.
+
+        If blocked-prefix were checked after symlink, an OSError on
+        inaccessible paths like /root would occur (is_symlink() fails
+        on PermissionError). The system-directory check catches this
+        first, producing a clear ValueError instead.
+        """
+        with pytest.raises(ValueError, match="system directory"):
+            OpenCodeAdapter(db_path=Path("/root/opencode/opencode.db"))
+
 
 class TestOpenCodeAdapter_NoPipelineDetection:
     """Test that OpenCodeAdapter does not contain pipeline detection logic."""

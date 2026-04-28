@@ -15,6 +15,7 @@ import sqlite3
 from pathlib import Path
 
 from .base import SessionAdapter
+from ..paths import BLOCKED_SYSTEM_PREFIXES
 
 log = logging.getLogger(__name__)
 
@@ -156,39 +157,30 @@ class OpenCodeAdapter(SessionAdapter):
         sqlite3.Error: If the database connection cannot be established.
     """
 
-    # System directories that should never be opened as databases
-    _BLOCKED_PREFIXES = (
-        "/etc",
-        "/var",
-        "/sys",
-        "/proc",
-        "/dev",
-        "/boot",
-        "/root",
-        "/sbin",
-        "/bin",
-        "/usr/sbin",
-        "/usr/bin",
-    )
-
     def __init__(self, db_path: Path) -> None:
-        resolved = Path(db_path).resolve()
         # Check for path traversal before resolve
         if ".." in str(db_path):
             raise ValueError(
                 f"llmem: opencode adapter: db_path contains '..' traversal: {db_path}"
             )
+
+        resolved = Path(db_path).resolve()
+
+        # Must not target a system directory — checked before symlink
+        # check because is_symlink() requires stat access which may
+        # OSError on inaccessible paths under blocked prefixes (e.g. /root).
+        for prefix in BLOCKED_SYSTEM_PREFIXES:
+            if str(resolved).startswith(prefix):
+                raise ValueError(
+                    f"llmem: opencode adapter: db_path targets a system directory: {resolved}"
+                )
+
         # Must not be a symlink
         if Path(db_path).is_symlink():
             raise ValueError(
                 f"llmem: opencode adapter: db_path is a symlink (not allowed): {db_path}"
             )
-        # Must not target a system directory
-        for prefix in self._BLOCKED_PREFIXES:
-            if str(resolved).startswith(prefix):
-                raise ValueError(
-                    f"llmem: opencode adapter: db_path targets a system directory: {resolved}"
-                )
+
         if not Path(db_path).exists():
             raise FileNotFoundError(
                 f"llmem: opencode adapter: database not found: {db_path}"
