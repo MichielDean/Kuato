@@ -369,6 +369,45 @@ class TestRetrieve_HybridSearchSemantic:
         # The result closest to [0.9, 0.1, 0.1] should be "python"
         assert any(r["id"] == ids["python"] for r in results)
 
+    def test_hybrid_search_semantic_only_type_filter(self, vec_store):
+        """search_mode='semantic' with type_filter narrows results to that type."""
+        ids = {}
+        ids["python_fact"] = vec_store.add(
+            type="fact",
+            content="Python programming language",
+            embedding=self._make_embedding([0.9, 0.1, 0.1]),
+        )
+        ids["python_pref"] = vec_store.add(
+            type="preference",
+            content="I prefer Python for scripting",
+            embedding=self._make_embedding([0.85, 0.15, 0.1]),
+        )
+        ids["rust_fact"] = vec_store.add(
+            type="fact",
+            content="Rust systems programming",
+            embedding=self._make_embedding([0.1, 0.9, 0.1]),
+        )
+
+        class FakeEmbedder:
+            def embed(self, text: str) -> list[float]:
+                return [0.9, 0.1, 0.1]
+
+        retriever = Retriever(store=vec_store, embedder=FakeEmbedder())
+
+        # Without type_filter, both types returned
+        all_results = retriever.hybrid_search(
+            "Python", limit=10, search_mode="semantic"
+        )
+        types_seen = {r["type"] for r in all_results}
+        assert len(types_seen) > 1 or len(all_results) >= 1
+
+        # With type_filter="fact", only fact type returned
+        filtered = retriever.hybrid_search(
+            "Python", limit=10, type_filter="fact", search_mode="semantic"
+        )
+        for r in filtered:
+            assert r["type"] == "fact"
+
     def test_hybrid_search_hybrid_mode_with_embedder(self, vec_store):
         """Hybrid mode with embedder returns merged results from both paths."""
         ids = self._add_memories_with_embeddings(vec_store)

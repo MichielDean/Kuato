@@ -195,6 +195,9 @@ class Retriever:
                 r = dict(mem)
                 r["_rrf_score"] = score_by_id.get(mem["id"], 0.0)
                 results.append(r)
+            # Apply type_filter (same post-filter pattern as hybrid path)
+            if type_filter:
+                results = [r for r in results if r.get("type") == type_filter]
             return results[:limit]
 
         # search_mode == "hybrid"
