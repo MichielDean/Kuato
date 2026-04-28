@@ -1239,6 +1239,31 @@ class MemoryStore:
         self._touch(mem_id)
         return True
 
+    def touch_batch(self, ids: list[str]) -> int:
+        """Increment access_count and update accessed_at for multiple memories.
+
+        Executes a single UPDATE with an IN clause for efficiency.
+        Non-existent IDs are silently ignored (they simply don't match any row).
+
+        Args:
+            ids: List of memory IDs to touch.
+
+        Returns:
+            Number of rows affected (i.e., number of IDs that matched existing
+            memories).
+        """
+        if not ids:
+            return 0
+        now = datetime.now(timezone.utc).isoformat()
+        conn = self._connect()
+        placeholders = ",".join("?" for _ in ids)
+        cursor = conn.execute(
+            f'UPDATE "memories" SET "accessed_at" = ?, "access_count" = "access_count" + 1 WHERE "id" IN ({placeholders})',
+            [now, *ids],
+        )
+        conn.commit()
+        return cursor.rowcount
+
     def _row_to_dict(self, row: sqlite3.Row) -> dict:
         d = dict(row)
         try:

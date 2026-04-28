@@ -297,3 +297,59 @@ class TestStore_ChmodWarning:
             f"Expected at least one warning about chmod failure, got: "
             f"{[r.message for r in caplog.records]}"
         )
+
+
+class TestStore_TouchBatch:
+    """Test MemoryStore.touch_batch()."""
+
+    def test_touch_batch_updates_access_count_and_accessed_at(self, store):
+        """touch_batch increments access_count and updates accessed_at for
+        specified IDs only."""
+        id1 = store.add(type="fact", content="memory one")
+        id2 = store.add(type="fact", content="memory two")
+        id3 = store.add(type="fact", content="memory three")
+
+        store.touch_batch([id1, id2])
+
+        mem1 = store.get(id1, track_access=False)
+        mem2 = store.get(id2, track_access=False)
+        mem3 = store.get(id3, track_access=False)
+
+        assert mem1["access_count"] == 1
+        assert mem1["accessed_at"] is not None
+        assert mem2["access_count"] == 1
+        assert mem2["accessed_at"] is not None
+        assert mem3["access_count"] == 0
+        assert mem3["accessed_at"] is None
+
+    def test_touch_batch_empty_list_returns_zero(self, store):
+        """touch_batch with empty list returns 0 without error."""
+        result = store.touch_batch([])
+        assert result == 0
+
+    def test_touch_batch_nonexistent_ids_ignored(self, store):
+        """touch_batch with nonexistent IDs returns 0. Partial match updates
+        only the existing memory."""
+        mid = store.add(type="fact", content="real memory")
+        # Only the real ID exists
+        result = store.touch_batch(["nonexistent"])
+        assert result == 0
+
+        # Partial match: one real + one fake
+        result = store.touch_batch([mid, "nonexistent"])
+        assert result == 1
+        mem = store.get(mid, track_access=False)
+        assert mem["access_count"] == 1
+
+    def test_touch_batch_returns_affected_count(self, store):
+        """touch_batch returns the number of rows actually updated."""
+        id1 = store.add(type="fact", content="memory one")
+        id2 = store.add(type="fact", content="memory two")
+        id3 = store.add(type="fact", content="memory three")
+
+        result = store.touch_batch([id1, id2, id3])
+        assert result == 3
+
+        # Touching the same IDs again still counts as 3 rows affected
+        result = store.touch_batch([id1, id2, id3])
+        assert result == 3

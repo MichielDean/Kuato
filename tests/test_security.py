@@ -109,6 +109,31 @@ class TestUrlValidate_SafeUrl:
         """allow_remote=True permits non-loopback addresses."""
         assert is_safe_url("http://example.com:11434", allow_remote=True)
 
+    def test_blocks_public_ip_by_default(self):
+        """SSRF bypass fix: public IPs must be blocked when allow_remote=False.
+
+        Previously _check_ip_access allowed public IPs through when
+        allow_remote=False because _ip_is_blocked returns False for public
+        addresses and the code only checked port restrictions for loopback.
+        """
+        assert not is_safe_url("http://93.184.216.34:11434")
+
+    def test_blocks_public_ip_on_any_port_by_default(self):
+        """Public IPs on any port are blocked when allow_remote=False."""
+        assert not is_safe_url("http://93.184.216.34:443")
+        assert not is_safe_url("http://93.184.216.34:80")
+
+    def test_blocks_public_hostname_dns_by_default(self):
+        """Hostnames resolving to public IPs are blocked when allow_remote=False."""
+        with patch(
+            "llmem.url_validate._resolve_hostname", return_value=["93.184.216.34"]
+        ):
+            assert not is_safe_url("http://example.com:11434")
+
+    def test_loopback_default_port_still_allowed_by_default(self):
+        """Loopback on Ollama default port remains allowed (regression check)."""
+        assert is_safe_url("http://127.0.0.1:11434/api/tags")
+
     def test_blocks_no_hostname(self):
         assert not is_safe_url("http://")
 

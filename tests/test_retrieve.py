@@ -317,6 +317,25 @@ class TestRetrieve_HybridSearch:
         for r in results:
             assert r["type"] == "fact"
 
+    def test_hybrid_search_track_access_parameter(self, store):
+        """Calling hybrid_search(track_access=False) does not increment
+        access_count on returned memories."""
+        mid = store.add(type="fact", content="Hybrid track_access param test")
+        mem_before = store.get(mid, track_access=False)
+        assert mem_before["access_count"] == 0
+
+        retriever = Retriever(store=store, embedder=None)
+        results = retriever.hybrid_search(
+            "Hybrid track_access param",
+            limit=10,
+            search_mode="fts",
+            track_access=False,
+        )
+
+        assert any(r["id"] == mid for r in results)
+        mem_after = store.get(mid, track_access=False)
+        assert mem_after["access_count"] == 0
+
 
 # ---------------------------------------------------------------------------
 # Retriever.hybrid_search with vec0 semantic — integration tests
@@ -987,3 +1006,47 @@ class TestRetrieve_RerankingIntegration:
         # (this is a best-effort test — the actual error handling is internal)
         results = retriever.search("nonexistent query xyz", limit=10)
         assert isinstance(results, list)
+
+    def test_search_track_access_false_skips_touch(self, store):
+        """Calling retriever.search(track_access=False) does not increment
+        access_count on returned memories."""
+        mid = store.add(type="fact", content="No access tracking content")
+        mem_before = store.get(mid, track_access=False)
+        assert mem_before["access_count"] == 0
+
+        retriever = Retriever(store=store, embedder=None)
+        results = retriever.search("No access tracking", limit=10, track_access=False)
+
+        assert any(r["id"] == mid for r in results)
+        mem_after = store.get(mid, track_access=False)
+        assert mem_after["access_count"] == 0
+
+    def test_hybrid_search_track_access_false_skips_touch(self, store):
+        """Calling retriever.hybrid_search(track_access=False) does not
+        increment access_count on returned memories."""
+        mid = store.add(type="fact", content="Hybrid no access tracking")
+        mem_before = store.get(mid, track_access=False)
+        assert mem_before["access_count"] == 0
+
+        retriever = Retriever(store=store, embedder=None)
+        results = retriever.hybrid_search(
+            "Hybrid no access tracking", limit=10, track_access=False
+        )
+
+        assert any(r["id"] == mid for r in results)
+        mem_after = store.get(mid, track_access=False)
+        assert mem_after["access_count"] == 0
+
+    def test_search_track_access_true_is_default(self, store):
+        """When track_access is not specified, search() defaults to tracking
+        access (track_access=True behavior)."""
+        mid = store.add(type="fact", content="Default tracking content")
+        mem_before = store.get(mid, track_access=False)
+        assert mem_before["access_count"] == 0
+
+        retriever = Retriever(store=store, embedder=None)
+        results = retriever.search("Default tracking", limit=10)
+
+        assert any(r["id"] == mid for r in results)
+        mem_after = store.get(mid, track_access=False)
+        assert mem_after["access_count"] > 0
