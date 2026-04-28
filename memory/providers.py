@@ -280,9 +280,6 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
     def __repr__(self) -> str:
         return f"OpenAIProvider(base_url={self._base_url!r}, api_key='***masked***')"
 
-    def __repr__(self) -> str:
-        return f"OpenAIProvider(base_url={self._base_url!r}, api_key='***masked***')"
-
     def _make_request(
         self,
         endpoint: str,
@@ -458,9 +455,6 @@ class AnthropicProvider(GenerateProvider):
         self._base_url = base_url
         self._api_key = resolved_key
         self._timeout = timeout
-
-    def __repr__(self) -> str:
-        return f"AnthropicProvider(base_url={self._base_url!r}, api_key='***masked***')"
 
     def __repr__(self) -> str:
         return f"AnthropicProvider(base_url={self._base_url!r}, api_key='***masked***')"

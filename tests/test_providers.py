@@ -1536,3 +1536,40 @@ class TestErrorMessagesDoNotLeakCredentials:
             msg = str(exc_info.value)
             assert "admin:pass" not in msg
             assert "169.254.169.254" not in msg
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-28720: No duplicate __repr__ methods
+# ---------------------------------------------------------------------------
+
+
+class TestProviderNoDuplicateRepr:
+    """Verify that no provider class has duplicate __repr__ methods.
+
+    Regression test: copy-paste artifacts caused OpenAIProvider and
+    AnthropicProvider to each have two __repr__ definitions, where the
+    second shadows the first (dead code, reader confusion).
+    """
+
+    def test_no_duplicate_repr_in_provider_classes(self):
+        """No provider class should have duplicate __repr__ definitions."""
+        import ast
+        from pathlib import Path
+
+        providers_path = (
+            Path(__file__).resolve().parent.parent / "memory" / "providers.py"
+        )
+        with open(providers_path) as f:
+            tree = ast.parse(f.read())
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                repr_count = sum(
+                    1
+                    for n in node.body
+                    if isinstance(n, ast.FunctionDef) and n.name == "__repr__"
+                )
+                assert repr_count <= 1, (
+                    f"{node.name} has {repr_count} __repr__ methods — "
+                    f"expected at most 1 (duplicate __repr__ is dead code)"
+                )
