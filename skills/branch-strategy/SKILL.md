@@ -42,7 +42,7 @@ git push origin main
 Repos with CI, collaborators, or branch protection:
 
 - Shared project repos with CI
-- `ScaledTest` (shared project)
+- `acme/platform` (shared project)
 - Any repo with `.github/workflows/` or branch protection
 
 **Strategy:** Create a feature branch. Push. Open PR. Enable automerge.
@@ -96,10 +96,10 @@ If you don't have `gh` or PR access, push the branch and tell the user to create
 ### Examples
 
 ```
-feat: add retry logic to castellarius pipe runner
-fix: handle empty config in aqueduct initialization
+feat: add retry logic to pipe runner
+fix: handle empty config in pipeline initialization
 refactor: extract state machine transitions into separate module
-test: add coverage for cataractae error paths
+test: add coverage for worker error paths
 chore: update go dependencies
 docs: add troubleshooting guide for docker setup
 ```

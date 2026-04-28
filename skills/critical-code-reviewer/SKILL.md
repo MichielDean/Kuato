@@ -173,7 +173,7 @@ If the user chooses to discuss, use the AskUserQuestion tool to systematically t
 
 **Add the review feedback to a pull request:**
 
-When the review is attached to a pull request, offer the option to submit your review verbatim as a PR comment. Include attribution at the top: "Review feedback assisted by the [critical-code-reviewer skill](https://github.com/MichielDean/Kuato/blob/main/skills/critical-code-reviewer/SKILL.md)."
+When the review is attached to a pull request, offer the option to submit your review verbatim as a PR comment. Include attribution at the top: "Review feedback assisted by the [critical-code-reviewer skill](https://github.com/opencode-kuato/kuato/skills/critical-code-reviewer/SKILL.md)."
 
 **Record review findings for future reference:**
 

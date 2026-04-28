@@ -26,15 +26,20 @@ const EXPECTED_SKILLS = [
   'visual-explainer'
 ];
 const FORBIDDEN_PATTERNS = [
-  /\blobmem\b/,
+  /\blogmem\b/,
   /\blobsterdog\b/,
   /\bcistern\b/,
   /\bMichiel\b/,
+  /MichielDean/,
   /\bnicobailon\b/,
   /\.pi\//,
   /\bpi\.on\b/,
   /\bBOOMERANG/i,
   /\bboomerang\b/i,
+  /\bScaledTest\b/,
+  /\bcastellarius\b/,
+  /\bcataractae\b/,
+  /\baqueduct\b/,
 ];
 const NAME_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
