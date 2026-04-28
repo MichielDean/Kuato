@@ -19,8 +19,9 @@ from memory.providers import (
     OpenAIProvider,
     resolve_provider,
     DEFAULT_NONE_EMBED_DIMENSIONS,
+    DEFAULT_OPENAI_BASE_URL,
 )
-from memory.config import get_provider_config, DEFAULTS
+from memory.config import get_provider_config, DEFAULTS, load_config
 
 
 # ---------------------------------------------------------------------------
@@ -604,3 +605,109 @@ class TestGetProviderConfig:
         assert DEFAULTS["provider"]["default"] == "ollama"
         assert DEFAULTS["provider"]["embed"] == {}
         assert DEFAULTS["provider"]["generate"] == {}
+
+
+# ---------------------------------------------------------------------------
+# OpenAI URL construction tests (regression: no double /v1)
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAI_URL_NoDoubleV1:
+    """Regression tests for the double /v1 path bug.
+
+    DEFAULT_OPENAI_BASE_URL must NOT end with /v1 because endpoint paths
+    already include /v1 (e.g., /v1/embeddings, /v1/chat/completions).
+    """
+
+    def test_default_base_url_does_not_end_with_v1(self):
+        assert not DEFAULT_OPENAI_BASE_URL.endswith("/v1"), (
+            f"DEFAULT_OPENAI_BASE_URL={DEFAULT_OPENAI_BASE_URL!r} ends with /v1, "
+            "causing double /v1 in constructed URLs"
+        )
+
+    def test_embed_url_no_double_v1(self):
+        provider = OpenAIProvider(api_key="test-key")
+        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(
+                {"data": [{"embedding": [0.1] * 1536, "index": 0}]}
+            ).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+            provider.embed("test")
+        req = mock_urlopen.call_args[0][0]
+        assert "/v1/v1/" not in req.full_url, (
+            f"Double /v1 detected in URL: {req.full_url}"
+        )
+        assert req.full_url.endswith("/v1/embeddings"), (
+            f"Expected URL ending with /v1/embeddings, got: {req.full_url}"
+        )
+
+    def test_generate_url_no_double_v1(self):
+        provider = OpenAIProvider(api_key="test-key")
+        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(
+                {"choices": [{"message": {"content": "ok"}}]}
+            ).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+            provider.generate("test")
+        req = mock_urlopen.call_args[0][0]
+        assert "/v1/v1/" not in req.full_url, (
+            f"Double /v1 detected in URL: {req.full_url}"
+        )
+        assert req.full_url.endswith("/v1/chat/completions"), (
+            f"Expected URL ending with /v1/chat/completions, got: {req.full_url}"
+        )
+
+    def test_check_available_url_no_double_v1(self):
+        provider = OpenAIProvider(api_key="test-key")
+        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps({"data": []}).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+            provider.check_available()
+        req = mock_urlopen.call_args[0][0]
+        assert "/v1/v1/" not in req.full_url, (
+            f"Double /v1 detected in URL: {req.full_url}"
+        )
+        assert req.full_url.endswith("/v1/models"), (
+            f"Expected URL ending with /v1/models, got: {req.full_url}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Config load_config logging tests
+# ---------------------------------------------------------------------------
+
+
+class TestLoadConfig_LogsOnException:
+    """Verify that load_config logs a warning instead of silently swallowing exceptions."""
+
+    def test_logs_warning_on_bad_yaml(self, tmp_path):
+        bad_file = tmp_path / "bad.yaml"
+        # Write genuinely malformed YAML that yaml.safe_load cannot parse
+        bad_file.write_text("{\n  foo: bar\n  baz")
+        with patch("memory.config.log") as mock_log:
+            result = load_config(bad_file)
+        assert result == {}
+        mock_log.warning.assert_called_once()
+        call_args = mock_log.warning.call_args
+        assert "failed to load config" in call_args[0][0]
+
+    def test_logs_warning_on_non_dict_yaml(self, tmp_path):
+        """YAML that parses but isn't a dict should return {} without logging."""
+        arr_file = tmp_path / "arr.yaml"
+        arr_file.write_text("- item1\n- item2\n")
+        result = load_config(arr_file)
+        assert result == {}
+
+    def test_returns_empty_on_missing_file(self, tmp_path):
+        missing = tmp_path / "nonexistent.yaml"
+        result = load_config(missing)
+        assert result == {}

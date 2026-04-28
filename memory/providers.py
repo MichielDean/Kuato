@@ -236,7 +236,7 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
 # OpenAIProvider
 # ---------------------------------------------------------------------------
 
-DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com"
 DEFAULT_OPENAI_EMBED_MODEL = "text-embedding-3-small"
 DEFAULT_OPENAI_GENERATE_MODEL = "gpt-4o-mini"
 

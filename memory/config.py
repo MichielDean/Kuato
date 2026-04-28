@@ -5,8 +5,6 @@ from pathlib import Path
 
 import yaml
 
-from .url_validate import is_safe_url
-
 log = logging.getLogger(__name__)
 
 CONFIG_PATH = Path("~/.lobsterdog/config.yaml").expanduser()
@@ -83,6 +81,7 @@ def load_config(config_path: Path | None = None) -> dict:
             data = yaml.safe_load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
+        log.warning("config: failed to load config from %s", path, exc_info=True)
         return {}
 
 
