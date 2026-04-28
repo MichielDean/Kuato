@@ -90,7 +90,7 @@ def cmd_search(args):
         try:
             ollama_url = getattr(args, "ollama_url", None) or "http://localhost:11434"
             embedder = EmbeddingEngine(base_url=ollama_url)
-        except (ValueError, Exception):
+        except Exception:
             embedder = None
 
     retriever = Retriever(store=store, embedder=embedder)
@@ -112,7 +112,7 @@ def cmd_search(args):
         print(json.dumps(results, indent=2, default=str))
     else:
         for m in results:
-            score = m.get("_rrf_score", m.get("_fts_rank", 0.0))
+            score = m.get("_rrf_score", 0.0)
             print(
                 f"  {m['id']}  [{m['type']}]  conf={m.get('confidence', 0):.2f}  rrf={score:.4f}"
             )

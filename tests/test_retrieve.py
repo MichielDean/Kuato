@@ -65,33 +65,56 @@ class TestRetrieve_RrfScore:
     def test_rrf_score_empty_inputs(self):
         """_rrf_score returns an empty list when given empty rank dicts."""
         assert _rrf_score({}, {}, alpha=0.7, k=60) == []
-        # ID "a" in semantic only → semantic rank 1, FTS default rank = len(fts)+1 = 2
-        # score = alpha*(1/(k+1)) + (1-alpha)*(1/(k+2))
+        # ID "a" in semantic only → semantic rank 1, FTS default rank = len(fts)+1 = 1
+        # (since fts_ranks is empty, n_fts=0, default = 0+1 = 1)
+        # score = alpha*(1/(k+1)) + (1-alpha)*(1/(k+1)) = 1/(k+1)
         assert _rrf_score({"a": 1}, {}, alpha=0.7, k=60) == [
-            ("a", pytest.approx(0.7 / 61 + 0.3 / 62))
+            ("a", pytest.approx(0.7 / 61 + 0.3 / 61))
         ]
-        # ID "a" in FTS only → semantic default rank = len(semantic)+1 = 2, FTS rank 1
-        # score = (1-alpha)*(1/(k+1)) + alpha*(1/(k+2))
+        # ID "a" in FTS only → FTS rank 1, semantic default rank = len(semantic)+1 = 1
+        # (since semantic_ranks is empty, n_semantic=0, default = 0+1 = 1)
+        # score = (1-alpha)*(1/(k+1)) + alpha*(1/(k+1)) = 1/(k+1)
         assert _rrf_score({}, {"a": 1}, alpha=0.7, k=60) == [
-            ("a", pytest.approx(0.3 / 61 + 0.7 / 62))
+            ("a", pytest.approx(0.3 / 61 + 0.7 / 61))
         ]
 
     def test_rrf_score_missing_side_gets_default_rank(self):
-        """IDs present in only one dict get rank len(that_list)+1 for the missing side."""
+        """IDs present in only one dict get default rank len(their_present_list)+1
+        for the missing side. E.g., if semantic_ranks has 1 entry and an ID
+        is only in fts_ranks (which also has 1 entry), the ID only in fts_ranks
+        gets semantic default rank = len(semantic_ranks)+1 = 2."""
         # m1 is only in semantic (rank 1), m2 only in FTS (rank 1)
         semantic_ranks = {"m1": 1}
         fts_ranks = {"m2": 1}
         results = _rrf_score(semantic_ranks, fts_ranks, alpha=0.5, k=60)
         result_dict = dict(results)
-        # m1: semantic rank 1, fts rank len(fts_ranks)+1 = 2
+        # m1: semantic rank 1, fts default rank = len(fts_ranks)+1 = 2
         # score = 0.5*(1/61) + 0.5*(1/62)
-        # m2: semantic rank len(semantic_ranks)+1 = 2, fts rank 1
+        # m2: semantic default rank = len(semantic_ranks)+1 = 2, fts rank 1
         # score = 0.5*(1/62) + 0.5*(1/61)
         # Both have the same score, but tie-breaking by ascending ID means m1 first
         assert result_dict["m1"] == pytest.approx(0.5 * (1 / 61) + 0.5 * (1 / 62))
         assert result_dict["m2"] == pytest.approx(0.5 * (1 / 62) + 0.5 * (1 / 61))
         # With same score, m1 comes first (ascending ID tie-break)
         assert results[0][0] == "m1"
+
+    def test_rrf_score_missing_id_default_rank_not_swapped(self):
+        """Regression test: IDs missing from one list should get default rank
+        based on the length of the list they are ABSENT from, not the list
+        they appear in. This tests the fix for the swapped-n_semantic/n_fts bug."""
+        # 5 semantic results, 2 FTS results
+        # ID "a" is rank 1 in semantic but absent from FTS
+        # It should get FTS default rank = len(fts_ranks)+1 = 3 (NOT len(semantic)+1 = 6)
+        semantic_ranks = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5}
+        fts_ranks = {"f": 1, "g": 2}
+        results = _rrf_score(semantic_ranks, fts_ranks, alpha=0.5, k=60)
+        result_dict = dict(results)
+        # "a": semantic_rank=1, fts_rank=len(fts_ranks)+1=3
+        # score = 0.5*(1/(60+1)) + 0.5*(1/(60+3)) = 0.5/61 + 0.5/63
+        assert result_dict["a"] == pytest.approx(0.5 / 61 + 0.5 / 63)
+        # Verify NOT the old (buggy) value which used len(semantic)+1=6 for FTS default
+        buggy_value = 0.5 / 61 + 0.5 / 66  # would be n_semantic+1 = 6
+        assert result_dict["a"] != pytest.approx(buggy_value)
 
     def test_rrf_score_deduplicates_by_id(self):
         """An ID appearing in both dicts appears once with combined score."""
@@ -215,10 +238,48 @@ class TestRetrieve_HybridSearch:
             assert "_rrf_score" in r
             assert isinstance(r["_rrf_score"], float)
 
+    def test_hybrid_search_fts_only_rrf_score_is_rrf_computed(self, store):
+        """In fts-only mode, _rrf_score is an actual RRF score (1/(k+rank)),
+        not the raw BM25 value. Regression test for inconsistent _rrf_score."""
+        self._add_memories(store)
+        retriever = Retriever(store=store, embedder=None)
+
+        results = retriever.hybrid_search("Python", limit=10, search_mode="fts")
+        for r in results:
+            assert "_rrf_score" in r
+            # RRF score for pure-FTS rank 1 with k=60 should be 1/(60+1) ≈ 0.01639
+            # A raw BM25 value could be something entirely different (e.g. 2.5 or -0.3)
+            # So just validate it's positive and in the expected RRF range (0, 1/(k+1)]
+            assert r["_rrf_score"] > 0
+            assert r["_rrf_score"] <= 1 / 61  # max RRF score with k=60
+
+    def test_hybrid_search_no_fts_rank_leaks_into_results(self, store):
+        """Internal _fts_rank metadata should never appear in hybrid_search
+        result dicts. Regression test for _fts_rank leak into JSON output."""
+        self._add_memories(store)
+        retriever = Retriever(store=store, embedder=None)
+
+        # Test all modes
+        for mode in ["fts", "hybrid"]:
+            results = retriever.hybrid_search("Python", limit=10, search_mode=mode)
+            for r in results:
+                assert "_fts_rank" not in r, (
+                    f"_fts_rank leaked into results in {mode} mode: {r.keys()}"
+                )
+
     def test_hybrid_search_empty_query_returns_empty(self, store):
-        """An empty query string returns an empty list."""
+        """An empty query string returns an empty list, even when the store
+        has memories (regression: empty query used to return ALL memories)."""
+        self._add_memories(store)
         retriever = Retriever(store=store, embedder=None)
         results = retriever.hybrid_search("", limit=10)
+        assert results == []
+
+    def test_hybrid_search_empty_query_fts_mode_returns_empty(self, store):
+        """An empty query in fts mode also returns empty (not all memories)."""
+        self._add_memories(store)
+        retriever = Retriever(store=store, embedder=None)
+        results = retriever.hybrid_search("", limit=10, search_mode="fts")
         assert results == []
 
     def test_hybrid_search_type_filter(self, store):

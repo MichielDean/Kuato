@@ -54,19 +54,19 @@ def _rrf_score(
         return []
 
     all_ids = set(semantic_ranks) | set(fts_ranks)
-    # IDs missing from one list get a default rank of len(the_list_they_ARE_in) + 1
-    # on the missing side (spec: "rank len(that_list) + 1 for the missing side").
+    # IDs missing from one list get a default rank len(their_present_list) + 1
+    # (spec: "rank len(that_list) + 1 for the missing side").
     n_semantic = len(semantic_ranks)
     n_fts = len(fts_ranks)
 
     scored: list[tuple[str, float]] = []
     for mid in all_ids:
-        # If the ID is in semantic_ranks, use its actual rank.
-        # If missing, default = len(fts_ranks) + 1 (the list it IS in, if FTS-only).
-        semantic_rank = semantic_ranks.get(mid, n_fts + 1)
-        # If the ID is in fts_ranks, use its actual rank.
-        # If missing, default = len(semantic_ranks) + 1 (the list it IS in, if semantic-only).
-        fts_rank = fts_ranks.get(mid, n_semantic + 1)
+        # If the ID is missing from semantic_ranks, it gets default rank
+        # len(semantic_ranks) + 1 (i.e., it would be ranked last in that list).
+        semantic_rank = semantic_ranks.get(mid, n_semantic + 1)
+        # If the ID is missing from fts_ranks, it gets default rank
+        # len(fts_ranks) + 1 (i.e., it would be ranked last in that list).
+        fts_rank = fts_ranks.get(mid, n_fts + 1)
         score = alpha * (1 / (k + semantic_rank)) + (1 - alpha) * (1 / (k + fts_rank))
         scored.append((mid, score))
 
@@ -150,12 +150,24 @@ class Retriever:
         Raises:
             ValueError: If search_mode="semantic" and self._embedder is None.
         """
+        if not query:
+            return []
+
         if search_mode == "fts":
-            results = self._store.search(
+            fts_results = self._store.search(
                 query=query, type=type_filter, limit=limit, _include_rank=True
             )
-            for r in results:
-                r["_rrf_score"] = float(r.get("_fts_rank", 0.0))
+            # Build FTS-only rank map and compute RRF scores
+            fts_rank_map: dict[str, int] = {
+                r["id"]: i + 1 for i, r in enumerate(fts_results)
+            }
+            scored = _rrf_score({}, fts_rank_map, alpha=0.0)
+            score_by_id = dict(scored)
+            results: list[dict] = []
+            for r in fts_results:
+                mem = {k: v for k, v in r.items() if k != "_fts_rank"}
+                mem["_rrf_score"] = score_by_id.get(r["id"], 0.0)
+                results.append(mem)
             return results[:limit]
 
         if search_mode == "semantic":
@@ -165,10 +177,17 @@ class Retriever:
                 )
             query_vec = self._embedder.embed(query)
             semantic_results = self._store.search_by_embedding(query_vec, limit=limit)
-            results = []
-            for rank, (mem, score) in enumerate(semantic_results, start=1):
-                mem["_rrf_score"] = score
-                results.append(mem)
+            # Build semantic-only rank map and compute RRF scores
+            semantic_rank_map: dict[str, int] = {
+                mem["id"]: i + 1 for i, (mem, _score) in enumerate(semantic_results)
+            }
+            scored = _rrf_score(semantic_rank_map, {}, alpha=1.0)
+            score_by_id = dict(scored)
+            results: list[dict] = []
+            for rank, (mem, _score) in enumerate(semantic_results, start=1):
+                r = dict(mem)
+                r["_rrf_score"] = score_by_id.get(mem["id"], 0.0)
+                results.append(r)
             return results[:limit]
 
         # search_mode == "hybrid"
@@ -183,11 +202,13 @@ class Retriever:
                 alpha=alpha,
                 search_mode="fts",
             )
-
-        # Run FTS5 search
         fts_results = self._store.search(
             query=query, type=type_filter, limit=limit, _include_rank=True
         )
+        # Strip internal _fts_rank from FTS results before merging (issue: metadata leak)
+        fts_results_clean = [
+            {k: v for k, v in r.items() if k != "_fts_rank"} for r in fts_results
+        ]
         fts_ranks: dict[str, int] = {r["id"]: i + 1 for i, r in enumerate(fts_results)}
 
         # Run semantic search
@@ -201,19 +222,20 @@ class Retriever:
             log.warning(
                 "llmem: retrieve: semantic search failed, falling back to FTS5-only"
             )
-            fts_only = self._store.search(
-                query=query, type=type_filter, limit=limit, _include_rank=True
+            return self.hybrid_search(
+                query=query,
+                limit=limit,
+                type_filter=type_filter,
+                alpha=alpha,
+                search_mode="fts",
             )
-            for r in fts_only:
-                r["_rrf_score"] = float(r.get("_fts_rank", 0.0))
-            return fts_only[:limit]
 
         # Compute RRF scores
         scored = _rrf_score(semantic_ranks, fts_ranks, alpha=alpha)
 
         # Merge result dicts, deduplicating by memory ID
         all_results: dict[str, dict] = {}
-        for r in fts_results:
+        for r in fts_results_clean:
             all_results[r["id"]] = r
         for mem, _score in semantic_results:
             if mem["id"] not in all_results:
