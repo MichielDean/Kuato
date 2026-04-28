@@ -56,7 +56,7 @@ class EmbeddingEngine:
         )
 
         try:
-            with safe_urlopen(req) as resp:
+            with safe_urlopen(req, allow_remote=True) as resp:
                 data = json.loads(resp.read())
                 vec = data.get("embedding", [])
         except (
@@ -82,7 +82,7 @@ class EmbeddingEngine:
 
         url = f"{self._base_url}/api/tags"
         try:
-            with safe_urlopen(url) as resp:
+            with safe_urlopen(url, allow_remote=True) as resp:
                 data = json.loads(resp.read())
                 models = [m["name"] for m in data.get("models", [])]
                 return any(m.startswith(self._model) for m in models)

@@ -66,7 +66,7 @@ class ExtractionEngine:
             url, data=payload, headers={"Content-Type": "application/json"}
         )
         try:
-            with safe_urlopen(req) as resp:
+            with safe_urlopen(req, allow_remote=True) as resp:
                 data = json.loads(resp.read())
                 response_text = data.get("response", "").strip()
         except (
@@ -115,7 +115,7 @@ class ExtractionEngine:
 
         url = f"{self._base_url}/api/tags"
         try:
-            with safe_urlopen(url) as resp:
+            with safe_urlopen(url, allow_remote=True) as resp:
                 data = json.loads(resp.read())
                 models = [m["name"] for m in data.get("models", [])]
                 return any(m.startswith(self._model) for m in models)
@@ -132,7 +132,7 @@ class ExtractionEngine:
             url, data=payload, headers={"Content-Type": "application/json"}
         )
         try:
-            with safe_urlopen(req) as resp:
+            with safe_urlopen(req, allow_remote=True) as resp:
                 data = json.loads(resp.read())
                 return data.get("status") == "success"
         except Exception as e:

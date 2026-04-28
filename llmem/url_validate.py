@@ -148,8 +148,22 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None  # Block all redirects
 
 
+def _extract_url_string(url: str | urllib.request.Request) -> str:
+    """Extract a URL string from either a str or urllib.request.Request.
+
+    Request objects have a .full_url attribute; using urlparse on a Request
+    directly raises AttributeError because urlparse expects a string.
+    """
+    if isinstance(url, urllib.request.Request):
+        return url.full_url
+    return url
+
+
 def safe_urlopen(
-    url: str, timeout: int = DEFAULT_URLOPEN_TIMEOUT, **kwargs
+    url: str | urllib.request.Request,
+    timeout: int = DEFAULT_URLOPEN_TIMEOUT,
+    allow_remote: bool = False,
+    **kwargs,
 ) -> urllib.request.OpenerDirector:
     """Open a URL with SSRF protections: validates URL, blocks redirects, sets timeout.
 
@@ -161,8 +175,13 @@ def safe_urlopen(
     5. Strips credentials from error messages
 
     Args:
-        url: The URL to open. Must pass is_safe_url() validation.
+        url: The URL to open (string or urllib.request.Request). Must pass
+            is_safe_url() validation.
         timeout: Request timeout in seconds. Defaults to 30.
+        allow_remote: If True, allow non-loopback addresses. Must match the
+            policy used during URL construction (e.g. ExtractionEngine passes
+            allow_remote=True because Ollama can run on remote hosts). Defaults
+            to False for safety.
         **kwargs: Additional arguments passed to OpenerDirector.open().
 
     Returns:
@@ -173,15 +192,20 @@ def safe_urlopen(
         urllib.error.HTTPError: If the server returns an HTTP error (credentials stripped).
         urllib.error.URLError: If the connection fails (credentials stripped).
     """
-    if not is_safe_url(url):
+    url_str = _extract_url_string(url)
+
+    if not is_safe_url(url_str, allow_remote=allow_remote):
         raise ValueError(
             f"llmem: url_validate: URL rejected: must be http(s) to a permitted "
-            f"address — got {_strip_credentials(url)!r}"
+            f"address — got {_strip_credentials(url_str)!r}"
         )
 
     # Re-resolve the hostname immediately before the request to mitigate
     # DNS rebinding TOCTOU: an attacker might change DNS after validation.
-    parsed = urlparse(url)
+    # Structured to match is_safe_url()'s pattern: ValueError from
+    # ipaddress.ip_address() is caught separately so it does not swallow
+    # the deliberate ValueError raised for blocked re-resolved addresses.
+    parsed = urlparse(url_str)
     hostname = parsed.hostname
     if hostname:
         port = _get_effective_port(parsed)
@@ -190,14 +214,19 @@ def safe_urlopen(
             for addr in resolved:
                 try:
                     ip = ipaddress.ip_address(addr)
-                    if not _check_ip_access(ip, _is_remote_allowed(url), port):
-                        raise ValueError(
-                            f"llmem: url_validate: URL rejected after re-resolve: "
-                            f"hostname {hostname!r} resolved to blocked address {addr} "
-                            f"— got {_strip_credentials(url)!r}"
-                        )
                 except ValueError:
-                    pass
+                    # Unparseable address — treat as blocked.
+                    raise ValueError(
+                        f"llmem: url_validate: URL rejected after re-resolve: "
+                        f"hostname {hostname!r} resolved to unparseable address "
+                        f"{addr!r} — got {_strip_credentials(url_str)!r}"
+                    )
+                if not _check_ip_access(ip, allow_remote, port):
+                    raise ValueError(
+                        f"llmem: url_validate: URL rejected after re-resolve: "
+                        f"hostname {hostname!r} resolved to blocked address {addr} "
+                        f"— got {_strip_credentials(url_str)!r}"
+                    )
 
     no_redirect_opener = urllib.request.build_opener(_NoRedirectHandler)
 
@@ -205,26 +234,13 @@ def safe_urlopen(
         return no_redirect_opener.open(url, timeout=timeout, **kwargs)
     except urllib.error.HTTPError as e:
         raise urllib.error.HTTPError(
-            _strip_credentials(url), e.code, e.reason, e.headers, e.fp
+            _strip_credentials(url_str), e.code, e.reason, e.headers, e.fp
         ) from e
     except urllib.error.URLError as e:
-        safe_url = _strip_credentials(url)
+        safe_url = _strip_credentials(url_str)
         raise urllib.error.URLError(
             f"request to {safe_url!r} failed: {e.reason}"
         ) from e
-
-
-def _is_remote_allowed(url: str) -> bool:
-    """Infer allow_remote from URL — loopback URLs default to False."""
-    parsed = urlparse(url)
-    hostname = parsed.hostname
-    if not hostname:
-        return True
-    try:
-        ip = ipaddress.ip_address(hostname)
-        return not ip.is_loopback
-    except ValueError:
-        return True
 
 
 def validate_url(url: str, allow_remote: bool = False) -> str:

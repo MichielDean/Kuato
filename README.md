@@ -10,6 +10,48 @@ pip install llmem
 
 Requires Python 3.11+ and [PyYAML](https://pypi.org/project/PyYAML/).
 
+This copies all 10 skills into `~/.agents/skills/`, where OpenCode discovers them automatically.
+
+## Skills
+
+| Skill | Description |
+|-------|-------------|
+| **llmem** | Manage LLMem memories — add, search, consolidate, dream, introspect, and track review outcomes. |
+| **introspection** | Operational reference for the introspection framework — self-assessment, sampajanna checks, error taxonomy. |
+| **introspection-review-tracker** | Reference for the automated ReviewOutcomeTracker hook that persists review findings as self_assessment memories. |
+| **git-sync** | Sync git repos before editing. Fetch, rebase, stash, and detect conflicts. |
+| **task-intake** | Discover project stack, test commands, and conventions before making changes. |
+| **test-and-verify** | Run quality gates (format, lint, typecheck, test) after code changes. |
+| **branch-strategy** | Enforce consistent branching, commit messages, and push strategies. |
+| **critical-code-reviewer** | Adversarial code reviews with zero tolerance for mediocrity. |
+| **pre-pr-review** | Pre-PR code review via isolated subagent before pushing to GitHub. |
+| **visual-explainer** | Generate self-contained HTML diagrams, reviews, and slide decks. |
+
+## Templates
+
+The `templates/` directory contains generic, personality-agnostic template files that you can copy and customize for your own agent setup:
+
+| Template | Purpose |
+|----------|---------|
+| **templates/rules.md** | Generic workflow rules — no personal or tool-specific references |
+| **templates/identity.md** | Agent identity scaffold — fill in your agent's name, personality, and boundaries |
+| **templates/user.md** | User profile scaffold — fill in your name, timezone, and preferences |
+
+To use them, copy the templates into your `harness/` directory and fill them in:
+
+```bash
+cp templates/identity.md harness/identity.md
+cp templates/user.md harness/user.md
+cp templates/rules.md harness/rules.md
+# Then edit each file to personalize for your setup
+```
+
+The `opencode.json` configuration loads `harness/identity.md`, `harness/user.md`, and `harness/rules.md` — so after copying and customizing, your agent will use your personalized versions.
+
+## Verification
+
+After installation, verify skills are discoverable:
+
 For vector similarity search, install with the `vec` extra:
 
 ```bash
@@ -589,8 +631,7 @@ The `extract` module uses Ollama (default: `qwen2.5:1.5b`) to extract structured
 
 - `LMEM_HOME` is validated against path traversal, system directories, and symlink attacks.
 - Write paths are validated against system directories and symbolic links.
-- URL validation (`is_safe_url`) blocks private/reserved IPs and SSRF vectors.
-- All outbound HTTP calls use `safe_urlopen()` with `SafeRedirectHandler` that re-validates redirect targets through `is_safe_url()`.
+- URL validation (`is_safe_url`) blocks private/reserved IPs and SSRF vectors. `safe_urlopen` enforces URL validation, blocks redirects, mitigates DNS rebinding, and strips credentials from error messages. It accepts both string URLs and `urllib.request.Request` objects, and requires an explicit `allow_remote` parameter (defaults to `False`) for non-loopback addresses.
 - API keys are masked in `__repr__` on provider instances (`***masked***`).
 - Validation error messages use generic strings (never embed user-supplied URLs).
 - All SQL queries use parameterized statements (no injection risk).
