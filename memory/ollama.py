@@ -37,6 +37,7 @@ def check_ollama_model(model: str, base_url: str) -> bool:
         model_base = model.split(":")[0]
         return any(m == model or m.split(":")[0] == model_base for m in models)
     except Exception:
+        log.debug("ollama: model check failed", exc_info=True)
         return False
 
 
@@ -80,4 +81,4 @@ def _call_ollama_generate(
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"Ollama API returned HTTP {e.code}: {e.reason}") from e
-    return data.get("response", "")
+    return data.get("response") or ""

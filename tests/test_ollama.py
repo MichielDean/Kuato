@@ -361,3 +361,145 @@ class TestCallOllamaGenerate:
         assert body["options"]["num_predict"] == 2048
         call_kwargs = mock_open.call_args[1]
         assert call_kwargs.get("timeout") == 60
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-tiy84: check_ollama_model logs on exception
+# ---------------------------------------------------------------------------
+
+
+class TestCheckOllamaModel_LogsOnException:
+    """check_ollama_model must log at debug level when exceptions occur,
+    not silently swallow them. Operators need diagnostic info when health checks fail.
+    """
+
+    def test_logs_on_network_error(self):
+        """Network errors should be logged, not silently swallowed."""
+        with (
+            patch(
+                "memory.ollama.safe_urlopen",
+                side_effect=urllib.error.URLError("Connection refused"),
+            ),
+            patch("memory.ollama.log") as mock_log,
+        ):
+            result = check_ollama_model("test", "http://localhost:11434")
+        assert result is False
+        mock_log.debug.assert_called_once_with(
+            "ollama: model check failed", exc_info=True
+        )
+
+    def test_logs_on_http_error(self):
+        """HTTP errors should be logged, not silently swallowed."""
+        with (
+            patch(
+                "memory.ollama.safe_urlopen",
+                side_effect=urllib.error.HTTPError(
+                    url="http://localhost:11434/api/tags",
+                    code=500,
+                    msg="Internal Server Error",
+                    hdrs=None,
+                    fp=None,
+                ),
+            ),
+            patch("memory.ollama.log") as mock_log,
+        ):
+            result = check_ollama_model("test", "http://localhost:11434")
+        assert result is False
+        mock_log.debug.assert_called_once_with(
+            "ollama: model check failed", exc_info=True
+        )
+
+    def test_logs_on_json_parse_error(self):
+        """Malformed JSON responses should be logged."""
+        with (
+            patch("memory.ollama.safe_urlopen") as mock_open,
+            patch("memory.ollama.log") as mock_log,
+        ):
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = b"not json"
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_open.return_value = mock_resp
+            result = check_ollama_model("test", "http://localhost:11434")
+        assert result is False
+        mock_log.debug.assert_called_once_with(
+            "ollama: model check failed", exc_info=True
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-odcyv: _call_ollama_generate contract — never returns None
+# ---------------------------------------------------------------------------
+
+
+class TestCallOllamaGenerate_NeverReturnsNone:
+    """_call_ollama_generate docstring promises 'never returns None'.
+    data.get('response', '') can return None when the key exists but has value None.
+    Fix: use data.get('response') or '' which coerces both missing-key and
+    None-value to empty string.
+    """
+
+    def test_returns_empty_string_when_response_key_is_null(self):
+        """When API returns {'response': null}, must return '' not None."""
+        with patch("memory.ollama.safe_urlopen") as mock_open:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps({"response": None}).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_open.return_value = mock_resp
+            result = _call_ollama_generate(
+                model="test",
+                base_url="http://localhost:11434",
+                prompt="test",
+            )
+        assert result == ""
+        assert result is not None
+
+    def test_returns_empty_string_when_response_key_missing(self):
+        """When API returns {} (no 'response' key), must return '' not None."""
+        with patch("memory.ollama.safe_urlopen") as mock_open:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps({}).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_open.return_value = mock_resp
+            result = _call_ollama_generate(
+                model="test",
+                base_url="http://localhost:11434",
+                prompt="test",
+            )
+        assert result == ""
+        assert result is not None
+
+    def test_returns_actual_response_when_present(self):
+        """When API returns a real response string, it should be returned."""
+        with patch("memory.ollama.safe_urlopen") as mock_open:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(
+                {"response": "Hello, world!"}
+            ).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_open.return_value = mock_resp
+            result = _call_ollama_generate(
+                model="test",
+                base_url="http://localhost:11434",
+                prompt="test",
+            )
+        assert result == "Hello, world!"
+
+    def test_returns_empty_string_when_response_is_empty_string(self):
+        """When API returns {'response': ''}, must return '' (not None)."""
+        with patch("memory.ollama.safe_urlopen") as mock_open:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps({"response": ""}).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_open.return_value = mock_resp
+            result = _call_ollama_generate(
+                model="test",
+                base_url="http://localhost:11434",
+                prompt="test",
+            )
+        assert result == ""
+        assert result is not None

@@ -1573,3 +1573,99 @@ class TestProviderNoDuplicateRepr:
                     f"{node.name} has {repr_count} __repr__ methods — "
                     f"expected at most 1 (duplicate __repr__ is dead code)"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-tiy84: check_available methods must log on exception
+# ---------------------------------------------------------------------------
+
+
+class TestCheckAvailable_LogsOnException:
+    """check_available() must log at debug level when exceptions occur,
+    not silently swallow them. Operators need diagnostic info when health checks fail.
+    """
+
+    def test_openai_check_available_logs_on_http_error(self):
+        """OpenAI check_available should log when HTTP errors occur."""
+        provider = OpenAIProvider(api_key="bad-key")
+        import urllib.error
+
+        with (
+            patch(
+                "memory.providers.safe_urlopen",
+                side_effect=urllib.error.HTTPError(
+                    url="https://api.openai.com/v1/models",
+                    code=401,
+                    msg="Unauthorized",
+                    hdrs=None,
+                    fp=None,
+                ),
+            ),
+            patch("memory.providers.log") as mock_log,
+        ):
+            result = provider.check_available()
+        assert result is False
+        # Verify debug was called with the expected message
+        mock_log.debug.assert_called_once_with(
+            "providers: OpenAI check_available failed", exc_info=True
+        )
+
+    def test_openai_check_available_logs_on_connection_error(self):
+        """OpenAI check_available should log on connection errors."""
+        provider = OpenAIProvider(api_key="test-key")
+        import urllib.error
+
+        with (
+            patch(
+                "memory.providers.safe_urlopen",
+                side_effect=urllib.error.URLError("Connection refused"),
+            ),
+            patch("memory.providers.log") as mock_log,
+        ):
+            result = provider.check_available()
+        assert result is False
+        mock_log.debug.assert_called_once_with(
+            "providers: OpenAI check_available failed", exc_info=True
+        )
+
+    def test_anthropic_check_available_logs_on_http_error(self):
+        """Anthropic check_available should log when HTTP errors occur."""
+        provider = AnthropicProvider(api_key="bad-key")
+        import urllib.error
+
+        with (
+            patch(
+                "memory.providers.safe_urlopen",
+                side_effect=urllib.error.HTTPError(
+                    url="https://api.anthropic.com/v1/messages",
+                    code=401,
+                    msg="Unauthorized",
+                    hdrs=None,
+                    fp=None,
+                ),
+            ),
+            patch("memory.providers.log") as mock_log,
+        ):
+            result = provider.check_available()
+        assert result is False
+        mock_log.debug.assert_called_once_with(
+            "providers: Anthropic check_available failed", exc_info=True
+        )
+
+    def test_anthropic_check_available_logs_on_connection_error(self):
+        """Anthropic check_available should log on connection errors."""
+        provider = AnthropicProvider(api_key="test-key")
+        import urllib.error
+
+        with (
+            patch(
+                "memory.providers.safe_urlopen",
+                side_effect=urllib.error.URLError("Connection refused"),
+            ),
+            patch("memory.providers.log") as mock_log,
+        ):
+            result = provider.check_available()
+        assert result is False
+        mock_log.debug.assert_called_once_with(
+            "providers: Anthropic check_available failed", exc_info=True
+        )

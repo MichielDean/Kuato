@@ -415,6 +415,7 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
                 json.loads(resp.read())
             return True
         except Exception:
+            log.debug("providers: OpenAI check_available failed", exc_info=True)
             return False
 
 
@@ -537,6 +538,7 @@ class AnthropicProvider(GenerateProvider):
                 json.loads(resp.read())
             return True
         except Exception:
+            log.debug("providers: Anthropic check_available failed", exc_info=True)
             return False
 
 
