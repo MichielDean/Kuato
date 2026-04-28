@@ -753,6 +753,21 @@ class NoneProvider(EmbedProvider, GenerateProvider):
 
 DEFAULT_LOCAL_MODEL = "all-MiniLM-L6-v2"
 
+# Known sentence-transformers model dimensions.  Used by
+# SentenceTransformersProvider.dimension() so it never needs
+# to load the model (honouring the EmbedProvider ABC contract).
+_KNOWN_LOCAL_DIMENSIONS: dict[str, int] = {
+    "all-MiniLM-L6-v2": 384,
+    "all-MiniLM-L12-v2": 384,
+    "all-mpnet-base-v2": 768,
+    "paraphrase-MiniLM-L6-v2": 384,
+    "paraphrase-mpnet-base-v2": 768,
+    "all-roberta-large-v1": 1024,
+    "multi-qa-MiniLM-L6-cos-v1": 384,
+    "multi-qa-mpnet-base-dot-v1": 768,
+}
+_DEFAULT_LOCAL_DIMENSION = 384
+
 
 class SentenceTransformersProvider(EmbedProvider):
     """Local embedding provider using sentence-transformers.
@@ -871,17 +886,18 @@ class SentenceTransformersProvider(EmbedProvider):
         """Return the embedding dimension for the model.
 
         If ``dimensions`` was provided in the constructor, returns that
-        value. Otherwise, returns the model's internal dimension (lazily
-        detected on first call).
+        value. Otherwise, looks up the model name in the known-dimensions
+        table. Unknown models return the default (384).
+
+        This method is lightweight — it never loads the model or makes
+        network calls, honouring the EmbedProvider ABC contract.
 
         Returns:
             The number of floats in each embedding vector.
         """
         if self._dimensions is not None:
             return self._dimensions
-        # Need to load model to detect dimension
-        self._load_model()
-        return self._model.get_sentence_embedding_dimension()
+        return _KNOWN_LOCAL_DIMENSIONS.get(self._model_name, _DEFAULT_LOCAL_DIMENSION)
 
 
 # ---------------------------------------------------------------------------
@@ -1127,10 +1143,9 @@ def _resolve_local_embed_provider(
     model_name = model_override or local_cfg.get("model") or DEFAULT_LOCAL_MODEL
     try:
         provider = SentenceTransformersProvider(model_name=model_name)
-    except (ValueError, ImportError):
+    except ValueError:
         log.warning(
-            "providers: local embed config invalid or sentence-transformers not installed, "
-            "falling back to NoneProvider"
+            "providers: local embed config invalid, falling back to NoneProvider"
         )
         return _fallback_embed_provider(config, skip_openai=False, skip_local=True)
     if provider.check_available():
@@ -1166,7 +1181,7 @@ def _fallback_embed_provider(
             provider = SentenceTransformersProvider(model_name=local_model)
             if provider.check_available():
                 return provider
-        except (ImportError, ValueError):
+        except ValueError:
             log.info("providers: local embed not available in fallback, skipping")
     if not skip_openai:
         openai_cfg = provider_cfg.get("openai") or {}

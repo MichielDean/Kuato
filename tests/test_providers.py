@@ -2925,13 +2925,42 @@ class TestSentenceTransformersProvider:
         assert call_count == 1
 
     def test_dimension_returns_model_dimension(self):
-        """dimension() returns the model's internal dimension when not explicitly set."""
+        """dimension() returns the known dimension for default model without loading it.
+
+        Per the EmbedProvider ABC contract, dimension() must be lightweight and
+        never trigger network/disk IO. The known-dimensions lookup table is used
+        instead of calling model.get_sentence_embedding_dimension().
+        """
         provider = SentenceTransformersProvider()
-        mock_model = MagicMock()
-        mock_model.get_sentence_embedding_dimension.return_value = 384
-        with patch.object(provider, "_load_model"):
-            provider._model = mock_model
-            provider._model_loaded = True
+        # Should return 384 for all-MiniLM-L6-v2 WITHOUT calling _load_model()
+        assert provider.dimension() == 384
+        # Verify no lazy loading happened
+        assert provider._model_loaded is False
+
+    def test_dimension_returns_known_dimension_without_load(self):
+        """dimension() for a known model (all-mpnet-base-v2) returns 768 without loading."""
+        provider = SentenceTransformersProvider(model_name="all-mpnet-base-v2")
+        assert provider.dimension() == 768
+        assert provider._model_loaded is False
+
+    def test_dimension_unknown_model_returns_default(self):
+        """dimension() for an unknown model returns 384 (default) without loading."""
+        provider = SentenceTransformersProvider(model_name="custom-unknown-model")
+        assert provider.dimension() == 384
+        assert provider._model_loaded is False
+
+    def test_dimension_never_calls_load_model(self):
+        """dimension() must never call _load_model() — ABC contract violation.
+
+        Regression test: a prior implementation called _load_model() when no
+        explicit dimensions were given, which triggers network/disk IO and can
+        raise exceptions from a method the ABC says should be lightweight.
+        """
+        provider = SentenceTransformersProvider()
+        with patch.object(
+            provider, "_load_model", side_effect=AssertionError("must not be called")
+        ):
+            # dimension() must return without ever calling _load_model
             result = provider.dimension()
         assert result == 384
 
