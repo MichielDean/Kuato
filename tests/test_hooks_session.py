@@ -16,9 +16,12 @@ from llmem.session_hooks import (
     SessionEventManager,
     SESSION_CREATED_SUCCESS,
     SESSION_CREATED_ALREADY_PROCESSED,
+    SESSION_CREATED_ERROR,
     SESSION_IDLE_DEBOUNCED,
+    SESSION_IDLE_NO_TRANSCRIPT,
     SESSION_COMPACTING_SUCCESS,
     SESSION_COMPACTING_NO_MEMORIES,
+    SESSION_COMPACTING_ERROR,
 )
 from llmem.url_validate import validate_base_url
 
@@ -299,7 +302,39 @@ class TestSessionHookCoordinator:
         with patch("llmem.session_hooks.get_context_dir", return_value=context_path):
             result_type, file_path = coordinator.on_created("ses_123")
 
-        assert result_type == "error"
+        assert result_type == SESSION_CREATED_ERROR
+        assert file_path is None
+
+    def test_idle_hook_returns_no_transcript(
+        self, coordinator, mock_store, mock_adapter
+    ):
+        """on_idle returns ('no_transcript', 0) when adapter has no transcript."""
+        mock_adapter.get_session_transcript.return_value = ""
+
+        result_type, count = coordinator.on_idle("ses_123")
+
+        assert result_type == SESSION_IDLE_NO_TRANSCRIPT
+        assert count == 0
+
+    def test_compacting_hook_returns_error_on_write_failure(
+        self, coordinator, mock_store, mock_retriever, tmp_path
+    ):
+        """on_compacting returns ('error', None) when writing context file fails."""
+        mock_store.search.return_value = [
+            {
+                "id": "mem-1",
+                "type": "decision",
+                "content": "Use Python 3.11",
+                "confidence": 0.9,
+            },
+        ]
+        # Make the context dir path exist but be a file, so mkdir fails
+        context_path = tmp_path / "blocked_compact"
+        context_path.write_text("blocking")
+        with patch("llmem.session_hooks.get_context_dir", return_value=context_path):
+            result_type, file_path = coordinator.on_compacting("ses_123")
+
+        assert result_type == SESSION_COMPACTING_ERROR
         assert file_path is None
 
 

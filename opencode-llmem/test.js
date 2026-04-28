@@ -170,6 +170,18 @@ function testHookFilesUseSharedUtils() {
   }
 }
 
+function testNoExecSyncInIndexJs() {
+  // index.js must not import execSync (replaced with execFileSync in hook files)
+  var indexPath = path.join(SRC_DIR, 'index.js');
+  if (!fs.existsSync(indexPath)) {
+    assert(false, 'src/index.js: file missing');
+    return;
+  }
+  var content = fs.readFileSync(indexPath, 'utf8');
+  assert(content.indexOf('execSync') === -1,
+    'src/index.js: no execSync import (unused after security fix)');
+}
+
 // ── Integration Tests ───────────────────────────────────────────────────
 
 function testInstallCreatesTargetDir() {
@@ -239,6 +251,7 @@ testNoExecSyncInHookFiles();
 testSharedUtilsModuleExists();
 testNoDuplicateGetContextDir();
 testHookFilesUseSharedUtils();
+testNoExecSyncInIndexJs();
 
 console.log('\n=== opencode-llmem Integration Tests ===\n');
 

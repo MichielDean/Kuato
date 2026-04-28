@@ -14,15 +14,7 @@ from .retrieve import Retriever
 from .extract import ExtractionEngine
 from .embed import EmbeddingEngine
 from .adapters.opencode import OpenCodeAdapter
-from .hooks import (
-    SessionHook,
-    IntrospectionAnalyzer,
-    introspect_session,
-    PROCESS_RESULT_SUCCESS,
-    PROCESS_RESULT_ALREADY_PROCESSED,
-    INTROSPECT_RESULT_SUCCESS,
-    INTROSPECT_RESULT_MODEL_UNAVAILABLE,
-)
+from .hooks import SessionHook
 from .config import load_config
 from .paths import get_context_dir
 from .registry import get_registered_session_hooks
@@ -32,9 +24,12 @@ log = logging.getLogger(__name__)
 # Result constants for session hook operations
 SESSION_CREATED_SUCCESS = "success"
 SESSION_CREATED_ALREADY_PROCESSED = "already_processed"
+SESSION_CREATED_ERROR = "error"
 SESSION_IDLE_DEBOUNCED = "debounced"
+SESSION_IDLE_NO_TRANSCRIPT = "no_transcript"
 SESSION_COMPACTING_SUCCESS = "success"
 SESSION_COMPACTING_NO_MEMORIES = "no_memories"
+SESSION_COMPACTING_ERROR = "error"
 
 # Idle debounce window in seconds
 _IDLE_DEBOUNCE_SECONDS = 30
@@ -183,7 +178,7 @@ class SessionHookCoordinator:
                 session_id,
                 e,
             )
-            return "error", None
+            return SESSION_CREATED_ERROR, None
 
         self._store.log_extraction(
             "session_created", session_id, raw_text=context[:500], extracted_count=0
@@ -206,6 +201,10 @@ class SessionHookCoordinator:
         Returns:
             Tuple of (result_type, count). Count is the number of
             memories extracted on success.
+            - ("debounced", 0) if called again within 30s for same session.
+            - ("no_transcript", 0) if the adapter returns no transcript.
+            - (result_type, count) from process_transcript on success,
+              where result_type is typically "success" or "already_processed".
         """
         now = time.monotonic()
         last_time = self._last_idle_time.get(session_id, 0.0)
@@ -234,7 +233,7 @@ class SessionHookCoordinator:
                 "llmem: session_hooks: on_idle: no transcript for session %s",
                 session_id,
             )
-            return "no_transcript", 0
+            return SESSION_IDLE_NO_TRANSCRIPT, 0
 
         # Extract memories using SessionHook
         result_type, count = self._session_hook.process_transcript(
@@ -265,6 +264,7 @@ class SessionHookCoordinator:
             Tuple of (result_type, context_file_path).
             - ("success", file_path) on success.
             - ("no_memories", None) if no key memories found.
+            - ("error", None) if writing the context file fails.
         """
         all_key_memories: list[dict] = []
         for mem_type in _COMPACTING_KEY_TYPES:
@@ -310,7 +310,7 @@ class SessionHookCoordinator:
                 session_id,
                 e,
             )
-            return "error", None
+            return SESSION_COMPACTING_ERROR, None
 
         log.info(
             "llmem: session_hooks: on_compacting: injected %d key memories for session %s",
@@ -361,14 +361,6 @@ def create_session_hook_coordinator(
         get_db_path,
         get_ollama_url,
         get_opencode_db_path,
-    )
-    from .embed import (
-        OLLAMA_BASE as EMBED_OLLAMA_BASE,
-        DEFAULT_MODEL as EMBED_DEFAULT_MODEL,
-    )
-    from .extract import (
-        OLLAMA_BASE as EXTRACT_OLLAMA_BASE,
-        DEFAULT_MODEL as EXTRACT_DEFAULT_MODEL,
     )
 
     resolved_config = config if config is not None else load_config()
