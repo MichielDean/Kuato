@@ -11,7 +11,8 @@
     "skills/",
     "templates/",
     "install.js",
-    "test.js"
+    "test.js",
+    ".opencode/"
   ],
   "keywords": [
     "opencode",
