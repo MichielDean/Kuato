@@ -132,4 +132,4 @@ Proposed_update: <optional>
 - **Severity mapping**: `memory/taxonomy.py` → `REVIEW_SEVERITY_TAXONOMY`
 - **Self-assessment fields**: `memory/taxonomy.py` → `SELF_ASSESSMENT_FIELDS`
 - **Reviewer severity tiers**: `skills/critical-code-reviewer/SKILL.md` (see Severity Tiers section)
-- **llmem introspect command**: `skills/llmem/SKILL.md:134-137`
+- **llmem introspect command**: `skills/llmem/SKILL.md:152-164`

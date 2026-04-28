@@ -115,7 +115,7 @@ llmem search "NULL_SAFETY" --type self_assessment
 llmem introspect --auto --session ~/.local/share/opencode/sessions/2026-01-15.json
 ```
 
-See `skills/llmem/SKILL.md:134-137` for the full `llmem introspect` command reference.
+See `skills/llmem/SKILL.md:152-164` for the full `llmem introspect` command reference.
 
 ## Section 5: Outside-View Review Questions
 
@@ -153,4 +153,4 @@ These triggers correspond to the keywords in the `description` field: "introspec
 - **Review-specific questions:** `skills/critical-code-reviewer/SKILL.md:109-121` — Section 7 (Outside-View Review).
 - **Pre-PR introspection illusion check:** `skills/pre-pr-review/SKILL.md:97-100`.
 - **Review outcome persistence:** `skills/introspection-review-tracker/SKILL.md` — Convert review findings to `self_assessment` memories.
-- **llmem introspect command:** `skills/llmem/SKILL.md:134-137` — CLI reference for structured self-assessment.
+- **llmem introspect command:** `skills/llmem/SKILL.md:152-164` — CLI reference for structured self-assessment.
