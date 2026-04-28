@@ -274,6 +274,18 @@ function testTemplateExists(templateFile) {
   }
 }
 
+function testTemplateEndsWithNewline(templateFile) {
+  var templatePath = path.join(TEMPLATES_DIR, templateFile);
+  if (!fs.existsSync(templatePath)) {
+    assert(false, templateFile + ' ends with newline: file missing');
+    return;
+  }
+  var content = fs.readFileSync(templatePath);
+  var lastByte = content[content.length - 1];
+  assert(lastByte === 0x0A,
+    templateFile + ' ends with trailing newline (cat-safe)');
+}
+
 function testTemplateNoPersonalReferences(templateFile) {
   var templatePath = path.join(TEMPLATES_DIR, templateFile);
   if (!fs.existsSync(templatePath)) {
@@ -506,6 +518,7 @@ for (var t = 0; t < EXPECTED_TEMPLATES.length; t++) {
   console.log('--- ' + tmplFile + ' ---');
   testTemplateExists(tmplFile);
   testTemplateNoPersonalReferences(tmplFile);
+  testTemplateEndsWithNewline(tmplFile);
   console.log('');
 }
 
