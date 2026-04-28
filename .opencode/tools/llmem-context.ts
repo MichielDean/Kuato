@@ -17,7 +17,7 @@ export default tool({
     query: tool.schema.string().describe(
       "Topic or query to recall context for"
     ),
-    budget: tool.schema.number().optional().describe(
+    budget: tool.schema.number().min(0).optional().describe(
       "Character budget for context (default: 4000)"
     ),
   },
@@ -65,6 +65,9 @@ export default tool({
     // Use Array-style slice to avoid splitting surrogate pairs —
     // String.slice operates on UTF-16 code units, but [...str] splits
     // on Unicode code points, so [...str].slice(0,n).join('') is safe.
-    return [...contextBlock].slice(0, budget).join("");
+    // Guard against negative budget: Array.slice(0, -N) truncates from
+    // the end, violating the character-budget contract. Clamp to 0.
+    const safeBudget = Math.max(0, budget);
+    return [...contextBlock].slice(0, safeBudget).join("");
   },
 });
