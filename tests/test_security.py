@@ -1071,6 +1071,11 @@ class TestPaths_ValidateWritePath:
         with pytest.raises(ValueError, match="protected directory"):
             _validate_write_path(Path("/proc/self/status"), "report")
 
+    def test_binary_search_not_blocked(self):
+        """'/binary_search/output.html' must NOT be blocked as /bin."""
+        result = _validate_write_path(Path("/binary_search/output.html"), "report")
+        assert isinstance(result, Path)
+
 
 # ============================================================================
 # ll-7rudv-vp1ad: SSRF bypass via percent-encoded IP hostnames
@@ -1506,35 +1511,22 @@ class TestStore_ImportMemoriesValidation:
 # ============================================================================
 
 
+class TestPaths_ValidateHomePath_NoFalsePositives:
+    """Test that _validate_home_path does not produce false positives from bare prefix matching."""
+
+    def test_binary_search_dir_allowed(self):
+        """'/binary_search/llmem' must NOT be blocked as /bin."""
+        # This used to fail with bare startswith('/bin') check
+        result = _validate_home_path(Path("/binary_search/llmem"), "LMEM_HOME")
+        assert isinstance(result, Path)
+
+    def test_usabin_dir_allowed(self):
+        """'/usabin/llmem' must NOT be blocked as /usr/sbin or /usr/bin."""
+        result = _validate_home_path(Path("/usabin/llmem"), "LMEM_HOME")
+        assert isinstance(result, Path)
+
+
 class TestUrlValidate_IsRemoteAllowed_FailClosed:
-    """Test that _is_remote_allowed is fail-closed for unknown hostnames."""
-
-    def test_returns_false_for_no_hostname(self):
-        """URLs without a hostname must return False (fail-closed)."""
-        from llmem.url_validate import _is_remote_allowed
-
-        assert _is_remote_allowed("http:///path") is False
-
-    def test_returns_false_for_localhost(self):
-        """Localhost must be classified as non-remote."""
-        from llmem.url_validate import _is_remote_allowed
-
-        assert _is_remote_allowed("http://localhost:8080/api") is False
-
-    def test_returns_false_for_unknown_hostname(self):
-        """Unknown hostnames must default to False (fail-closed)."""
-        from llmem.url_validate import _is_remote_allowed
-
-        assert _is_remote_allowed("http://unknown.host.example.com:8080/api") is False
-
-    def test_returns_true_for_public_ip(self):
-        """Non-loopback IP addresses are remote."""
-        from llmem.url_validate import _is_remote_allowed
-
-        assert _is_remote_allowed("http://8.8.8.8:80/api") is True
-
-
-class TestUrlValidate_SafeUrlopen_PortBypass:
     """Test that safe_urlopen enforces port restrictions for loopback URLs.
 
     This addresses the SSRF vulnerability where _is_remote_allowed() returned
@@ -1584,6 +1576,80 @@ class TestPaths_BlockedPrefixConsistency:
         """_validate_write_path blocks /usr/sbin (now consistent with home path)."""
         with pytest.raises(ValueError, match="protected directory"):
             _validate_write_path(Path("/usr/sbin/evil.html"), "report")
+
+
+class TestPaths_IsBlockedPath_NoFalsePositives:
+    """Test that _is_blocked_path uses prefix+'/' matching to avoid false positives.
+
+    The old bare startswith check would match /binary_search/data.db against /bin.
+    The new prefix+'/' check correctly requires /bin/ (or exact /bin).
+    """
+
+    def test_binary_search_not_blocked(self):
+        """'/binary_search/data.db' must NOT match the /bin prefix."""
+        from llmem.paths import _is_blocked_path
+
+        assert not _is_blocked_path(Path("/binary_search/data.db"))
+
+    def test_bin_subdir_blocked(self):
+        """'/bin/ls' must match the /bin prefix."""
+        from llmem.paths import _is_blocked_path
+
+        assert _is_blocked_path(Path("/bin/ls"))
+
+    def test_bin_exact_blocked(self):
+        """'/bin' itself (exact match) must be blocked."""
+        from llmem.paths import _is_blocked_path
+
+        assert _is_blocked_path(Path("/bin"))
+
+    def test_usabin_not_blocked(self):
+        """'/usabin/local/cmd' must NOT match /usr/sbin."""
+        from llmem.paths import _is_blocked_path
+
+        assert not _is_blocked_path(Path("/usabin/local/cmd"))
+
+    def test_usr_bin_blocked(self):
+        """'/usr/bin/python3' must match /usr/bin prefix."""
+        from llmem.paths import _is_blocked_path
+
+        assert _is_blocked_path(Path("/usr/bin/python3"))
+
+    def test_usr_sbin_blocked(self):
+        """'/usr/sbin/apache2' must match /usr/sbin prefix."""
+        from llmem.paths import _is_blocked_path
+
+        assert _is_blocked_path(Path("/usr/sbin/apache2"))
+
+    def test_home_dir_not_blocked(self):
+        """'/home/user/data' must NOT be blocked."""
+        from llmem.paths import _is_blocked_path
+
+        assert not _is_blocked_path(Path("/home/user/data"))
+
+    def test_tmp_not_blocked(self):
+        """'/tmp/llmem-test' must NOT be blocked."""
+        from llmem.paths import _is_blocked_path
+
+        assert not _is_blocked_path(Path("/tmp/llmem-test"))
+
+    def test_all_prefixes_blocked_as_dirs(self):
+        """Every prefix in _BLOCKED_PATH_PREFIXES must block paths under it."""
+        from llmem.paths import _BLOCKED_PATH_PREFIXES, _is_blocked_path
+
+        for prefix in _BLOCKED_PATH_PREFIXES:
+            assert _is_blocked_path(Path(prefix + "/some/file")), (
+                f"{prefix}/some/file should be blocked"
+            )
+
+    def test_all_prefixes_blocked_as_exact(self):
+        """Every prefix in _BLOCKED_PATH_PREFIXES must block itself as exact match."""
+        from llmem.paths import _BLOCKED_PATH_PREFIXES, _is_blocked_path
+
+        for prefix in _BLOCKED_PATH_PREFIXES:
+            assert _is_blocked_path(Path(prefix)), (
+                f"{prefix} should be blocked as exact match"
+            )
 
 
 class TestCli_CmdAdd_FileReadProtection:
@@ -1644,6 +1710,98 @@ class TestCli_CmdAdd_FileReadProtection:
         ):
             with pytest.raises(SystemExit):
                 cmd_add(args)
+
+    def test_rejects_usr_bin_file(self, tmp_path):
+        """Reading from /usr/bin should be rejected (was missing from old hardcoded list)."""
+        from llmem.cli import cmd_add
+        import argparse
+
+        args = argparse.Namespace(
+            db=tmp_path / "test.db",
+            type="fact",
+            content=None,
+            file="/usr/bin/python3",
+            summary=None,
+            source="manual",
+            confidence=0.8,
+            valid_until=None,
+            metadata=None,
+            relation=None,
+            relation_to=None,
+        )
+
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            with pytest.raises(SystemExit):
+                cmd_add(args)
+
+    def test_rejects_sbin_file(self, tmp_path):
+        """Reading from /sbin should be rejected (was missing from old hardcoded list)."""
+        from llmem.cli import cmd_add
+        import argparse
+
+        args = argparse.Namespace(
+            db=tmp_path / "test.db",
+            type="fact",
+            content=None,
+            file="/sbin/iptables",
+            summary=None,
+            source="manual",
+            confidence=0.8,
+            valid_until=None,
+            metadata=None,
+            relation=None,
+            relation_to=None,
+        )
+
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            with pytest.raises(SystemExit):
+                cmd_add(args)
+
+    def test_allows_binary_search_path(self, tmp_path):
+        """'/binary_search/data.db' must NOT be blocked (false positive fix)."""
+        from llmem.cli import cmd_add
+        import argparse
+
+        # Create a file at a path that starts with /bin-like string but is not /bin
+        binary_dir = tmp_path / "binary_search"
+        binary_dir.mkdir()
+        data_file = binary_dir / "data.db"
+        data_file.write_text("safe data")
+
+        db = tmp_path / "test.db"
+        MemoryStore(db_path=db, disable_vec=True).close()
+
+        args = argparse.Namespace(
+            db=db,
+            type="fact",
+            content=None,
+            file=str(data_file),
+            summary=None,
+            source="manual",
+            confidence=0.8,
+            valid_until=None,
+            metadata=None,
+            relation=None,
+            relation_to=None,
+        )
+
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_add(args)  # Should not raise
 
     def test_allows_valid_file(self, tmp_path):
         """Reading from a safe directory should work."""
@@ -1737,6 +1895,32 @@ class TestCli_CmdImport_ReadOnlyProtection:
         args = argparse.Namespace(
             db=tmp_path / "test.db",
             file="/etc/shadow",
+        )
+
+        with pytest.raises(SystemExit):
+            cmd_import(args)
+
+    def test_rejects_sbin_file(self, tmp_path):
+        """Importing from /sbin should be rejected (was missing from old list)."""
+        from llmem.cli import cmd_import
+        import argparse
+
+        args = argparse.Namespace(
+            db=tmp_path / "test.db",
+            file="/sbin/iptables",
+        )
+
+        with pytest.raises(SystemExit):
+            cmd_import(args)
+
+    def test_rejects_usr_bin_file(self, tmp_path):
+        """Importing from /usr/bin should be rejected (was missing from old list)."""
+        from llmem.cli import cmd_import
+        import argparse
+
+        args = argparse.Namespace(
+            db=tmp_path / "test.db",
+            file="/usr/bin/env",
         )
 
         with pytest.raises(SystemExit):

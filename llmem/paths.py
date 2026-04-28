@@ -51,6 +51,25 @@ _BLOCKED_PATH_PREFIXES = (
 )
 
 
+def _is_blocked_path(resolved: Path) -> bool:
+    """Check whether a resolved path targets a blocked system directory.
+
+    Uses prefix + '/' matching to avoid false positives — e.g. '/bin'
+    should not match '/binary_search/data.db', but '/bin/' should.
+
+    Args:
+        resolved: The resolved (absolute, no symlinks) path to check.
+
+    Returns:
+        True if the path is under a blocked system directory.
+    """
+    resolved_str = str(resolved)
+    for prefix in _BLOCKED_PATH_PREFIXES:
+        if resolved_str == prefix or resolved_str.startswith(prefix + "/"):
+            return True
+    return False
+
+
 def _validate_home_path(path: Path, source: str) -> Path:
     """Validate that a home path is safe to use.
 
@@ -77,14 +96,11 @@ def _validate_home_path(path: Path, source: str) -> Path:
 
     resolved = path.resolve()
 
-    # Block obvious system directories — checked before symlink check
-    # because is_symlink() requires stat access which may fail for
-    # inaccessible paths like /root
-    for prefix in _BLOCKED_PATH_PREFIXES:
-        if str(resolved).startswith(prefix):
-            raise ValueError(
-                f"llmem: paths: {source} targets a system directory: {resolved}"
-            )
+    # Block system directories using shared helper (prefix + '/' matching)
+    if _is_blocked_path(resolved):
+        raise ValueError(
+            f"llmem: paths: {source} targets a system directory: {resolved}"
+        )
 
     # Must not be a symlink itself (prevents symlink escalation)
     # If we can't stat the path (permission denied), treat it as unsafe
@@ -171,12 +187,11 @@ def _validate_write_path(path: Path, label: str) -> Path:
 
     resolved = path.resolve()
 
-    # Block system directories (using shared constant)
-    for prefix in _BLOCKED_PATH_PREFIXES:
-        if str(resolved).startswith(prefix):
-            raise ValueError(
-                f"llmem: paths: {label} path targets a protected directory: {resolved}"
-            )
+    # Block system directories using shared helper (prefix + '/' matching)
+    if _is_blocked_path(resolved):
+        raise ValueError(
+            f"llmem: paths: {label} path targets a protected directory: {resolved}"
+        )
 
     # Must not be a symlink itself
     # If we can't stat the path (permission denied), treat it as unsafe

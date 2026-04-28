@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 from .store import MemoryStore, register_memory_type, get_registered_types
 from .paths import get_db_path, get_config_path, get_llmem_home
-from .paths import _validate_write_path
+from .paths import _validate_write_path, _is_blocked_path
 from .registry import get_registered_cli_plugins
 from .config import write_config_yaml
 from .ollama import ProviderDetector
@@ -32,11 +32,9 @@ def cmd_add(args):
     if not content and args.file:
         file_path = Path(args.file)
         # Validate the file path to prevent arbitrary file read
+        # Uses shared _is_blocked_path from paths.py for consistency
         resolved = file_path.resolve()
-        if any(
-            str(resolved).startswith(p)
-            for p in ("/etc/", "/var/", "/sys/", "/proc/", "/dev/", "/boot/", "/root/")
-        ):
+        if _is_blocked_path(resolved):
             print(
                 f"Error: --file path targets a protected directory: {resolved}",
                 file=sys.stderr,
@@ -229,11 +227,9 @@ def cmd_import(args):
     store = MemoryStore(args.db)
     import_path = Path(args.file)
     # Validate import file path to prevent arbitrary file read
+    # Uses shared _is_blocked_path from paths.py for consistency
     resolved_import = import_path.resolve()
-    if any(
-        str(resolved_import).startswith(p)
-        for p in ("/etc/", "/var/", "/sys/", "/proc/", "/dev/", "/boot/", "/root/")
-    ):
+    if _is_blocked_path(resolved_import):
         print(
             f"Error: import file targets a protected directory: {resolved_import}",
             file=sys.stderr,
