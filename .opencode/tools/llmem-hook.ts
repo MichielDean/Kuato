@@ -15,12 +15,17 @@ import path from "path";
  * @returns The safe resolved path, or null if traversal is detected.
  */
 function resolveContainedPath(userPath: string, base: string): string | null {
-  const resolved = path.resolve(base, userPath);
+  // Normalize base to an absolute path so that startsWith containment
+  // checks work reliably. Without this, a relative base like "." produces
+  // baseNorm "./" — which no absolute resolved path starts with, making
+  // all file/directory arguments incorrectly rejected.
+  const normalizedBase = path.resolve(base);
+  const resolved = path.resolve(normalizedBase, userPath);
   // Ensure the resolved path is within the base directory.
   // Both must end with separator for prefix matching to avoid
   // /foo/bar matching /foo/barbaz.
-  const baseNorm = base.endsWith(path.sep) ? base : base + path.sep;
-  if (resolved !== base && !resolved.startsWith(baseNorm)) {
+  const baseNorm = normalizedBase.endsWith(path.sep) ? normalizedBase : normalizedBase + path.sep;
+  if (resolved !== normalizedBase && !resolved.startsWith(baseNorm)) {
     return null;
   }
   return resolved;
