@@ -1,5 +1,6 @@
 """Configuration loading for llmem."""
 
+import copy
 import logging
 from pathlib import Path
 
@@ -91,8 +92,10 @@ def _resolve_defaults() -> dict:
         get_context_dir,
     )
 
-    # Deep copy every nested dict to avoid shared mutable references
-    defaults = {k: dict(v) if isinstance(v, dict) else v for k, v in DEFAULTS.items()}
+    # Deep copy to avoid shared mutable references with module-level DEFAULTS.
+    # dict(v) only copies one level — list values (e.g. session_dirs) would
+    # still alias the original. copy.deepcopy handles all nesting levels.
+    defaults = copy.deepcopy(DEFAULTS)
     defaults["memory"]["db"] = str(_get_db_path())
     defaults["dream"]["diary_path"] = str(get_dream_diary_path())
     defaults["dream"]["proposed_changes_path"] = str(get_proposed_changes_path())
