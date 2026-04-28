@@ -68,6 +68,7 @@ DEFAULTS = {
         "default": "ollama",
         "embed": {},
         "generate": {},
+        "local": {"model": "all-MiniLM-L6-v2"},
     },
 }
 
@@ -360,15 +361,15 @@ def get_provider_config(
 
     Reads the ``provider`` key from config, falling back to
     ``DEFAULTS["provider"]``. Returns dict with keys ``default``,
-    ``embed``, ``generate``.
+    ``embed``, ``generate``, and ``local``.
 
     Args:
         config_path: Optional path to config.yaml.
         config: Optional pre-loaded config dict.
 
     Returns:
-        A dict containing ``default``, ``embed``, and ``generate`` keys
-        with defaults filled in.
+        A dict containing ``default``, ``embed``, ``generate``, and
+        ``local`` keys with defaults filled in.
     """
     if config is None:
         config = load_config(config_path)

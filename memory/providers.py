@@ -52,7 +52,8 @@ def _is_loopback_hostname(url: str) -> bool:
 class EmbedProvider(abc.ABC):
     """Abstract base class for embedding providers.
 
-    Concrete providers must implement embed, embed_batch, and check_available.
+    Concrete providers must implement embed, embed_batch, check_available,
+    and dimension.
     """
 
     @abc.abstractmethod
@@ -83,6 +84,18 @@ class EmbedProvider(abc.ABC):
 
         Returns:
             True if available, False on any error. Never raises.
+        """
+
+    @abc.abstractmethod
+    def dimension(self) -> int:
+        """Return the output vector dimensionality of this provider.
+
+        Must be implementable without making API calls (known from model
+        metadata or constructor config).
+
+        Returns:
+            The number of floats in each embedding vector produced by
+            this provider.
         """
 
 
@@ -269,6 +282,24 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
         return check_ollama_model(
             self._embed_model, self._base_url
         ) and check_ollama_model(self._generate_model, self._base_url)
+
+    def dimension(self) -> int:
+        """Return the embedding dimension for the configured Ollama model.
+
+        Defaults to 768 (nomic-embed-text dimension). The dimension can
+        be overridden via the embed_model constructor parameter — known
+        model dimensions are looked up, others return the default.
+
+        Returns:
+            The number of floats in each embedding vector.
+        """
+        _KNOWN_OLLAMA_DIMENSIONS: dict[str, int] = {
+            "nomic-embed-text": 768,
+            "mxbai-embed-large": 1024,
+            "all-minilm": 384,
+            "snowflake-arctic-embed": 1024,
+        }
+        return _KNOWN_OLLAMA_DIMENSIONS.get(self._embed_model, 768)
 
 
 # ---------------------------------------------------------------------------
@@ -474,6 +505,23 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
         except Exception:
             log.debug("providers: OpenAI check_available failed", exc_info=True)
             return False
+
+    def dimension(self) -> int:
+        """Return the embedding dimension for the configured OpenAI model.
+
+        Defaults to 1536 (text-embedding-3-small dimension). The dimension
+        can be overridden via the embed_model constructor parameter — known
+        model dimensions are looked up, others return the default.
+
+        Returns:
+            The number of floats in each embedding vector.
+        """
+        _KNOWN_OPENAI_DIMENSIONS: dict[str, int] = {
+            "text-embedding-3-small": 1536,
+            "text-embedding-3-large": 3072,
+            "text-embedding-ada-002": 1536,
+        }
+        return _KNOWN_OPENAI_DIMENSIONS.get(self._embed_model, 1536)
 
 
 # ---------------------------------------------------------------------------
@@ -690,6 +738,151 @@ class NoneProvider(EmbedProvider, GenerateProvider):
         """
         return False
 
+    def dimension(self) -> int:
+        """Return the configured zero-vector dimension.
+
+        Returns:
+            The number of floats in each embedding vector (defaults to 768).
+        """
+        return self._embed_dimensions
+
+
+# ---------------------------------------------------------------------------
+# SentenceTransformersProvider
+# ---------------------------------------------------------------------------
+
+DEFAULT_LOCAL_MODEL = "all-MiniLM-L6-v2"
+
+
+class SentenceTransformersProvider(EmbedProvider):
+    """Local embedding provider using sentence-transformers.
+
+    Runs embeddings locally without any server dependency. Requires the
+    ``sentence-transformers`` package (install via ``pip install llmem[local]``).
+
+    The constructor does NOT make network calls — model download happens
+    lazily on first ``embed()`` call or ``check_available()``.
+    """
+
+    def __init__(
+        self,
+        model_name: str = DEFAULT_LOCAL_MODEL,
+        dimensions: int | None = None,
+    ):
+        if not model_name or not isinstance(model_name, str):
+            raise ValueError("providers: local: model_name must be a non-empty string")
+        self._model_name = model_name
+        self._dimensions = dimensions
+        self._model = None
+        self._model_loaded = False
+        self._availability_checked = False
+        self._available: bool | None = None
+
+    def __repr__(self) -> str:
+        return f"SentenceTransformersProvider(model_name={self._model_name!r})"
+
+    def _load_model(self):
+        """Lazily load the sentence-transformers model.
+
+        Raises:
+            ImportError: If sentence_transformers is not installed.
+            RuntimeError: If the model fails to load.
+        """
+        if self._model_loaded:
+            return
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError:
+            raise ImportError(
+                "providers: local: sentence-transformers is not installed. "
+                "Install it with: pip install llmem[local]"
+            )
+        try:
+            self._model = SentenceTransformer(self._model_name)
+            self._model_loaded = True
+        except Exception as e:
+            raise RuntimeError(
+                f"providers: local: failed to load model {self._model_name!r}: {e}"
+            ) from e
+
+    def embed(self, text: str) -> list[float]:
+        """Embed a single text string using sentence-transformers.
+
+        Args:
+            text: The string to embed.
+
+        Returns:
+            A list of floats representing the embedding vector.
+
+        Raises:
+            RuntimeError: If the model failed to load.
+        """
+        result = self.embed_batch([text])
+        return result[0]
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Embed multiple text strings using sentence-transformers.
+
+        Uses the SentenceTransformer.encode() batch API for efficiency.
+
+        Args:
+            texts: A list of strings to embed. Empty input returns empty list.
+
+        Returns:
+            A list of embedding vectors, one per input text.
+
+        Raises:
+            RuntimeError: If the model failed to load.
+        """
+        if not texts:
+            return []
+        try:
+            self._load_model()
+        except Exception:
+            log.error("providers: local: embed failed: model not loaded", exc_info=True)
+            raise
+        try:
+            embeddings = self._model.encode(texts, convert_to_numpy=True)
+            return [row.tolist() for row in embeddings]
+        except Exception as e:
+            log.error("providers: local: embed failed: %s", e, exc_info=True)
+            raise RuntimeError(f"providers: local: embed failed: {e}") from e
+
+    def check_available(self) -> bool:
+        """Check if the sentence-transformers model can be loaded.
+
+        Returns:
+            True if the model loads successfully, False on any error.
+            Never raises. Caches the result so repeated calls don't
+            re-load the model.
+        """
+        if self._availability_checked:
+            return bool(self._available)
+        try:
+            self._load_model()
+            self._available = True
+        except Exception:
+            log.debug("providers: local: check_available failed", exc_info=True)
+            self._available = False
+        self._availability_checked = True
+        return bool(self._available)
+
+    def dimension(self) -> int:
+        """Return the embedding dimension for the model.
+
+        If ``dimensions`` was provided in the constructor, returns that
+        value. Otherwise, returns the model's internal dimension (lazily
+        detected on first call).
+
+        Returns:
+            The number of floats in each embedding vector.
+        """
+        if self._dimensions is not None:
+            return self._dimensions
+        # Need to load model to detect dimension
+        self._load_model()
+        return self._model.get_sentence_embedding_dimension()
+
 
 # ---------------------------------------------------------------------------
 # Provider resolution
@@ -737,11 +930,14 @@ def resolve_provider(
         ollama_cfg.get("base_url") or legacy_ollama_url or DEFAULT_OLLAMA_BASE_URL
     )
 
+    local_cfg = provider_cfg.get("local") or {}
+
     # Resolve embed provider
     embed_provider = _resolve_embed_provider(
         embed_provider_name,
         embed_cfg,
         ollama_base_url,
+        local_cfg,
         config,
     )
 
@@ -760,14 +956,16 @@ def _resolve_embed_provider(
     name: str,
     embed_cfg: dict,
     ollama_base_url: str,
+    local_cfg: dict,
     config: dict,
 ) -> EmbedProvider:
     """Resolve the embed provider based on name and config.
 
     Args:
-        name: Provider name ('ollama', 'openai', 'anthropic', 'none').
+        name: Provider name ('ollama', 'openai', 'anthropic', 'local', 'none').
         embed_cfg: The provider.embed config section.
         ollama_base_url: The Ollama base URL.
+        local_cfg: The provider.local config section.
         config: The full config dict.
 
     Returns:
@@ -816,6 +1014,8 @@ def _resolve_embed_provider(
     elif name == "anthropic":
         log.info("providers: anthropic has no embedding API, trying fallback")
         return _fallback_embed_provider(config)
+    elif name == "local":
+        return _resolve_local_embed_provider(local_cfg, model_override, config)
     elif name == "none":
         return NoneProvider()
     else:
@@ -909,21 +1109,66 @@ def _resolve_generate_provider(
         return _fallback_generate_provider(config)
 
 
+def _resolve_local_embed_provider(
+    local_cfg: dict,
+    model_override: str | None,
+    config: dict,
+) -> EmbedProvider:
+    """Resolve the local (sentence-transformers) embed provider.
+
+    Args:
+        local_cfg: The provider.local config section.
+        model_override: Model name override from provider.embed.model.
+        config: The full config dict.
+
+    Returns:
+        A SentenceTransformersProvider if available, or NoneProvider with warning.
+    """
+    model_name = model_override or local_cfg.get("model") or DEFAULT_LOCAL_MODEL
+    try:
+        provider = SentenceTransformersProvider(model_name=model_name)
+    except (ValueError, ImportError):
+        log.warning(
+            "providers: local embed config invalid or sentence-transformers not installed, "
+            "falling back to NoneProvider"
+        )
+        return _fallback_embed_provider(config, skip_openai=False, skip_local=True)
+    if provider.check_available():
+        return provider
+    log.warning(
+        "providers: local embed provider (sentence-transformers) not available, "
+        "falling back to NoneProvider. Install sentence-transformers with: "
+        "pip install llmem[local]"
+    )
+    return _fallback_embed_provider(config, skip_openai=False, skip_local=True)
+
+
 def _fallback_embed_provider(
     config: dict,
     skip_openai: bool = False,
+    skip_local: bool = False,
 ) -> EmbedProvider:
-    """Try fallback embed providers: openai, then none.
+    """Try fallback embed providers: local, openai, then none.
 
     Args:
         config: The full config dict.
         skip_openai: If True, skip OpenAI fallback.
+        skip_local: If True, skip local (sentence-transformers) fallback.
 
     Returns:
         An EmbedProvider instance (at worst, NoneProvider).
     """
+    provider_cfg = config.get("provider") or {}
+    if not skip_local:
+        local_cfg = provider_cfg.get("local") or {}
+        local_model = local_cfg.get("model") or DEFAULT_LOCAL_MODEL
+        try:
+            provider = SentenceTransformersProvider(model_name=local_model)
+            if provider.check_available():
+                return provider
+        except (ImportError, ValueError):
+            log.info("providers: local embed not available in fallback, skipping")
     if not skip_openai:
-        provider_cfg = config.get("provider") or {}
         openai_cfg = provider_cfg.get("openai") or {}
         api_key = openai_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY")
         if api_key:

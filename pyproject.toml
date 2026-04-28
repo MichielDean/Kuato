@@ -13,6 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 vec = ["sqlite-vec>=0.1.6"]
+local = ["sentence-transformers>=2.2.0"]
 dev = ["pytest>=9.0"]
 
 [project.scripts]
