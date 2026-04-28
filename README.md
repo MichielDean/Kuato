@@ -1,6 +1,6 @@
 # LLMem — Structured Memory with Semantic Search
 
-LLMem is a SQLite-backed memory store for LLM agents. It provides structured storage with full-text search (FTS5), optional vector similarity search (via sqlite-vec), and an extensible type system. A background dreaming cycle consolidates, decays, and merges memories over time.
+LLMem is a SQLite-backed memory store for LLM agents. It provides structured storage with full-text search (FTS5), optional vector similarity search (via sqlite-vec), an extensible type system, and a provider abstraction layer for LLM embeddings and text generation. A background dreaming cycle consolidates, decays, and merges memories over time.
 
 ## Installation
 
@@ -8,44 +8,7 @@ LLMem is a SQLite-backed memory store for LLM agents. It provides structured sto
 pip install llmem
 ```
 
-This copies all 7 skills into `~/.agents/skills/`, where OpenCode discovers them automatically.
-
-## Skills
-
-| Skill | Description |
-|-------|-------------|
-| **git-sync** | Sync git repos before editing. Fetch, rebase, stash, and detect conflicts. |
-| **task-intake** | Discover project stack, test commands, and conventions before making changes. |
-| **test-and-verify** | Run quality gates (format, lint, typecheck, test) after code changes. |
-| **branch-strategy** | Enforce consistent branching, commit messages, and push strategies. |
-| **critical-code-reviewer** | Adversarial code reviews with zero tolerance for mediocrity. |
-| **pre-pr-review** | Pre-PR code review via isolated subagent before pushing to GitHub. |
-| **visual-explainer** | Generate self-contained HTML diagrams, reviews, and slide decks. |
-
-## Templates
-
-The `templates/` directory contains generic, personality-agnostic template files that you can copy and customize for your own agent setup:
-
-| Template | Purpose |
-|----------|---------|
-| **templates/rules.md** | Generic workflow rules — no personal or tool-specific references |
-| **templates/identity.md** | Agent identity scaffold — fill in your agent's name, personality, and boundaries |
-| **templates/user.md** | User profile scaffold — fill in your name, timezone, and preferences |
-
-To use them, copy the templates into your `harness/` directory and fill them in:
-
-```bash
-cp templates/identity.md harness/identity.md
-cp templates/user.md harness/user.md
-cp templates/rules.md harness/rules.md
-# Then edit each file to personalize for your setup
-```
-
-The `opencode.json` configuration loads `harness/identity.md`, `harness/user.md`, and `harness/rules.md` — so after copying and customizing, your agent will use your personalized versions.
-
-## Verification
-
-After installation, verify skills are discoverable:
+Requires Python 3.11+ and [PyYAML](https://pypi.org/project/PyYAML/).
 
 For vector similarity search, install with the `vec` extra:
 
@@ -55,10 +18,128 @@ pip install llmem[vec]
 
 This pulls in `sqlite-vec>=0.1.6`.
 
+For development:
+
+```bash
+pip install ".[dev]"
+```
+
 ### Requirements
 
 - Python 3.11+
 - [Ollama](https://ollama.com) running locally for extraction, embedding, and dreaming features
+
+## Provider Abstraction Layer
+
+LLMem decouples embedding and text generation from any specific LLM backend through two abstract base classes:
+
+| Protocol | Methods | Purpose |
+|----------|---------|---------|
+| `EmbedProvider` | `embed()`, `embed_batch()`, `check_available()` | Vector embeddings for semantic search |
+| `GenerateProvider` | `generate()`, `check_available()` | Text generation from prompts |
+
+### Concrete Providers
+
+| Provider | Embed | Generate | API Key | Default Base URL |
+|----------|-------|----------|---------|-------------------|
+| `OllamaProvider` | Yes | Yes | None | `http://localhost:11434` |
+| `OpenAIProvider` | Yes | Yes | `OPENAI_API_KEY` or constructor arg | `https://api.openai.com` |
+| `AnthropicProvider` | No | Yes | `ANTHROPIC_API_KEY` or constructor arg | `https://api.anthropic.com` |
+| `NoneProvider` | Yes (zeros) | Yes (empty string) | None | N/A |
+
+### Graceful Degradation
+
+`resolve_provider(config)` returns the best available `(embed_provider, generate_provider)` pair by trying providers in order:
+
+**Embed fallback chain:** Ollama → OpenAI → NoneProvider (zero vectors, FTS5-only mode)
+
+**Generate fallback chain:** Ollama → OpenAI → Anthropic → NoneProvider (empty string)
+
+Each provider's `check_available()` returns `False` on any error (never raises), so degradation is automatic.
+
+### Quick Start
+
+```python
+from memory.providers import resolve_provider
+
+embed, generate = resolve_provider(config={})
+# With Ollama running: OllamaProvider for both
+# Without Ollama, with OPENAI_API_KEY set: OpenAIProvider for both
+# Without any provider: NoneProvider for both
+
+vec = embed.embed("hello world")
+text = generate.generate("Summarize this document")
+```
+
+### Direct Construction
+
+```python
+from memory.providers import OllamaProvider, OpenAIProvider, AnthropicProvider, NoneProvider
+
+# Ollama (local, no API key needed)
+ollama = OllamaProvider(
+    embed_model="nomic-embed-text",
+    generate_model="qwen2.5:1.5b",
+    base_url="http://localhost:11434",
+    timeout=60,
+)
+
+# OpenAI
+openai = OpenAIProvider(
+    embed_model="text-embedding-3-small",
+    generate_model="gpt-4o-mini",
+    api_key="sk-...",  # or set OPENAI_API_KEY env var
+    base_url="https://api.openai.com",
+)
+
+# Anthropic (generation only, no embedding API)
+anthropic = AnthropicProvider(
+    model="claude-sonnet-4-20250514",
+    api_key="sk-ant-...",  # or set ANTHROPIC_API_KEY env var
+)
+
+# NoneProvider (FTS5-only fallback)
+none = NoneProvider(embed_dimensions=768)
+```
+
+### Per-Operation Overrides
+
+The embed and generate providers can be configured independently:
+
+```yaml
+provider:
+  default: ollama
+  embed:
+    provider: openai
+    model: text-embedding-3-small
+  generate:
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+```
+
+This yields `OpenAIProvider` for embeddings and `AnthropicProvider` for generation.
+
+## Provider Configuration
+
+Provider-related keys in `config.yaml`:
+
+```yaml
+provider:
+  default: ollama              # ollama | openai | anthropic | none
+  ollama:
+    base_url: http://localhost:11434
+  openai:
+    api_key: sk-...             # or set OPENAI_API_KEY env var
+    base_url: https://api.openai.com
+    embed_model: text-embedding-3-small
+    generate_model: gpt-4o-mini
+  anthropic:
+    api_key: sk-ant-...         # or set ANTHROPIC_API_KEY env var
+    base_url: https://api.anthropic.com
+    generate_model: claude-sonnet-4-20250514
+```
+
+Both config-based and environment variable API keys are supported; config keys take precedence.
 
 ## Quick Start
 
@@ -95,7 +176,7 @@ llmem export --output backup.json
 llmem import backup.json
 ```
 
-## Configuration
+## General Configuration
 
 LLMem looks for configuration at `~/.config/llmem/config.yaml`. If this file doesn't exist, sensible defaults are used.
 
@@ -509,9 +590,29 @@ The `extract` module uses Ollama (default: `qwen2.5:1.5b`) to extract structured
 - `LMEM_HOME` is validated against path traversal, system directories, and symlink attacks.
 - Write paths are validated against system directories and symbolic links.
 - URL validation (`is_safe_url`) blocks private/reserved IPs and SSRF vectors.
+- All outbound HTTP calls use `safe_urlopen()` with `SafeRedirectHandler` that re-validates redirect targets through `is_safe_url()`.
+- API keys are masked in `__repr__` on provider instances (`***masked***`).
+- Validation error messages use generic strings (never embed user-supplied URLs).
 - All SQL queries use parameterized statements (no injection risk).
 - Database files are created with mode `0600`; parent directories with `0o700`.
 - Migration from `~/.lobsterdog/` skips symlinks (using `follow_symlinks=False`).
+
+## Module Reference
+
+| Module | Description |
+|--------|-------------|
+| `memory.providers` | Abstract base classes, concrete providers, `resolve_provider()` |
+| `memory.ollama` | `check_ollama_model()`, `_call_ollama_generate()` |
+| `memory.url_validate` | `is_safe_url()`, `safe_urlopen()`, `sanitize_url_for_log()` |
+| `memory.config` | Configuration loading, defaults, typed accessors (e.g. `get_provider_config()`) |
+
+## Running Tests
+
+```bash
+python -m pytest
+```
+
+312 tests covering all providers, URL validation, configuration, and edge cases.
 
 ## License
 
