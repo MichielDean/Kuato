@@ -11,11 +11,37 @@ import logging
 import os
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
 
 from .ollama import check_ollama_model, _call_ollama_generate
 from .url_validate import is_safe_url, safe_urlopen
 
 log = logging.getLogger(__name__)
+
+
+# Loopback hostnames that are safe for HTTP (non-HTTPS) API key delivery.
+# These are checked via exact hostname match (not substring) to prevent
+# bypass via URLs like http://localhost.evil.com or http://127.0.0.1.evil.com
+_LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _is_loopback_hostname(url: str) -> bool:
+    """Check whether a URL's hostname is an exact loopback address.
+
+    Uses urlparse to extract the hostname and compares it against known
+    loopback identifiers. This prevents substring-matching bypasses where
+    a URL like http://localhost.evil.com contains 'localhost' as a
+    substring but actually resolves to a remote host.
+
+    Args:
+        url: The URL to check.
+
+    Returns:
+        True if the hostname is exactly 'localhost', '127.0.0.1', or '::1'.
+    """
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    return hostname in _LOOPBACK_HOSTNAMES if hostname else False
 
 
 # ---------------------------------------------------------------------------
@@ -285,12 +311,9 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
         if not is_safe_url(base_url, allow_remote=True):
             raise ValueError("providers: OpenAI URL blocked (unsafe address)")
         # Block credential exfiltration: refuse to send API keys over
-        # non-HTTPS to non-loopback hosts.
-        if (
-            base_url.startswith("http://")
-            and "localhost" not in base_url
-            and "127.0.0.1" not in base_url
-        ):
+        # non-HTTPS to non-loopback hosts. Uses exact hostname matching
+        # (not substring) to prevent bypass via localhost.evil.com.
+        if base_url.startswith("http://") and not _is_loopback_hostname(base_url):
             raise ValueError(
                 "providers: OpenAI API key cannot be sent over non-HTTPS to non-loopback URL "
                 f"— use HTTPS or a localhost base URL, got {base_url!r}"
@@ -491,12 +514,9 @@ class AnthropicProvider(GenerateProvider):
         if not is_safe_url(base_url, allow_remote=True):
             raise ValueError("providers: Anthropic URL blocked (unsafe address)")
         # Block credential exfiltration: refuse to send API keys over
-        # non-HTTPS to non-loopback hosts.
-        if (
-            base_url.startswith("http://")
-            and "localhost" not in base_url
-            and "127.0.0.1" not in base_url
-        ):
+        # non-HTTPS to non-loopback hosts. Uses exact hostname matching
+        # (not substring) to prevent bypass via localhost.evil.com.
+        if base_url.startswith("http://") and not _is_loopback_hostname(base_url):
             raise ValueError(
                 "providers: Anthropic API key cannot be sent over non-HTTPS to non-loopback URL "
                 f"— use HTTPS or a localhost base URL, got {base_url!r}"

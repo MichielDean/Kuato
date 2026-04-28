@@ -67,7 +67,7 @@ from llmem.session_hooks import (
     SESSION_CREATED_SUCCESS,
     SESSION_COMPACTING_SUCCESS,
 )
-from memory.providers import OpenAIProvider, AnthropicProvider
+from memory.providers import OpenAIProvider, AnthropicProvider, _is_loopback_hostname
 
 
 # ============================================================================
@@ -1206,6 +1206,79 @@ class TestProviders_CredentialExfiltration:
             AnthropicProvider(api_key="test-key", base_url="https://custom.api.com/v1")
         warning_msgs = [r.message for r in caplog.records]
         assert any("non-default base_url" in msg for msg in warning_msgs)
+
+    # ll-7rudv-kg3m3: Credential exfiltration substring bypass fix
+    # The original check used substring matching ('localhost' not in base_url)
+    # which could be bypassed by URLs like http://localhost.evil.com that
+    # contain 'localhost' as a substring but resolve to a remote host.
+
+    def test_openai_rejects_localhost_subdomain_bypass(self):
+        """http://localhost.evil.com must be rejected — 'localhost' is a substring, not the hostname."""
+        with pytest.raises(ValueError, match="non-HTTPS"):
+            OpenAIProvider(
+                api_key="test-key", base_url="http://localhost.evil.com:11434"
+            )
+
+    def test_openai_rejects_127_subdomain_bypass(self):
+        """http://127.0.0.1.evil.com must be rejected — '127.0.0.1' is a substring, not the hostname."""
+        with pytest.raises(ValueError, match="non-HTTPS"):
+            OpenAIProvider(
+                api_key="test-key", base_url="http://127.0.0.1.evil.com:11434"
+            )
+
+    def test_anthropic_rejects_localhost_subdomain_bypass(self):
+        """http://localhost.evil.com must be rejected for Anthropic too."""
+        with pytest.raises(ValueError, match="non-HTTPS"):
+            AnthropicProvider(
+                api_key="test-key", base_url="http://localhost.evil.com:11434"
+            )
+
+    def test_anthropic_rejects_127_subdomain_bypass(self):
+        """http://127.0.0.1.evil.com must be rejected for Anthropic too."""
+        with pytest.raises(ValueError, match="non-HTTPS"):
+            AnthropicProvider(
+                api_key="test-key", base_url="http://127.0.0.1.evil.com:11434"
+            )
+
+
+class TestIsLoopbackHostname:
+    """Test _is_loopback_hostname uses exact hostname matching, not substring."""
+
+    def test_localhost_exact_match(self):
+        """Exact 'localhost' hostname is loopback."""
+        assert _is_loopback_hostname("http://localhost:8080") is True
+
+    def test_localhost_no_port(self):
+        """'localhost' without port is loopback."""
+        assert _is_loopback_hostname("http://localhost") is True
+
+    def test_127_0_0_1_exact_match(self):
+        """Exact '127.0.0.1' hostname is loopback."""
+        assert _is_loopback_hostname("http://127.0.0.1:8080") is True
+
+    def test_ipv6_loopback(self):
+        """IPv6 loopback '::1' is loopback."""
+        assert _is_loopback_hostname("http://[::1]:8080") is True
+
+    def test_localhost_subdomain_is_not_loopback(self):
+        """'localhost.evil.com' is NOT loopback — prevents substring bypass."""
+        assert _is_loopback_hostname("http://localhost.evil.com:11434") is False
+
+    def test_127_subdomain_is_not_loopback(self):
+        """'127.0.0.1.evil.com' is NOT loopback — prevents substring bypass."""
+        assert _is_loopback_hostname("http://127.0.0.1.evil.com:11434") is False
+
+    def test_remote_host_is_not_loopback(self):
+        """A remote hostname is not loopback."""
+        assert _is_loopback_hostname("http://evil.example.com:11434") is False
+
+    def test_https_remote_is_not_loopback(self):
+        """HTTPS URLs to remote hosts are not loopback."""
+        assert _is_loopback_hostname("https://api.openai.com") is False
+
+    def test_empty_hostname(self):
+        """URL with no hostname returns False."""
+        assert _is_loopback_hostname("http://") is False
 
 
 # ============================================================================
