@@ -38,7 +38,10 @@ export async function runLlmem(
     cmdArgs.push("--json");
   }
 
-  const cmd = ["llmem", ...cmdArgs];
+  // Prepend '--' to all llmem invocations to prevent argparse flag injection.
+  // User-supplied arguments (query strings, content, IDs) could otherwise
+  // be interpreted as CLI flags (e.g. --help, --force).
+  const cmd = ["llmem", "--", ...cmdArgs];
 
   try {
     const proc = Bun.spawn(cmd, {

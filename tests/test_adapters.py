@@ -53,6 +53,28 @@ class TestOpenCodeAdapter_Ctor:
         with pytest.raises(FileNotFoundError):
             OpenCodeAdapter(db_path=db_path)
 
+    def test_ctor_rejects_system_directory(self, tmp_path):
+        """db_path targeting /etc should be rejected."""
+        with pytest.raises(ValueError, match="system directory"):
+            OpenCodeAdapter(db_path=Path("/etc/opencode/opencode.db"))
+
+    def test_ctor_rejects_traversal(self, tmp_path):
+        """db_path with '..' should be rejected."""
+        with pytest.raises(ValueError, match="traversal"):
+            OpenCodeAdapter(db_path=Path(tmp_path / ".." / "etc" / "opencode.db"))
+
+    def test_ctor_rejects_symlink(self, tmp_path):
+        """db_path that is a symlink should be rejected."""
+        db_path = tmp_path / "opencode.db"
+        conn = sqlite3.connect(str(db_path))
+        _create_opencode_schema(conn)
+        conn.close()
+
+        link_path = tmp_path / "link_opencode.db"
+        link_path.symlink_to(db_path)
+        with pytest.raises(ValueError, match="symlink"):
+            OpenCodeAdapter(db_path=link_path)
+
 
 class TestOpenCodeAdapter_NoPipelineDetection:
     """Test that OpenCodeAdapter does not contain pipeline detection logic."""

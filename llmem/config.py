@@ -7,7 +7,11 @@ from pathlib import Path
 
 import yaml
 
-from .paths import get_llmem_home, get_config_path as _get_config_path
+from .paths import (
+    get_llmem_home,
+    get_config_path as _get_config_path,
+    _validate_home_path,
+)
 from .url_validate import is_safe_url
 
 log = logging.getLogger(__name__)
@@ -306,17 +310,27 @@ def get_opencode_db_path(
 ) -> Path:
     """Return the path to the opencode SQLite database.
 
+    Validates that the path does not target system directories or contain
+    path traversal. The path is resolved and checked against blocked prefixes.
+
     Args:
         config_path: Optional path to config.yaml.
         config: Optional pre-loaded config dict.
 
     Returns:
-        Resolved Path to the opencode database file.
+        Resolved and validated Path to the opencode database file.
+
+    Raises:
+        ValueError: If the configured path targets a system directory or
+            contains '..' traversal.
     """
     config = _resolve_config(config_path, config)
     defaults = _resolve_defaults()
     path = config.get("opencode", {}).get("db_path") or defaults["opencode"]["db_path"]
-    return Path(path).expanduser().resolve()
+    candidate = Path(path).expanduser()
+    # Validate the path before resolving — _validate_home_path checks for
+    # '..' traversal, symlinks, and system directory targeting.
+    return _validate_home_path(candidate, "opencode.db_path")
 
 
 def is_correction_detection_enabled(
@@ -374,4 +388,6 @@ def write_config_yaml(path: Path, config: dict, force: bool = False) -> bool:
 
     content = yaml.dump(config, default_flow_style=False, sort_keys=False)
     path.write_text(content)
+    # Set file permissions to owner-only (matching the directory permission model)
+    os.chmod(str(path), 0o600)
     return True

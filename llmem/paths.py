@@ -19,9 +19,10 @@ _MAX_PATH_DEPTH = 10
 def _validate_home_path(path: Path, source: str) -> Path:
     """Validate that a home path is safe to use.
 
-    Checks:
+    Checks (in order):
     - Must not contain '..' traversal components (checked before resolve)
-    - Must not target sensitive system directories
+    - Must not target sensitive system directories (checked before symlink
+      check since is_symlink() requires stat access which may fail)
     - Must not be a symlink itself (prevents symlink escalation)
     - Must not exceed a reasonable path depth
 
@@ -41,7 +42,9 @@ def _validate_home_path(path: Path, source: str) -> Path:
 
     resolved = path.resolve()
 
-    # Block obvious system directories
+    # Block obvious system directories — checked before symlink check
+    # because is_symlink() requires stat access which may fail for
+    # inaccessible paths like /root
     blocked_prefixes = (
         "/etc",
         "/var",
@@ -60,6 +63,18 @@ def _validate_home_path(path: Path, source: str) -> Path:
             raise ValueError(
                 f"llmem: paths: {source} targets a system directory: {resolved}"
             )
+
+    # Must not be a symlink itself (prevents symlink escalation)
+    # If we can't stat the path (permission denied), treat it as unsafe
+    try:
+        if path.is_symlink():
+            raise ValueError(
+                f"llmem: paths: {source} is a symlink (not allowed): {path}"
+            )
+    except OSError:
+        raise ValueError(
+            f"llmem: paths: {source} cannot be accessed (permission denied): {path}"
+        )
 
     # Must not exceed a reasonable path depth
     parts = resolved.parts

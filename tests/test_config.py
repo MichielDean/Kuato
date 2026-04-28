@@ -162,3 +162,94 @@ class TestConfig_NoSkillPatchThreshold:
 
         resolved = _resolve_defaults()
         assert "skill_patch_threshold" not in resolved.get("dream", {})
+
+
+class TestConfig_GetOpencodeDbPath_Validation:
+    """Test that get_opencode_db_path validates the path for security."""
+
+    def test_rejects_traversal_in_db_path(self, tmp_path):
+        """Paths with '..' traversal should be rejected."""
+        from llmem.config import get_opencode_db_path
+
+        config = {"opencode": {"db_path": str(tmp_path / ".." / "etc" / "opencode.db")}}
+        with pytest.raises(ValueError, match="traversal"):
+            get_opencode_db_path(config=config)
+
+    def test_rejects_system_directory_db_path(self):
+        """Paths targeting system directories should be rejected."""
+        from llmem.config import get_opencode_db_path
+
+        config = {"opencode": {"db_path": "/etc/opencode/opencode.db"}}
+        with pytest.raises(ValueError, match="system directory"):
+            get_opencode_db_path(config=config)
+
+    def test_accepts_valid_home_path(self, tmp_path):
+        """Valid paths under home directory should be accepted."""
+        from llmem.config import get_opencode_db_path
+
+        db_path = tmp_path / "opencode" / "opencode.db"
+        config = {"opencode": {"db_path": str(db_path)}}
+        result = get_opencode_db_path(config=config)
+        assert result == db_path.resolve()
+
+    def test_default_path_is_valid(self):
+        """The default opencode db_path should be valid."""
+        from llmem.config import get_opencode_db_path
+
+        # Default path resolves without error
+        result = get_opencode_db_path(config_path=Path("/nonexistent.yaml"))
+        assert result is not None
+
+    def test_rejects_symlink_db_path(self, tmp_path):
+        """Symlink paths where the db_path itself is a symlink should be rejected."""
+        from llmem.config import get_opencode_db_path
+
+        # Create a real db file and a symlink pointing to it
+        real_db = tmp_path / "real_opencode.db"
+        real_db.write_text("fake db content")
+        link_db = tmp_path / "link_opencode.db"
+        link_db.symlink_to(real_db)
+
+        config = {"opencode": {"db_path": str(link_db)}}
+        with pytest.raises(ValueError, match="symlink"):
+            get_opencode_db_path(config=config)
+
+
+class TestConfig_WriteConfigYaml_Permissions:
+    """Test that write_config_yaml sets secure file permissions."""
+
+    def test_writes_with_600_permissions(self, tmp_path):
+        """Config file should be written with 0o600 (owner-only) permissions."""
+        from llmem.config import write_config_yaml
+
+        config_path = tmp_path / "config.yaml"
+        write_config_yaml(config_path, {"memory": {"db": "/tmp/test.db"}})
+
+        # On Linux, os.chmod works and we can verify permissions
+        import os
+        import stat
+
+        mode = os.stat(config_path).st_mode
+        # Check that group and others have no read/write access
+        assert not (mode & stat.S_IRGRP), "Config file should not be group-readable"
+        assert not (mode & stat.S_IWGRP), "Config file should not be group-writable"
+        assert not (mode & stat.S_IROTH), "Config file should not be others-readable"
+        assert not (mode & stat.S_IWOTH), "Config file should not be others-writable"
+
+    def test_directory_has_700_permissions(self, tmp_path):
+        """Config directory should have 0o700 (owner-only) permissions."""
+        from llmem.config import write_config_yaml
+
+        # Use a subdirectory so mkdir is needed
+        config_path = tmp_path / "subdir" / "config.yaml"
+        write_config_yaml(config_path, {"memory": {"db": "/tmp/test.db"}})
+
+        import os
+        import stat
+
+        dir_mode = os.stat(tmp_path / "subdir").st_mode
+        assert not (dir_mode & stat.S_IRGRP), "Config dir should not be group-readable"
+        assert not (dir_mode & stat.S_IWGRP), "Config dir should not be group-writable"
+        assert not (dir_mode & stat.S_IXOTH), (
+            "Config dir should not be others-accessible"
+        )

@@ -51,18 +51,20 @@ def _check_ip_access(
     reserved, multicast) is permitted.
 
     Returns True if allowed, False if blocked.
+
+    Loopback addresses are only permitted on the Ollama default port,
+    regardless of allow_remote. The allow_remote flag controls whether
+    non-loopback public addresses are allowed — it does NOT open up
+    all loopback ports.
     """
     if _ip_is_blocked(ip):
         return False
-    if not allow_remote:
-        # Only loopback on the Ollama default port is allowed.
-        # Public IPs must be explicitly rejected here: _ip_is_blocked
-        # returns False for public IPs, so without this check they would
-        # pass through and violate the allow_remote=False contract.
-        if not ip.is_loopback:
-            return False
+    if ip.is_loopback:
         if port != OLLAMA_DEFAULT_PORT:
             return False
+    elif not allow_remote:
+        # Non-loopback addresses require allow_remote=True
+        return False
     return True
 
 

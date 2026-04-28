@@ -15,6 +15,7 @@ from llmem.paths import (
     get_proposed_changes_path,
     get_context_dir,
     migrate_from_lobsterdog,
+    _validate_home_path,
 )
 
 
@@ -177,3 +178,40 @@ class TestPaths_ContextDir:
         with patch("llmem.paths.get_llmem_home", return_value=Path("/tmp/llmem")):
             result = get_context_dir()
             assert result == Path("/tmp/llmem/context")
+
+
+class TestPaths_ValidateHomePath_SymlinkCheck:
+    """Test that _validate_home_path rejects symlinks."""
+
+    def test_rejects_symlink(self, tmp_path):
+        """_validate_home_path must reject paths that are symlinks."""
+        target = tmp_path / "real_dir"
+        target.mkdir()
+        link = tmp_path / "link_dir"
+        link.symlink_to(target)
+        with pytest.raises(ValueError, match="symlink"):
+            _validate_home_path(link, "test")
+
+    def test_accepts_real_directory(self, tmp_path):
+        """_validate_home_path accepts actual directories (not symlinks)."""
+        real_dir = tmp_path / "real_dir"
+        real_dir.mkdir()
+        result = _validate_home_path(real_dir, "test")
+        assert result == real_dir.resolve()
+
+    def test_accepts_nonexistent_path(self, tmp_path):
+        """_validate_home_path accepts paths that don't exist yet (no symlink check)."""
+        new_path = tmp_path / "new_dir"
+        # Path doesn't exist, so is_symlink() returns False
+        result = _validate_home_path(new_path, "test")
+        assert result == new_path.resolve()
+
+    def test_rejects_traversal(self):
+        """_validate_home_path rejects '..' traversal."""
+        with pytest.raises(ValueError, match="traversal"):
+            _validate_home_path(Path("/home/user/../etc"), "test")
+
+    def test_rejects_system_directory(self):
+        """_validate_home_path rejects paths targeting system directories."""
+        with pytest.raises(ValueError, match="system directory"):
+            _validate_home_path(Path("/etc/something"), "test")
