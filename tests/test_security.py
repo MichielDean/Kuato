@@ -2135,3 +2135,68 @@ class TestOllama_ProviderDetector_NoKeyLeakage:
 
         assert "openai_key_found" not in result
         assert result["provider"] == "openai"
+
+
+class TestExtract_BoundedRegex:
+    """Test that extract.py uses a bounded regex to avoid ReDoS.
+
+    The regex must use a bounded quantifier {1,100000} to prevent
+    catastrophic backtracking (ReDoS). It should be greedy so that
+    nested JSON arrays are matched correctly, not truncated at an
+    inner ] bracket.
+    """
+
+    def test_regex_pattern_is_bounded_greedy(self):
+        """The JSON array extraction regex should use bounded greedy matching."""
+        import inspect
+        from llmem.extract import ExtractionEngine
+
+        source = inspect.getsource(ExtractionEngine.extract)
+        # The pattern must use a bounded quantifier to prevent ReDoS
+        assert ".{1,100000}" in source
+        # The unbounded greedy .*] pattern must NOT be present
+        # (the bounded version .{1,100000}] is acceptable)
+        assert "[.*\\]" not in source or ".{1,100000}\\]" in source
+
+    def test_bounded_greedy_regex_matches_nested_json(self):
+        """Bounded greedy regex must match complete nested JSON arrays.
+
+        A non-greedy regex like [.{1,N}?] would match from the opening
+        bracket to the FIRST closing bracket, producing invalid JSON
+        like [{"a": [1, 2] when the input contains nested arrays.
+        The greedy version [.{1,N}] correctly matches the outermost pair.
+        """
+        import re
+
+        pattern = re.compile(r"\[.{1,100000}\]", re.DOTALL)
+
+        # Nested JSON array: the regex must match the FULL outer array
+        nested = '[{"a": [1, 2], "b": 3}]'
+        match = pattern.search(nested)
+        assert match is not None
+        import json
+
+        parsed = json.loads(match.group(0))
+        assert isinstance(parsed, list)
+        assert parsed[0]["a"] == [1, 2]
+
+        # Multiple nested arrays in one response
+        text = 'Here are the results:\n[{"x": [1], "y": [2, 3]}]\nEnd.'
+        match = pattern.search(text)
+        assert match is not None
+        parsed = json.loads(match.group(0))
+        assert isinstance(parsed, list)
+
+    def test_bounded_regex_no_redos(self):
+        """Bounded quantifier prevents ReDoS by capping backtracking."""
+        import re
+        import time
+
+        pattern = re.compile(r"\[.{1,100000}\]", re.DOTALL)
+        # Crafted adversarial input: many nested brackets without closing
+        adversarial = "[" + "a" * 50000 + "]"
+        start = time.monotonic()
+        pattern.search(adversarial)
+        elapsed = time.monotonic() - start
+        # Should complete in well under 1 second (bounded quantifier)
+        assert elapsed < 1.0

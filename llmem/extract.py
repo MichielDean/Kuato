@@ -89,10 +89,10 @@ class ExtractionEngine:
                 pass
 
         # Try to find a JSON array anywhere in the response
-        # Use non-greedy match to avoid ReDoS on deeply nested brackets.
-        # The pattern matches from first '[' to last ']' but with a
-        # reasonable length limit to prevent catastrophic backtracking.
-        match = re.search(r"\[.{1,100000}?\]", response_text, re.DOTALL)
+        # Use a bounded greedy match: {1,100000} caps backtracking to prevent
+        # ReDoS, and greediness ensures we match the outermost [1, 2]}]
+        # instead of stopping at an inner ] like [{"a": [1, 2].
+        match = re.search(r"\[.{1,100000}\]", response_text, re.DOTALL)
         if match:
             try:
                 memories = json.loads(match.group(0))
