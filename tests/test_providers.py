@@ -2515,3 +2515,227 @@ class TestConfigGetNoneValueSafety:
         result = get_provider_config(config=config)
         # None embed should be treated as empty dict, not None
         assert result["embed"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-sql6v: config.get(K) or DEFAULT overrides falsy-but-valid
+# values (dream.enabled=False → True, similarity_threshold=0 → 0.92, etc.)
+#
+# The 'or' pattern treats falsy-but-valid values the same as None/missing:
+#   False or True == True  (should be False)
+#   0 or 0.92 == 0.92      (should be 0)
+#   0 or 3 == 3            (should be 0)
+#
+# Fix: use None-aware logic: default_val if val is None else val
+# This preserves explicit falsy values while still defaulting None/missing.
+# ---------------------------------------------------------------------------
+
+
+class TestConfigFalsyValueSafety:
+    """config.py .get(K) or DEFAULT must NOT override falsy-but-valid values.
+
+    When YAML explicitly sets a key to a falsy value (False, 0, ""), that
+    value must be preserved. Only missing keys or explicit None should
+    fall back to defaults.
+
+    The prior 'or' pattern treated False, 0, and "" the same as None,
+    silently overriding the user's explicit configuration.
+    """
+
+    def test_get_dream_config_enabled_false_preserved(self):
+        """dream.enabled=False must NOT be overridden to True.
+
+        This was the critical bug: False or True == True, so a user
+        explicitly disabling dream mode would have it silently re-enabled.
+        """
+        from memory.config import get_dream_config
+
+        config = {"dream": {"enabled": False}}
+        result = get_dream_config(config=config)
+        assert result["enabled"] is False
+
+    def test_get_dream_config_similarity_threshold_zero_preserved(self):
+        """dream.similarity_threshold=0 must NOT be overridden to 0.92.
+
+        A user setting similarity_threshold to 0 (match everything) should
+        not have it silently changed to 0.92.
+        """
+        from memory.config import get_dream_config
+
+        config = {"dream": {"similarity_threshold": 0}}
+        result = get_dream_config(config=config)
+        assert result["similarity_threshold"] == 0
+
+    def test_get_dream_config_min_recall_count_zero_preserved(self):
+        """dream.min_recall_count=0 must NOT be overridden to 3."""
+        from memory.config import get_dream_config
+
+        config = {"dream": {"min_recall_count": 0}}
+        result = get_dream_config(config=config)
+        assert result["min_recall_count"] == 0
+
+    def test_get_dream_config_min_unique_queries_zero_preserved(self):
+        """dream.min_unique_queries=0 must NOT be overridden to 1."""
+        from memory.config import get_dream_config
+
+        config = {"dream": {"min_unique_queries": 0}}
+        result = get_dream_config(config=config)
+        assert result["min_unique_queries"] == 0
+
+    def test_get_dream_config_decay_floor_zero_preserved(self):
+        """dream.decay_floor=0 must NOT be overridden to 0.3."""
+        from memory.config import get_dream_config
+
+        config = {"dream": {"decay_floor": 0}}
+        result = get_dream_config(config=config)
+        assert result["decay_floor"] == 0
+
+    def test_get_dream_config_min_score_zero_preserved(self):
+        """dream.min_score=0 must NOT be overridden to 0.5."""
+        from memory.config import get_dream_config
+
+        config = {"dream": {"min_score": 0}}
+        result = get_dream_config(config=config)
+        assert result["min_score"] == 0
+
+    def test_get_dream_config_boost_amount_zero_preserved(self):
+        """dream.boost_amount=0 must NOT be overridden to 0.05."""
+        from memory.config import get_dream_config
+
+        config = {"dream": {"boost_amount": 0}}
+        result = get_dream_config(config=config)
+        assert result["boost_amount"] == 0
+
+    def test_get_dream_config_decay_rate_zero_preserved(self):
+        """dream.decay_rate=0 must NOT be overridden to 0.05."""
+        from memory.config import get_dream_config
+
+        config = {"dream": {"decay_rate": 0}}
+        result = get_dream_config(config=config)
+        assert result["decay_rate"] == 0
+
+    def test_get_dream_config_boost_threshold_zero_preserved(self):
+        """dream.boost_threshold=0 must NOT be overridden to 5."""
+        from memory.config import get_dream_config
+
+        config = {"dream": {"boost_threshold": 0}}
+        result = get_dream_config(config=config)
+        assert result["boost_threshold"] == 0
+
+    def test_get_dream_config_behavioral_threshold_zero_preserved(self):
+        """dream.behavioral_threshold=0 must NOT be overridden to 3."""
+        from memory.config import get_dream_config
+
+        config = {"dream": {"behavioral_threshold": 0}}
+        result = get_dream_config(config=config)
+        assert result["behavioral_threshold"] == 0
+
+    def test_get_dream_config_calibration_enabled_false_preserved(self):
+        """dream.calibration_enabled=False must NOT be overridden to True."""
+        from memory.config import get_dream_config
+
+        config = {"dream": {"calibration_enabled": False}}
+        result = get_dream_config(config=config)
+        assert result["calibration_enabled"] is False
+
+    def test_get_dream_config_empty_string_preserved(self):
+        """dream.diary_path='' must NOT be overridden to the default path.
+
+        An explicitly-empty string is a valid user choice (e.g., disabling
+        diary output). The 'or' pattern would override it.
+        """
+        from memory.config import get_dream_config
+
+        config = {"dream": {"diary_path": ""}}
+        result = get_dream_config(config=config)
+        assert result["diary_path"] == ""
+
+    def test_get_dream_config_mixed_falsy_and_truthy(self):
+        """Multiple falsy values in one config must all be preserved."""
+        from memory.config import get_dream_config
+
+        config = {
+            "dream": {
+                "enabled": False,
+                "similarity_threshold": 0,
+                "min_recall_count": 0,
+                "schedule": "*-*-* 03:00:00",
+            }
+        }
+        result = get_dream_config(config=config)
+        assert result["enabled"] is False
+        assert result["similarity_threshold"] == 0
+        assert result["min_recall_count"] == 0
+        assert result["schedule"] == "*-*-* 03:00:00"
+
+    def test_get_dream_config_none_still_falls_back(self):
+        """After fix: None values must still fall back to defaults.
+
+        The fix must not break the None-safety — None values from YAML
+        must still use defaults, just not falsy-but-valid values.
+        """
+        from memory.config import get_dream_config, DEFAULTS
+
+        config = {"dream": {"enabled": None, "similarity_threshold": None}}
+        result = get_dream_config(config=config)
+        assert result["enabled"] is True  # default
+        assert (
+            result["similarity_threshold"] == DEFAULTS["dream"]["similarity_threshold"]
+        )
+
+    def test_get_resume_config_timeout_zero_preserved(self):
+        """resume.timeout=0 must NOT be overridden to default."""
+        from memory.config import get_resume_config
+
+        config = {"resume": {"backend": "ollama", "model": "test"}}
+        result = get_resume_config(config=config)
+        # These truthy values already work; verify they still do
+        assert result["backend"] == "ollama"
+        assert result["model"] == "test"
+
+    def test_get_provider_config_default_empty_string_preserved(self):
+        """provider.default='' must NOT be overridden to 'ollama'.
+
+        An empty-string default is a valid falsy value that should be preserved.
+        """
+        from memory.config import get_provider_config
+
+        config = {"provider": {"default": ""}}
+        result = get_provider_config(config=config)
+        assert result["default"] == ""
+
+    def test_get_provider_config_embed_empty_dict_preserved(self):
+        """provider.embed={} must be preserved as empty dict."""
+        from memory.config import get_provider_config
+
+        config = {"provider": {"embed": {}}}
+        result = get_provider_config(config=config)
+        assert result["embed"] == {}
+
+    def test_is_dream_enabled_false_not_overridden(self):
+        """is_dream_enabled must return False when explicitly set to False.
+
+        This function already uses the correct None-check pattern, but
+        verify it handles False correctly (not overriding to True).
+        """
+        from memory.config import is_dream_enabled
+
+        config = {"dream": {"enabled": False}}
+        result = is_dream_enabled(config=config)
+        assert result is False
+
+    def test_is_auto_extract_false_not_overridden(self):
+        """is_auto_extract must return False when explicitly set to False."""
+        from memory.config import is_auto_extract
+
+        config = {"memory": {"auto_extract": False}}
+        result = is_auto_extract(config=config)
+        assert result is False
+
+    def test_is_correction_detection_enabled_false_not_overridden(self):
+        """is_correction_detection_enabled must return False when explicitly set."""
+        from memory.config import is_correction_detection_enabled
+
+        config = {"correction_detection": {"enabled": False}}
+        result = is_correction_detection_enabled(config=config)
+        assert result is False

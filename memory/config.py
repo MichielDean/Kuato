@@ -177,7 +177,8 @@ def get_dream_config(
     defaults = DEFAULTS["dream"]
     result = {}
     for key, default_val in defaults.items():
-        result[key] = dream.get(key) or default_val
+        val = dream.get(key)
+        result[key] = default_val if val is None else val
     return result
 
 
@@ -243,7 +244,8 @@ def get_resume_config(
     defaults = DEFAULTS["resume"]
     result = {}
     for key, default_val in defaults.items():
-        result[key] = resume.get(key) or default_val
+        val = resume.get(key)
+        result[key] = default_val if val is None else val
     return result
 
 
@@ -374,5 +376,6 @@ def get_provider_config(
     defaults = DEFAULTS["provider"]
     result = {}
     for key, default_val in defaults.items():
-        result[key] = provider.get(key) or default_val
+        val = provider.get(key)
+        result[key] = default_val if val is None else val
     return result
