@@ -263,6 +263,12 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
                 "providers: OpenAI API key required — pass api_key or set OPENAI_API_KEY env var"
             )
         base_url = base_url.rstrip("/")
+        if not base_url.startswith(("http://", "https://")):
+            raise ValueError(f"providers: OpenAI URL must be http/https: {base_url!r}")
+        if not is_safe_url(base_url, allow_remote=True):
+            raise ValueError(
+                f"providers: OpenAI URL blocked (unsafe address): {base_url!r}"
+            )
         self._embed_model = embed_model
         self._generate_model = generate_model
         self._base_url = base_url
@@ -273,12 +279,15 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
         self,
         endpoint: str,
         payload: dict,
+        timeout: int | None = None,
     ) -> dict:
         """Send a JSON POST request to an OpenAI endpoint.
 
         Args:
             endpoint: The API endpoint path (e.g., '/v1/embeddings').
             payload: The JSON-serializable request body.
+            timeout: Request timeout in seconds. Defaults to self._timeout
+                if None.
 
         Returns:
             The parsed JSON response as a dict.
@@ -286,6 +295,7 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
         Raises:
             RuntimeError: On HTTP errors with status code context.
         """
+        effective_timeout = timeout if timeout is not None else self._timeout
         data = json.dumps(payload).encode()
         req = urllib.request.Request(
             f"{self._base_url}{endpoint}",
@@ -297,7 +307,7 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as e:
             raise RuntimeError(
@@ -322,6 +332,7 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
                 "model": self._embed_model,
                 "input": text,
             },
+            timeout=self._timeout,
         )
         return result["data"][0]["embedding"]
 
@@ -343,6 +354,7 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
                 "model": self._embed_model,
                 "input": texts,
             },
+            timeout=self._timeout,
         )
         # OpenAI returns embeddings in the same order as input
         sorted_data = sorted(result["data"], key=lambda d: d["index"])
@@ -377,6 +389,7 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
                 "temperature": temperature,
                 "max_tokens": max_tokens,
             },
+            timeout=timeout,
         )
         return result["choices"][0]["message"]["content"]
 
@@ -428,6 +441,14 @@ class AnthropicProvider(GenerateProvider):
                 "providers: Anthropic API key required — pass api_key or set ANTHROPIC_API_KEY env var"
             )
         base_url = base_url.rstrip("/")
+        if not base_url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"providers: Anthropic URL must be http/https: {base_url!r}"
+            )
+        if not is_safe_url(base_url, allow_remote=True):
+            raise ValueError(
+                f"providers: Anthropic URL blocked (unsafe address): {base_url!r}"
+            )
         self._model = model
         self._base_url = base_url
         self._api_key = resolved_key
@@ -665,10 +686,16 @@ def _resolve_embed_provider(
     base_url_override = embed_cfg.get("base_url")
 
     if name == "ollama":
-        provider = OllamaProvider(
-            embed_model=model_override or DEFAULT_OLLAMA_EMBED_MODEL,
-            base_url=base_url_override or ollama_base_url,
-        )
+        try:
+            provider = OllamaProvider(
+                embed_model=model_override or DEFAULT_OLLAMA_EMBED_MODEL,
+                base_url=base_url_override or ollama_base_url,
+            )
+        except ValueError:
+            log.info(
+                "providers: ollama embed config invalid (bad URL), trying fallback"
+            )
+            return _fallback_embed_provider(config, ollama_base_url)
         if provider.check_available():
             return provider
         log.info("providers: ollama embed not available, trying fallback")
@@ -682,13 +709,19 @@ def _resolve_embed_provider(
                 "providers: openai embed not available (no API key), trying fallback"
             )
             return _fallback_embed_provider(config, ollama_base_url, skip_openai=True)
-        return OpenAIProvider(
-            embed_model=model_override
-            or openai_cfg.get("embed_model", DEFAULT_OPENAI_EMBED_MODEL),
-            base_url=base_url_override
-            or openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
-            api_key=api_key,
-        )
+        try:
+            return OpenAIProvider(
+                embed_model=model_override
+                or openai_cfg.get("embed_model", DEFAULT_OPENAI_EMBED_MODEL),
+                base_url=base_url_override
+                or openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
+                api_key=api_key,
+            )
+        except ValueError:
+            log.info(
+                "providers: openai embed config invalid (bad URL), trying fallback"
+            )
+            return _fallback_embed_provider(config, ollama_base_url, skip_openai=True)
     elif name == "none":
         return NoneProvider()
     else:
@@ -717,10 +750,16 @@ def _resolve_generate_provider(
     base_url_override = generate_cfg.get("base_url")
 
     if name == "ollama":
-        provider = OllamaProvider(
-            generate_model=model_override or DEFAULT_OLLAMA_GENERATE_MODEL,
-            base_url=base_url_override or ollama_base_url,
-        )
+        try:
+            provider = OllamaProvider(
+                generate_model=model_override or DEFAULT_OLLAMA_GENERATE_MODEL,
+                base_url=base_url_override or ollama_base_url,
+            )
+        except ValueError:
+            log.info(
+                "providers: ollama generate config invalid (bad URL), trying fallback"
+            )
+            return _fallback_generate_provider(config, ollama_base_url)
         if provider.check_available():
             return provider
         log.info("providers: ollama generate not available, trying fallback")
@@ -736,13 +775,21 @@ def _resolve_generate_provider(
             return _fallback_generate_provider(
                 config, ollama_base_url, skip_openai=True
             )
-        return OpenAIProvider(
-            generate_model=model_override
-            or openai_cfg.get("generate_model", DEFAULT_OPENAI_GENERATE_MODEL),
-            base_url=base_url_override
-            or openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
-            api_key=api_key,
-        )
+        try:
+            return OpenAIProvider(
+                generate_model=model_override
+                or openai_cfg.get("generate_model", DEFAULT_OPENAI_GENERATE_MODEL),
+                base_url=base_url_override
+                or openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
+                api_key=api_key,
+            )
+        except ValueError:
+            log.info(
+                "providers: openai generate config invalid (bad URL), trying fallback"
+            )
+            return _fallback_generate_provider(
+                config, ollama_base_url, skip_openai=True
+            )
     elif name == "anthropic":
         provider_cfg = config.get("provider", {})
         anthropic_cfg = provider_cfg.get("anthropic", {})
@@ -754,13 +801,21 @@ def _resolve_generate_provider(
             return _fallback_generate_provider(
                 config, ollama_base_url, skip_anthropic=True
             )
-        return AnthropicProvider(
-            model=model_override
-            or anthropic_cfg.get("generate_model", DEFAULT_ANTHROPIC_MODEL),
-            base_url=base_url_override
-            or anthropic_cfg.get("base_url", DEFAULT_ANTHROPIC_BASE_URL),
-            api_key=api_key,
-        )
+        try:
+            return AnthropicProvider(
+                model=model_override
+                or anthropic_cfg.get("generate_model", DEFAULT_ANTHROPIC_MODEL),
+                base_url=base_url_override
+                or anthropic_cfg.get("base_url", DEFAULT_ANTHROPIC_BASE_URL),
+                api_key=api_key,
+            )
+        except ValueError:
+            log.info(
+                "providers: anthropic generate config invalid (bad URL), trying fallback"
+            )
+            return _fallback_generate_provider(
+                config, ollama_base_url, skip_anthropic=True
+            )
     elif name == "none":
         return NoneProvider()
     else:
@@ -786,10 +841,13 @@ def _fallback_embed_provider(
     if not skip_openai and os.environ.get("OPENAI_API_KEY"):
         provider_cfg = config.get("provider", {})
         openai_cfg = provider_cfg.get("openai", {})
-        return OpenAIProvider(
-            embed_model=openai_cfg.get("embed_model", DEFAULT_OPENAI_EMBED_MODEL),
-            base_url=openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
-        )
+        try:
+            return OpenAIProvider(
+                embed_model=openai_cfg.get("embed_model", DEFAULT_OPENAI_EMBED_MODEL),
+                base_url=openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
+            )
+        except ValueError:
+            log.info("providers: openai embed fallback config invalid (bad URL)")
     log.info("providers: no embed provider available, using NoneProvider")
     return NoneProvider()
 
@@ -814,17 +872,23 @@ def _fallback_generate_provider(
     provider_cfg = config.get("provider", {})
     if not skip_openai and os.environ.get("OPENAI_API_KEY"):
         openai_cfg = provider_cfg.get("openai", {})
-        return OpenAIProvider(
-            generate_model=openai_cfg.get(
-                "generate_model", DEFAULT_OPENAI_GENERATE_MODEL
-            ),
-            base_url=openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
-        )
+        try:
+            return OpenAIProvider(
+                generate_model=openai_cfg.get(
+                    "generate_model", DEFAULT_OPENAI_GENERATE_MODEL
+                ),
+                base_url=openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
+            )
+        except ValueError:
+            log.info("providers: openai generate fallback config invalid (bad URL)")
     if not skip_anthropic and os.environ.get("ANTHROPIC_API_KEY"):
         anthropic_cfg = provider_cfg.get("anthropic", {})
-        return AnthropicProvider(
-            model=anthropic_cfg.get("generate_model", DEFAULT_ANTHROPIC_MODEL),
-            base_url=anthropic_cfg.get("base_url", DEFAULT_ANTHROPIC_BASE_URL),
-        )
+        try:
+            return AnthropicProvider(
+                model=anthropic_cfg.get("generate_model", DEFAULT_ANTHROPIC_MODEL),
+                base_url=anthropic_cfg.get("base_url", DEFAULT_ANTHROPIC_BASE_URL),
+            )
+        except ValueError:
+            log.info("providers: anthropic generate fallback config invalid (bad URL)")
     log.info("providers: no generate provider available, using NoneProvider")
     return NoneProvider()

@@ -711,3 +711,242 @@ class TestLoadConfig_LogsOnException:
         missing = tmp_path / "nonexistent.yaml"
         result = load_config(missing)
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-4unyo: OpenAIProvider.generate() must pass timeout to _make_request
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAIProvider_TimeoutPassedToMakeRequest:
+    """OpenAIProvider.generate() accepts a timeout parameter but previously
+    silently ignored it — _make_request hardcoded self._timeout.
+    The fix: _make_request must accept a timeout param and generate() must
+    pass it through.
+    """
+
+    def test_generate_passes_custom_timeout_to_make_request(self):
+        provider = OpenAIProvider(api_key="test-key")
+        with patch.object(
+            provider,
+            "_make_request",
+            return_value={
+                "choices": [{"message": {"content": "ok"}}],
+            },
+        ) as mock_req:
+            provider.generate("test prompt", timeout=120)
+        # Verify timeout was passed through to _make_request
+        call_kwargs = mock_req.call_args[1]
+        assert call_kwargs.get("timeout") == 120, (
+            f"Expected timeout=120 passed to _make_request, got kwargs={call_kwargs}"
+        )
+
+    def test_generate_passes_default_timeout_to_make_request(self):
+        provider = OpenAIProvider(api_key="test-key")
+        with patch.object(
+            provider,
+            "_make_request",
+            return_value={
+                "choices": [{"message": {"content": "ok"}}],
+            },
+        ) as mock_req:
+            provider.generate("test prompt")
+        call_kwargs = mock_req.call_args[1]
+        assert call_kwargs.get("timeout") == 60, (
+            f"Expected default timeout=60 passed to _make_request, got kwargs={call_kwargs}"
+        )
+
+    def test_embed_passes_timeout_to_make_request(self):
+        """embed() should also use the instance timeout via _make_request."""
+        provider = OpenAIProvider(api_key="test-key", timeout=45)
+        with patch.object(
+            provider,
+            "_make_request",
+            return_value={
+                "data": [{"embedding": [0.1] * 1536, "index": 0}],
+            },
+        ) as mock_req:
+            provider.embed("test")
+        call_kwargs = mock_req.call_args[1]
+        assert call_kwargs.get("timeout") == 45
+
+    def test_make_request_uses_timeout_param_not_hardcoded(self):
+        """Verify _make_request actually uses the timeout parameter in urlopen."""
+        provider = OpenAIProvider(api_key="test-key", timeout=30)
+        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(
+                {"data": [{"embedding": [0.1] * 1536, "index": 0}]}
+            ).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+            provider.embed("test")
+        # Verify urlopen was called with the correct timeout from _make_request
+        call_kwargs = mock_urlopen.call_args[1]
+        assert call_kwargs.get("timeout") == 30, (
+            f"Expected urlopen timeout=30 (from constructor), got {call_kwargs}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-cl2wn: OpenAIProvider and AnthropicProvider URL validation
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAIProvider_URLValidation:
+    """OpenAIProvider constructor must validate base_url scheme and SSRF,
+    matching the validation performed by OllamaProvider.
+    """
+
+    def test_constructor_rejects_non_http_scheme(self):
+        with pytest.raises(ValueError, match="must be http/https"):
+            OpenAIProvider(api_key="test-key", base_url="ftp://evil.com")
+
+    def test_constructor_rejects_unsafe_url(self):
+        """SSRF validation: a private/link-local IP should be rejected."""
+        with patch("memory.providers.is_safe_url", return_value=False):
+            with pytest.raises(ValueError, match="blocked"):
+                OpenAIProvider(api_key="test-key", base_url="http://169.254.169.254/")
+
+    def test_constructor_accepts_safe_url(self):
+        """A safe URL (like the default) should work fine."""
+        provider = OpenAIProvider(api_key="test-key")
+        assert provider._base_url == "https://api.openai.com"
+
+    def test_constructor_strips_trailing_slash(self):
+        provider = OpenAIProvider(
+            api_key="test-key", base_url="https://api.openai.com/"
+        )
+        assert provider._base_url == "https://api.openai.com"
+
+    def test_constructor_rejects_file_scheme(self):
+        with pytest.raises(ValueError, match="must be http/https"):
+            OpenAIProvider(api_key="test-key", base_url="file:///etc/passwd")
+
+
+class TestAnthropicProvider_URLValidation:
+    """AnthropicProvider constructor must validate base_url scheme and SSRF,
+    matching the validation performed by OllamaProvider.
+    """
+
+    def test_constructor_rejects_non_http_scheme(self):
+        with pytest.raises(ValueError, match="must be http/https"):
+            AnthropicProvider(api_key="test-key", base_url="ftp://evil.com")
+
+    def test_constructor_rejects_unsafe_url(self):
+        """SSRF validation: a private/link-local IP should be rejected."""
+        with patch("memory.providers.is_safe_url", return_value=False):
+            with pytest.raises(ValueError, match="blocked"):
+                AnthropicProvider(
+                    api_key="test-key", base_url="http://169.254.169.254/"
+                )
+
+    def test_constructor_accepts_safe_url(self):
+        """A safe URL (like the default) should work fine."""
+        provider = AnthropicProvider(api_key="test-key")
+        assert provider._base_url == "https://api.anthropic.com"
+
+    def test_constructor_strips_trailing_slash(self):
+        provider = AnthropicProvider(
+            api_key="test-key", base_url="https://api.anthropic.com/"
+        )
+        assert provider._base_url == "https://api.anthropic.com"
+
+    def test_constructor_rejects_file_scheme(self):
+        with pytest.raises(ValueError, match="must be http/https"):
+            AnthropicProvider(api_key="test-key", base_url="file:///etc/passwd")
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-9g4ys: resolve_provider fallback on OllamaProvider ValueError
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProvider_OllamaValueErrorFallback:
+    """When _resolve_embed/generate_provider construct OllamaProvider and it
+    raises ValueError (e.g. from URL validation), the resolver must fall back
+    gracefully instead of crashing.
+    """
+
+    def test_resolve_embed_falls_back_on_ollama_value_error(self):
+        """If OllamaProvider() raises ValueError, embed should fall back to
+        OpenAI (or NoneProvider), not crash.
+        """
+        with (
+            patch(
+                "memory.providers.OllamaProvider",
+                side_effect=ValueError(
+                    "providers: Ollama URL blocked (unsafe address)"
+                ),
+            ),
+            patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False),
+        ):
+            os.environ["OPENAI_API_KEY"] = "test-key"
+            embed, gen = resolve_provider({})
+        assert isinstance(embed, OpenAIProvider)
+
+    def test_resolve_generate_falls_back_on_ollama_value_error(self):
+        """If OllamaProvider() raises ValueError, generate should fall back to
+        OpenAI (or NoneProvider), not crash.
+        """
+        # We need OllamaProvider to raise on construction but work normally
+        # for the embed side check_available. Use a conditional side_effect.
+        original_class = OllamaProvider
+        call_count = {"n": 0}
+
+        def conditional_side_effect(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] <= 2:
+                # First two constructions (embed+generate in resolve) raise
+                raise ValueError("providers: Ollama URL blocked (unsafe address)")
+            return original_class(*args, **kwargs)
+
+        with (
+            patch(
+                "memory.providers.OllamaProvider", side_effect=conditional_side_effect
+            ),
+            patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False),
+        ):
+            os.environ["OPENAI_API_KEY"] = "test-key"
+            embed, gen = resolve_provider({})
+        assert isinstance(gen, OpenAIProvider)
+
+    def test_resolve_falls_back_to_none_on_ollama_value_error_no_openai(self):
+        """If OllamaProvider raises ValueError and no OpenAI key is available,
+        should fall back to NoneProvider, not crash.
+        """
+        with (
+            patch(
+                "memory.providers.OllamaProvider",
+                side_effect=ValueError(
+                    "providers: Ollama URL blocked (unsafe address)"
+                ),
+            ),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            embed, gen = resolve_provider({})
+        assert isinstance(embed, NoneProvider)
+        assert isinstance(gen, NoneProvider)
+
+    def test_resolve_with_bad_ollama_url_falls_back(self):
+        """Passing a bad ollama_base_url in config should not crash —
+        the ValueError from OllamaProvider(base_url=...) should trigger fallback.
+        """
+        with (
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            config = {
+                "provider": {
+                    "default": "ollama",
+                    "ollama": {"base_url": "http://169.254.169.254:11434"},
+                },
+            }
+            # This should NOT raise — it should fall back to NoneProvider
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, NoneProvider)
+        assert isinstance(gen, NoneProvider)
