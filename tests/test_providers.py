@@ -2158,3 +2158,67 @@ class TestConfigGetNoneSafety:
         result = get_source_filter(config={"hook": None})
         # Should return default ("direct"), not crash
         assert result == "direct"
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-x8iqe: provider_cfg.get("default", "ollama") returns None
+# when YAML has 'default:' with no value
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProvider_NoneDefaultKey:
+    """resolve_provider must handle provider.default=None gracefully.
+
+    When YAML contains `default:` with no value (e.g., `provider:\n  default:`),
+    yaml.safe_load returns {'provider': {'default': None}}.
+    provider_cfg.get("default", "ollama") returns None because the KEY exists
+    (the default is only used when the KEY is missing, not when VALUE is None).
+    The None propagates as the provider name, hitting the 'unknown' else branch.
+
+    Fix: use provider_cfg.get("default") or "ollama" which coerces both
+    missing-key and None-value to "ollama".
+    """
+
+    def test_resolve_with_none_default_uses_ollama(self):
+        """When config['provider']['default'] is None, should default to ollama."""
+        with patch("memory.providers.check_ollama_model", return_value=True):
+            config = {"provider": {"default": None}}
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, OllamaProvider)
+        assert isinstance(gen, OllamaProvider)
+
+    def test_resolve_with_none_default_falls_back_when_ollama_unavailable(self):
+        """When default=None and Ollama unavailable, should fall back to
+        OpenAI/Anthropic/NoneProvider, not crash on 'unknown provider'."""
+        with (
+            patch("memory.providers.check_ollama_model", return_value=False),
+            patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False),
+        ):
+            os.environ["OPENAI_API_KEY"] = "test-key"
+            config = {"provider": {"default": None}}
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, OpenAIProvider)
+        assert isinstance(gen, OpenAIProvider)
+
+    def test_resolve_with_none_default_no_keys_falls_to_none(self):
+        """When default=None, Ollama unavailable, no API keys — should get
+        NoneProvider, not crash."""
+        with (
+            patch("memory.providers.check_ollama_model", return_value=False),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            config = {"provider": {"default": None}}
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, NoneProvider)
+        assert isinstance(gen, NoneProvider)
+
+    def test_resolve_with_explicit_default_still_works(self):
+        """Explicit default value (e.g., 'openai') should still work."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False):
+            os.environ["OPENAI_API_KEY"] = "test-key"
+            config = {"provider": {"default": "openai"}}
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, OpenAIProvider)
+        assert isinstance(gen, OpenAIProvider)

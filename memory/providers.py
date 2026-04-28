@@ -659,7 +659,7 @@ def resolve_provider(
         config = {}
 
     provider_cfg = config.get("provider") or {}
-    default_name = provider_cfg.get("default", "ollama")
+    default_name = provider_cfg.get("default") or "ollama"
 
     # Also support the legacy memory.ollama_url for backward compat
     legacy_ollama_url = (config.get("memory") or {}).get("ollama_url")
