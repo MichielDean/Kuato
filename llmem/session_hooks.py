@@ -39,6 +39,9 @@ SESSION_COMPACTING_NO_MEMORIES = "no_memories"
 # Idle debounce window in seconds
 _IDLE_DEBOUNCE_SECONDS = 30
 
+# Maximum age for idle tracking entries before eviction (5 minutes)
+_IDLE_MAX_AGE_SECONDS = 300
+
 # Key memory types that survive compaction
 _COMPACTING_KEY_TYPES = ("decision", "preference", "procedure", "project_state")
 
@@ -146,7 +149,7 @@ class SessionHookCoordinator:
             Tuple of (result_type, context_file_path).
             - ("success", file_path) on success.
             - ("already_processed", None) if session was already processed.
-            - ("model_unavailable", None) if model check fails.
+            - ("error", None) if writing the context file fails.
         """
         if self._store.is_extracted("session_created", session_id):
             log.debug(
@@ -169,10 +172,10 @@ class SessionHookCoordinator:
             context = ""
 
         context_dir = get_context_dir()
-        context_dir.mkdir(parents=True, exist_ok=True)
         context_file = context_dir / f"{session_id}.md"
 
         try:
+            context_dir.mkdir(parents=True, exist_ok=True)
             context_file.write_text(context)
         except Exception as e:
             log.error(
@@ -214,6 +217,15 @@ class SessionHookCoordinator:
             return SESSION_IDLE_DEBOUNCED, 0
 
         self._last_idle_time[session_id] = now
+
+        # Evict stale entries to prevent unbounded growth
+        stale_keys = [
+            k
+            for k, v in self._last_idle_time.items()
+            if now - v > _IDLE_MAX_AGE_SECONDS
+        ]
+        for k in stale_keys:
+            del self._last_idle_time[k]
 
         # Get session transcript from the adapter
         transcript = self._adapter.get_session_transcript(session_id)
@@ -287,10 +299,10 @@ class SessionHookCoordinator:
         context = "\n".join(lines)
 
         context_dir = get_context_dir()
-        context_dir.mkdir(parents=True, exist_ok=True)
         context_file = context_dir / f"{session_id}-compact.md"
 
         try:
+            context_dir.mkdir(parents=True, exist_ok=True)
             context_file.write_text(context)
         except Exception as e:
             log.error(

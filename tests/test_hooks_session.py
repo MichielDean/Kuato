@@ -254,6 +254,54 @@ class TestSessionHookCoordinator:
         # process_transcript should only have been called once
         assert mock_session_hook.process_transcript.call_count == 1
 
+    def test_idle_hook_evicts_stale_entries(
+        self, coordinator, mock_store, mock_adapter
+    ):
+        """_last_idle_time entries older than 5 minutes are evicted."""
+        mock_session_hook = MagicMock()
+        mock_session_hook.process_transcript.return_value = ("success", 1)
+        coordinator._session_hook = mock_session_hook
+
+        # Simulate old entries by inserting a stale one directly
+        coordinator._last_idle_time["old_session"] = time.monotonic() - 400
+
+        # Call on_idle for a different session — should trigger eviction
+        coordinator.on_idle("ses_123")
+
+        # The stale old_session entry should have been evicted
+        assert "old_session" not in coordinator._last_idle_time
+        # The current session entry should still be present
+        assert "ses_123" in coordinator._last_idle_time
+
+    def test_idle_hook_keeps_recent_entries(
+        self, coordinator, mock_store, mock_adapter
+    ):
+        """_last_idle_time entries within the 5-minute window are kept."""
+        mock_session_hook = MagicMock()
+        mock_session_hook.process_transcript.return_value = ("success", 1)
+        coordinator._session_hook = mock_session_hook
+
+        # Insert a recent entry
+        coordinator._last_idle_time["recent_session"] = time.monotonic() - 60
+
+        coordinator.on_idle("ses_123")
+
+        # The recent entry should still be present
+        assert "recent_session" in coordinator._last_idle_time
+
+    def test_created_hook_returns_error_on_write_failure(
+        self, coordinator, mock_store, mock_retriever, tmp_path
+    ):
+        """on_created returns ('error', None) when writing context file fails."""
+        # Make the context dir path exist but be a file, so mkdir fails
+        context_path = tmp_path / "blocked_context"
+        context_path.write_text("blocking")
+        with patch("llmem.session_hooks.get_context_dir", return_value=context_path):
+            result_type, file_path = coordinator.on_created("ses_123")
+
+        assert result_type == "error"
+        assert file_path is None
+
 
 class TestSessionEventManager:
     """Tests for SessionEventManager."""
