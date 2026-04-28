@@ -13,7 +13,6 @@ from .store import MemoryStore, register_memory_type, get_registered_types
 from .paths import get_db_path, get_config_path
 
 
-VALID_TYPES = sorted(get_registered_types())
 VALID_SOURCES = ["manual", "session", "heartbeat", "extraction", "import"]
 
 
@@ -24,6 +23,17 @@ def cmd_add(args):
         content = Path(args.file).read_text().strip()
     if not content:
         print("Error: provide --content or --file", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate type at runtime against the global registry — argparse choices
+    # cannot be used because register-type can add types after import time.
+    registered = get_registered_types()
+    if args.type not in registered:
+        print(
+            f"Error: unregistered type '{args.type}'. "
+            f"Register it with: llmem register-type {args.type}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     mid = store.add(
@@ -199,7 +209,9 @@ def main():
     # add
     p_add = subparsers.add_parser("add", help="Add a memory")
     p_add.add_argument(
-        "--type", required=True, choices=VALID_TYPES + ["custom"], help="Memory type"
+        "--type",
+        required=True,
+        help="Memory type (use 'llmem types' to list, or register new with 'llmem register-type')",
     )
     p_add.add_argument("--content", help="Memory content text")
     p_add.add_argument("--file", help="Read content from file")

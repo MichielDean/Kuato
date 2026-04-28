@@ -15,7 +15,7 @@ from .paths import get_db_path
 
 logger = logging.getLogger(__name__)
 
-# Default registered memory types — extensible via register_memory_type()
+# Default registered memory types — used to initialize each MemoryStore instance
 _DEFAULT_TYPES: frozenset[str] = frozenset(
     {
         "fact",
@@ -29,9 +29,6 @@ _DEFAULT_TYPES: frozenset[str] = frozenset(
     }
 )
 
-# Module-level registered types set — initialized with defaults, extensible
-_registered_types: set[str] = set(_DEFAULT_TYPES)
-
 
 def register_memory_type(type_name: str) -> None:
     """Register a new memory type for use with MemoryStore.add().
@@ -44,17 +41,37 @@ def register_memory_type(type_name: str) -> None:
 
     After registration, store.add(type=type_name, ...) will succeed.
     Before registration, store.add(type=type_name, ...) raises ValueError.
+
+    Note:
+        This registers the type globally so all current and future
+        MemoryStore instances recognize it. The global registry avoids
+        requiring callers to pass a store reference just to check valid
+        type names (e.g., from the CLI argparse layer).
     """
-    if type_name in _registered_types:
+    if type_name in _global_registry:
         raise ValueError(
             f"llmem: register_memory_type: type '{type_name}' is already registered"
         )
-    _registered_types.add(type_name)
+    _global_registry.add(type_name)
 
 
 def get_registered_types() -> frozenset[str]:
-    """Return the current set of registered memory types."""
-    return frozenset(_registered_types)
+    """Return the current set of globally registered memory types."""
+    return frozenset(_global_registry)
+
+
+def _reset_global_registry() -> None:
+    """Reset the global registry to default types only. For testing."""
+    _global_registry.clear()
+    _global_registry.update(_DEFAULT_TYPES)
+
+
+# Global registry — initialized with defaults, extensible via register_memory_type().
+# This is read-only from the perspective of MemoryStore instances: each instance
+# copies the global set at construction time, but add() validates against the
+# instance-local set so that a store opened before a registration does not
+# silently accept a type it was not configured for.
+_global_registry: set[str] = set(_DEFAULT_TYPES)
 
 
 def _run_migrations(conn: sqlite3.Connection) -> None:
@@ -162,6 +179,11 @@ class MemoryStore:
             raise ValueError(
                 f"vec_dimensions must be positive, got {self._vec_dimensions}"
             )
+        # Defensive copy: each instance snapshots the global registry at
+        # construction time. register_memory_type() updates the global
+        # registry, which is available to the CLI layer for argparse choices,
+        # but existing stores do not retroactively accept new types.
+        self._registered_types: set[str] = set(_global_registry)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         if str(self.db_path) != ":memory:":
             os.chmod(str(self.db_path.parent), 0o700)
@@ -347,7 +369,7 @@ class MemoryStore:
         Raises:
             ValueError: If type is not in the registered type set.
         """
-        if type not in _registered_types:
+        if type not in self._registered_types:
             raise ValueError(
                 f"llmem: store: add: unregistered type '{type}'. "
                 f"Register it with register_memory_type('{type}') first."

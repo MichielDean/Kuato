@@ -58,3 +58,31 @@ class TestConfig_OpencodeContextDir:
         context_dir = defaults["opencode"]["context_dir"]
         assert context_dir is not None
         assert "context" in context_dir
+
+
+class TestConfig_ResolveDefaults_DeepCopy:
+    """Test that _resolve_defaults() does not share mutable references with DEFAULTS."""
+
+    def test_correction_detection_not_shared_with_defaults(self):
+        """Mutating the resolved defaults should not affect the module DEFAULTS."""
+        from llmem.config import DEFAULTS, _resolve_defaults
+
+        resolved = _resolve_defaults()
+        # Mutate the resolved copy
+        resolved["correction_detection"]["enabled"] = False
+        # The module-level DEFAULTS must NOT be affected
+        assert DEFAULTS["correction_detection"]["enabled"] is True
+
+    def test_deep_copy_all_nested_dicts(self):
+        """Every nested dict in _resolve_defaults() is an independent copy."""
+        from llmem.config import DEFAULTS, _resolve_defaults
+
+        resolved = _resolve_defaults()
+        for key in DEFAULTS:
+            if isinstance(DEFAULTS[key], dict):
+                # Modifying the resolved copy must not affect DEFAULTS
+                original_val = DEFAULTS[key].copy()
+                resolved[key].clear()
+                assert DEFAULTS[key] == original_val, (
+                    f"Shared reference detected for key '{key}'"
+                )

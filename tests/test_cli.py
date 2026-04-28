@@ -75,3 +75,98 @@ class TestCli_DbPathEnvOverride:
 
             result = get_db_path()
             assert result == Path("/tmp/llmem-env-test/memory.db")
+
+
+class TestCli_TypeValidation:
+    """Test that CLI --type rejects unregistered types at runtime."""
+
+    def test_add_unregistered_type_exits_with_error(self, tmp_path):
+        """Using --type with an unregistered type prints an error and exits."""
+        from llmem.cli import cmd_add
+        from llmem.store import _reset_global_registry
+        import argparse
+
+        _reset_global_registry()
+
+        db = tmp_path / "test.db"
+        # Pre-create a store with disable_vec so the DB is initialized
+        from llmem.store import MemoryStore
+
+        MemoryStore(db_path=db, disable_vec=True).close()
+
+        args = argparse.Namespace(
+            db=db,
+            type="never_registered_type_xyz",
+            content="test content",
+            file=None,
+            summary=None,
+            source="manual",
+            confidence=0.8,
+            valid_until=None,
+            metadata=None,
+            relation=None,
+            relation_to=None,
+        )
+
+        # Patch MemoryStore to use disable_vec=True so sqlite-vec doesn't fail
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            with pytest.raises(SystemExit):
+                cmd_add(args)
+
+    def test_add_registered_type_succeeds(self, tmp_path):
+        """Using --type with a registered type works."""
+        from llmem.cli import cmd_add
+        from llmem.store import register_memory_type, _reset_global_registry
+
+        _reset_global_registry()
+        register_memory_type("registered_cli_type")
+
+        db = tmp_path / "test.db"
+        from llmem.store import MemoryStore
+
+        MemoryStore(db_path=db, disable_vec=True).close()
+
+        import argparse
+
+        args = argparse.Namespace(
+            db=db,
+            type="registered_cli_type",
+            content="test content",
+            file=None,
+            summary=None,
+            source="manual",
+            confidence=0.8,
+            valid_until=None,
+            metadata=None,
+            relation=None,
+            relation_to=None,
+        )
+
+        # Patch MemoryStore to use disable_vec=True so sqlite-vec doesn't fail
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_add(args)
+
+    def test_type_choices_dynamic_after_registration(self):
+        """get_registered_types() reflects newly registered types."""
+        from llmem.store import (
+            register_memory_type,
+            get_registered_types,
+            _reset_global_registry,
+        )
+
+        _reset_global_registry()
+        before = get_registered_types()
+        register_memory_type("dynamic_type_test")
+        after = get_registered_types()
+        assert "dynamic_type_test" not in before
+        assert "dynamic_type_test" in after

@@ -2,25 +2,26 @@
 
 import pytest
 
-from llmem.store import MemoryStore, register_memory_type, get_registered_types
+from llmem.store import (
+    MemoryStore,
+    register_memory_type,
+    get_registered_types,
+    _reset_global_registry,
+)
 
 
 class TestStore_RegisterType:
     """Test register_memory_type()."""
 
+    def setup_method(self):
+        """Reset the global registry to a clean state before each test."""
+        _reset_global_registry()
+
     def test_register_custom_type(self):
         """Register a custom type that isn't in the default set."""
-        # Use a unique name to avoid collision with already-registered types
         test_type = "test_custom_type_xyz"
-        # Deregister if already present (from a prior test)
-        from llmem.store import _registered_types
-
-        _registered_types.discard(test_type)
-
         register_memory_type(test_type)
         assert test_type in get_registered_types()
-        # Clean up
-        _registered_types.discard(test_type)
 
     def test_register_duplicate_raises(self):
         """Registering an already-registered type raises ValueError."""
@@ -38,18 +39,21 @@ class TestStore_AddRegisteredType:
         assert result["type"] == "fact"
 
     def test_add_custom_registered_type_succeeds(self, store):
+        """A type registered before the store was created is accepted."""
         test_type = "test_custom_type_abc"
-        from llmem.store import _registered_types
-
-        _registered_types.discard(test_type)
         register_memory_type(test_type)
+        # Store created before registration won't know about it,
+        # so create a new store that picks up the registration.
+        from llmem.store import _global_registry
 
-        mid = store.add(type=test_type, content="custom content")
+        new_store = MemoryStore(
+            db_path=store.db_path.parent / "test2.db", disable_vec=True
+        )
+        mid = new_store.add(type=test_type, content="custom content")
         assert mid is not None
-        result = store.get(mid)
+        result = new_store.get(mid)
         assert result["type"] == test_type
-        # Clean up
-        _registered_types.discard(test_type)
+        new_store.close()
 
 
 class TestStore_AddUnregisteredTypeFails:
@@ -71,6 +75,27 @@ class TestStore_SelfAssessmentIsDefaultRegistered:
         assert mid is not None
         result = store.get(mid)
         assert result["type"] == "self_assessment"
+
+
+class TestStore_RegistryPerInstance:
+    """Test that each MemoryStore snapshots the global registry at construction."""
+
+    def test_store_does_not_retroactively_accept_new_types(self, store):
+        """A store created before a type is registered rejects that type."""
+        register_memory_type("brand_new_type_xyz")
+        # The store was created before the registration, so it should reject it
+        with pytest.raises(ValueError, match="unregistered type"):
+            store.add(type="brand_new_type_xyz", content="should fail")
+
+    def test_new_store_accepts_newly_registered_types(self, store):
+        """A store created after a type is registered accepts that type."""
+        register_memory_type("brand_new_type_abc")
+        new_store = MemoryStore(
+            db_path=store.db_path.parent / "new_store.db", disable_vec=True
+        )
+        mid = new_store.add(type="brand_new_type_abc", content="should work")
+        assert mid is not None
+        new_store.close()
 
 
 class TestStore_Add_Get:

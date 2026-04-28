@@ -78,7 +78,12 @@ DEFAULTS = {
 
 
 def _resolve_defaults() -> dict:
-    """Resolve path-based defaults that depend on get_llmem_home()."""
+    """Resolve path-based defaults that depend on get_llmem_home().
+
+    Returns a deep copy of DEFAULTS with path-based defaults resolved.
+    Each nested dict is independently copied to avoid shared references
+    with the module-level DEFAULTS constant.
+    """
     from .paths import (
         get_db_path as _get_db_path,
         get_dream_diary_path,
@@ -86,13 +91,11 @@ def _resolve_defaults() -> dict:
         get_context_dir,
     )
 
-    defaults = dict(DEFAULTS)
-    defaults["memory"] = dict(DEFAULTS["memory"])
+    # Deep copy every nested dict to avoid shared mutable references
+    defaults = {k: dict(v) if isinstance(v, dict) else v for k, v in DEFAULTS.items()}
     defaults["memory"]["db"] = str(_get_db_path())
-    defaults["dream"] = dict(DEFAULTS["dream"])
     defaults["dream"]["diary_path"] = str(get_dream_diary_path())
     defaults["dream"]["proposed_changes_path"] = str(get_proposed_changes_path())
-    defaults["opencode"] = dict(DEFAULTS["opencode"])
     defaults["opencode"]["context_dir"] = str(get_context_dir())
     return defaults
 

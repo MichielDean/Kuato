@@ -1,5 +1,6 @@
 """Dream report HTML generator for llmem."""
 
+import html
 import json
 import logging
 from datetime import datetime, timezone
@@ -43,7 +44,7 @@ def generate_dream_report(result: DreamResult, report_path: Path) -> None:
     rem_section = ""
     if result.rem:
         themes_html = (
-            "".join(f"<li>{t}</li>" for t in result.rem.themes)
+            "".join(f"<li>{html.escape(t)}</li>" for t in result.rem.themes)
             if result.rem.themes
             else "<li>No themes extracted</li>"
         )
@@ -55,7 +56,7 @@ def generate_dream_report(result: DreamResult, report_path: Path) -> None:
 <ul>{themes_html}</ul>
 </section>"""
 
-    html = f"""<!DOCTYPE html>
+    html_output = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -85,5 +86,5 @@ ul {{ list-style: disc; padding-left: 1.5rem; }}
 </html>"""
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(html)
+    report_path.write_text(html_output)
     log.info("llmem: dream_report: written to %s", report_path)
