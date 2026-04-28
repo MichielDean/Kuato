@@ -8,7 +8,7 @@ import urllib.request
 import urllib.error
 
 from .taxonomy import ERROR_TAXONOMY, ERROR_TAXONOMY_KEYS, SELF_ASSESSMENT_FIELDS
-from .url_validate import is_safe_url, _strip_credentials, validate_base_url
+from .url_validate import validate_base_url
 
 log = logging.getLogger(__name__)
 

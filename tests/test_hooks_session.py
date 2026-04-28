@@ -1,5 +1,6 @@
 """Tests for session event hooks — registry extension and SessionHookCoordinator."""
 
+import inspect
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -385,3 +386,78 @@ class TestValidateBaseUrl:
     def test_module_in_error_message(self):
         with pytest.raises(ValueError, match="introspection"):
             validate_base_url("file:///etc/passwd", module="introspection")
+
+
+# -- TestDeadCodeRemoval --
+
+
+class TestDeadCodeRemoval:
+    """Tests for dead code and unused import removals from review cycle 3."""
+
+    def test_coordinator_has_no_config_parameter(
+        self, mock_store, mock_retriever, mock_extractor, mock_embedder, mock_adapter
+    ):
+        """SessionHookCoordinator.__init__ should not accept a config parameter.
+
+        The config parameter was stored as self._config but never read,
+        making it dead code that triggered unnecessary load_config() calls.
+        """
+        import inspect
+
+        sig = inspect.signature(SessionHookCoordinator.__init__)
+        assert "config" not in sig.parameters, (
+            "SessionHookCoordinator.__init__ should not have a 'config' parameter "
+            "(was dead code — stored as self._config but never read)"
+        )
+
+    def test_coordinator_has_no_config_field(self, coordinator):
+        """SessionHookCoordinator should not have a self._config field."""
+        assert not hasattr(coordinator, "_config"), (
+            "SessionHookCoordinator should not have a _config field "
+            "(was dead code — stored but never read after init)"
+        )
+
+    def test_embed_no_unused_imports(self):
+        """embed.py should not import is_safe_url or _strip_credentials.
+
+        These were left behind after validate_base_url DRY extraction.
+        embed.py only needs validate_base_url.
+        """
+        import llmem.embed as embed_module
+
+        source = inspect.getsource(embed_module)
+        # Check that the import line does not contain is_safe_url or _strip_credentials
+        import_lines = [
+            line
+            for line in source.split("\n")
+            if line.strip().startswith("from .url_validate import")
+        ]
+        for line in import_lines:
+            assert "is_safe_url" not in line, (
+                f"embed.py should not import is_safe_url (unused after DRY extraction): {line}"
+            )
+            assert "_strip_credentials" not in line, (
+                f"embed.py should not import _strip_credentials (unused after DRY extraction): {line}"
+            )
+
+    def test_extract_no_unused_imports(self):
+        """extract.py should not import is_safe_url or _strip_credentials.
+
+        These were left behind after validate_base_url DRY extraction.
+        extract.py only needs validate_base_url.
+        """
+        import llmem.extract as extract_module
+
+        source = inspect.getsource(extract_module)
+        import_lines = [
+            line
+            for line in source.split("\n")
+            if line.strip().startswith("from .url_validate import")
+        ]
+        for line in import_lines:
+            assert "is_safe_url" not in line, (
+                f"extract.py should not import is_safe_url (unused after DRY extraction): {line}"
+            )
+            assert "_strip_credentials" not in line, (
+                f"extract.py should not import _strip_credentials (unused after DRY extraction): {line}"
+            )

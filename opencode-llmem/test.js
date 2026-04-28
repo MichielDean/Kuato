@@ -235,6 +235,58 @@ function testInstallCopiesSourceFiles() {
 
 // ── Main ─────────────────────────────────────────────────────────────────
 
+function testLoadConfigParsesYamlNotPathMarker() {
+  var indexPath = path.join(SRC_DIR, 'index.js');
+  if (!fs.existsSync(indexPath)) {
+    assert(false, 'src/index.js: file missing');
+    return;
+  }
+  var mod = require(indexPath);
+  // Verify _parseSimpleYaml exists and is exported
+  assert(typeof mod._parseSimpleYaml === 'function',
+    'src/index.js exports _parseSimpleYaml for testing');
+
+  // _parseSimpleYaml must return a parsed config object, not a path marker
+  var yaml = 'memory:\n  ollama_url: "http://localhost:11434"\nopencode:\n  context_dir: "/tmp/llmem"\n';
+  var config = mod._parseSimpleYaml(yaml);
+  assert(config.memory !== undefined,
+    '_parseSimpleYaml returns nested config with memory section');
+  assert(config.memory.ollama_url === 'http://localhost:11434',
+    '_parseSimpleYaml parses nested string values');
+  assert(config.opencode !== undefined,
+    '_parseSimpleYaml returns nested config with opencode section');
+  assert(config.opencode.context_dir === '/tmp/llmem',
+    '_parseSimpleYaml parses context_dir value');
+
+  // The old broken _loadConfig returned {_configPath: ...} — verify no _configPath
+  assert(config._configPath === undefined,
+    '_parseSimpleYaml does not return _configPath (old contract violation)');
+
+  // Empty YAML returns empty object
+  var emptyConfig = mod._parseSimpleYaml('');
+  assert(Object.keys(emptyConfig).length === 0,
+    '_parseSimpleYaml returns empty object for empty input');
+
+  // Top-level key:value works
+  var flatConfig = mod._parseSimpleYaml('key: value\n');
+  assert(flatConfig.key === 'value',
+    '_parseSimpleYaml parses flat key:value pairs');
+}
+
+function testNoConfigPathMarkerInIndexJs() {
+  var indexPath = path.join(SRC_DIR, 'index.js');
+  if (!fs.existsSync(indexPath)) {
+    assert(false, 'src/index.js: file missing');
+    return;
+  }
+  var content = fs.readFileSync(indexPath, 'utf8');
+  // The old broken return used _configPath — verify it's not there
+  assert(content.indexOf('_configPath') === -1,
+    'src/index.js: no _configPath property (old contract violation fixed)');
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────
+
 console.log('\n=== opencode-llmem Validation Tests ===\n');
 
 testPackageJsonExists();
@@ -259,6 +311,10 @@ testInstallCreatesTargetDir();
 testInstallCopiesSourceFiles();
 
 console.log('\n=== opencode-llmem Results ===\n');
+
+testLoadConfigParsesYamlNotPathMarker();
+testNoConfigPathMarkerInIndexJs();
+
 console.log('Passed: ' + passes);
 console.log('Failed: ' + failures);
 

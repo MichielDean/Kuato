@@ -61,9 +61,7 @@ function _loadConfig() {
   try {
     if (fs.existsSync(configPath)) {
       var content = fs.readFileSync(configPath, 'utf8');
-      // Minimal YAML parsing for simple key-value pairs
-      // For complex configs, the llmem CLI handles parsing
-      return { _configPath: configPath };
+      return _parseSimpleYaml(content);
     }
   } catch (err) {
     // Config is optional — return empty object
@@ -71,4 +69,58 @@ function _loadConfig() {
   return {};
 }
 
-module.exports = { register };
+/**
+ * Parse simple YAML into a nested object.
+ *
+ * Handles key: value pairs and nested sections via indentation.
+ * Strings are trimmed; numeric/boolean values are not coerced —
+ * everything is a string, which is sufficient for config lookups
+ * (e.g. config.opencode.context_dir).
+ *
+ * @param {string} text - YAML text to parse.
+ * @returns {object} Parsed config object.
+ */
+function _parseSimpleYaml(text) {
+  var result = {};
+  var stack = [{ indent: -1, obj: result }];
+  var lines = text.split('\n');
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    var trimmed = line.trim();
+    if (!trimmed || trimmed[0] === '#') {
+      continue;
+    }
+    var indent = line.length - line.trimStart().length;
+    var colonIdx = trimmed.indexOf(':');
+    if (colonIdx === -1) {
+      continue;
+    }
+    var key = trimmed.substring(0, colonIdx).trim();
+    var value = trimmed.substring(colonIdx + 1).trim();
+
+    // Pop stack until we find the parent with less indentation
+    while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
+      stack.pop();
+    }
+    var parent = stack[stack.length - 1].obj;
+
+    if (value === '') {
+      // Nested section — push onto stack
+      parent[key] = {};
+      stack.push({ indent: indent, obj: parent[key] });
+    } else {
+      // Strip optional quotes from value
+      if (
+        (value[0] === '"' && value[value.length - 1] === '"') ||
+        (value[0] === "'" && value[value.length - 1] === "'")
+      ) {
+        value = value.substring(1, value.length - 1);
+      }
+      parent[key] = value;
+    }
+  }
+  return result;
+}
+
+module.exports = { register, _parseSimpleYaml };

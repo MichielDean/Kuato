@@ -106,7 +106,6 @@ class SessionHookCoordinator:
         extractor: ExtractionEngine for extracting memories from transcripts.
         embedder: Optional EmbeddingEngine for embedding extracted memories.
         adapter: OpenCodeAdapter for reading session content.
-        config: Optional config dict. If None, loads via load_config().
     """
 
     def __init__(
@@ -116,14 +115,12 @@ class SessionHookCoordinator:
         extractor: ExtractionEngine,
         embedder: EmbeddingEngine | None,
         adapter: OpenCodeAdapter,
-        config: dict | None = None,
     ):
         self._store = store
         self._retriever = retriever
         self._extractor = extractor
         self._embedder = embedder
         self._adapter = adapter
-        self._config = config if config is not None else load_config()
         self._session_hook = SessionHook(
             store=store,
             extractor=extractor,
@@ -377,5 +374,4 @@ def create_session_hook_coordinator(
         extractor=extractor,
         embedder=None,
         adapter=adapter,
-        config=resolved_config,
     )

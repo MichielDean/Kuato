@@ -6,7 +6,7 @@ import struct
 import urllib.request
 import urllib.error
 
-from .url_validate import is_safe_url, _strip_credentials, validate_base_url
+from .url_validate import validate_base_url
 
 import math
 
