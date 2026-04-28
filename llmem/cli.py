@@ -71,16 +71,51 @@ def cmd_get(args):
 
 def cmd_search(args):
     from .store import MemoryStore
+    from .retrieve import Retriever
+    from .embed import EmbeddingEngine
 
     store = MemoryStore(args.db)
 
+    # Determine search mode from mutually exclusive flags
+    if args.fts_only:
+        search_mode = "fts"
+    elif args.semantic_only:
+        search_mode = "semantic"
+    else:
+        search_mode = "hybrid"
+
+    # Create embedder if available
+    embedder = None
+    if search_mode != "fts":
+        try:
+            ollama_url = getattr(args, "ollama_url", None) or "http://localhost:11434"
+            embedder = EmbeddingEngine(base_url=ollama_url)
+        except Exception:
+            embedder = None
+
+    retriever = Retriever(store=store, embedder=embedder)
+
+    try:
+        results = retriever.hybrid_search(
+            query=args.query,
+            limit=args.limit,
+            type_filter=args.type,
+            search_mode=search_mode,
+        )
+    except ValueError:
+        # semantic-only without embedder
+        print("Error: semantic search requires an embedder", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
     if args.json:
-        results = store.search(args.query, limit=args.limit, type=args.type)
         print(json.dumps(results, indent=2, default=str))
     else:
-        results = store.search(args.query, limit=args.limit, type=args.type)
         for m in results:
-            print(f"  {m['id']}  [{m['type']}]  conf={m.get('confidence', 0):.2f}")
+            score = m.get("_rrf_score", 0.0)
+            print(
+                f"  {m['id']}  [{m['type']}]  conf={m.get('confidence', 0):.2f}  rrf={score:.4f}"
+            )
             print(f"    {m['content'][:120]}")
 
     store.close()
@@ -384,6 +419,13 @@ def main():
     p_search.add_argument("--type", help="Filter by type")
     p_search.add_argument("--limit", type=int, default=20, help="Max results")
     p_search.add_argument("--json", action="store_true", help="JSON output")
+    search_mode_group = p_search.add_mutually_exclusive_group()
+    search_mode_group.add_argument(
+        "--fts-only", action="store_true", help="FTS5 keyword search only"
+    )
+    search_mode_group.add_argument(
+        "--semantic-only", action="store_true", help="Semantic (embedding) search only"
+    )
 
     # list
     p_list = subparsers.add_parser("list", help="List memories")
