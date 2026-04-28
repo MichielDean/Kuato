@@ -27,6 +27,52 @@ TYPE_PRIORITY = {
     "conversation": 0.7,
 }
 
+DEFAULT_ALPHA = 0.7
+DEFAULT_RRF_K = 60
+
+
+def _rrf_score(
+    semantic_ranks: dict[str, int],
+    fts_ranks: dict[str, int],
+    alpha: float = DEFAULT_ALPHA,
+    k: int = DEFAULT_RRF_K,
+) -> list[tuple[str, float]]:
+    """Compute Reciprocal Rank Fusion scores from semantic and FTS rank maps.
+
+    Args:
+        semantic_ranks: Mapping of memory ID to its rank in semantic search (1-based).
+        fts_ranks: Mapping of memory ID to its rank in FTS5 search (1-based).
+        alpha: Weight for semantic scores (0.0 = pure FTS, 1.0 = pure semantic).
+            Defaults to 0.7.
+        k: RRF constant to dampen the contribution of high ranks. Defaults to 60.
+
+    Returns:
+        List of (id, score) tuples sorted by descending score, ties broken by
+        ascending ID for determinism. Empty inputs return an empty list.
+    """
+    if not semantic_ranks and not fts_ranks:
+        return []
+
+    all_ids = set(semantic_ranks) | set(fts_ranks)
+    # IDs missing from one list get a default rank of len(the_list_they_ARE_in) + 1
+    # on the missing side (spec: "rank len(that_list) + 1 for the missing side").
+    n_semantic = len(semantic_ranks)
+    n_fts = len(fts_ranks)
+
+    scored: list[tuple[str, float]] = []
+    for mid in all_ids:
+        # If the ID is in semantic_ranks, use its actual rank.
+        # If missing, default = len(fts_ranks) + 1 (the list it IS in, if FTS-only).
+        semantic_rank = semantic_ranks.get(mid, n_fts + 1)
+        # If the ID is in fts_ranks, use its actual rank.
+        # If missing, default = len(semantic_ranks) + 1 (the list it IS in, if semantic-only).
+        fts_rank = fts_ranks.get(mid, n_semantic + 1)
+        score = alpha * (1 / (k + semantic_rank)) + (1 - alpha) * (1 / (k + fts_rank))
+        scored.append((mid, score))
+
+    scored.sort(key=lambda x: (-x[1], x[0]))
+    return scored
+
 
 class Retriever:
     """Retrieve and rank memories by relevance."""
@@ -72,6 +118,120 @@ class Retriever:
                 for mid in related_ids[:limit]:
                     if mid in related_memories:
                         results.append(related_memories[mid])
+
+        return results[:limit]
+
+    def hybrid_search(
+        self,
+        query: str,
+        limit: int = 20,
+        type_filter: str | None = None,
+        alpha: float = DEFAULT_ALPHA,
+        search_mode: str = "hybrid",
+    ) -> list[dict]:
+        """Search memories using hybrid RRF fusion of FTS5 and semantic results.
+
+        Args:
+            query: Search query string.
+            limit: Maximum number of results.
+            type_filter: Filter by memory type.
+            alpha: Weight for semantic scores (0.0 = pure FTS, 1.0 = pure
+                semantic). Defaults to 0.7.
+            search_mode: One of "hybrid", "fts", or "semantic".
+                - "hybrid": Run both FTS5 and semantic search, merge via RRF.
+                - "fts": Run FTS5 only.
+                - "semantic": Run semantic search only (requires embedder).
+
+        Returns:
+            List of memory dicts sorted by descending RRF score. Each dict
+            includes an ``_rrf_score`` key. Raises ValueError if
+            search_mode="semantic" and no embedder is configured.
+
+        Raises:
+            ValueError: If search_mode="semantic" and self._embedder is None.
+        """
+        if search_mode == "fts":
+            results = self._store.search(
+                query=query, type=type_filter, limit=limit, _include_rank=True
+            )
+            for r in results:
+                r["_rrf_score"] = float(r.get("_fts_rank", 0.0))
+            return results[:limit]
+
+        if search_mode == "semantic":
+            if self._embedder is None:
+                raise ValueError(
+                    "llmem: retrieve: semantic search requires an embedder"
+                )
+            query_vec = self._embedder.embed(query)
+            semantic_results = self._store.search_by_embedding(query_vec, limit=limit)
+            results = []
+            for rank, (mem, score) in enumerate(semantic_results, start=1):
+                mem["_rrf_score"] = score
+                results.append(mem)
+            return results[:limit]
+
+        # search_mode == "hybrid"
+        if self._embedder is None:
+            log.warning(
+                "llmem: retrieve: embedder not configured, falling back to FTS5-only"
+            )
+            return self.hybrid_search(
+                query=query,
+                limit=limit,
+                type_filter=type_filter,
+                alpha=alpha,
+                search_mode="fts",
+            )
+
+        # Run FTS5 search
+        fts_results = self._store.search(
+            query=query, type=type_filter, limit=limit, _include_rank=True
+        )
+        fts_ranks: dict[str, int] = {r["id"]: i + 1 for i, r in enumerate(fts_results)}
+
+        # Run semantic search
+        try:
+            query_vec = self._embedder.embed(query)
+            semantic_results = self._store.search_by_embedding(query_vec, limit=limit)
+            semantic_ranks: dict[str, int] = {
+                mem["id"]: i + 1 for i, (mem, _score) in enumerate(semantic_results)
+            }
+        except Exception:
+            log.warning(
+                "llmem: retrieve: semantic search failed, falling back to FTS5-only"
+            )
+            fts_only = self._store.search(
+                query=query, type=type_filter, limit=limit, _include_rank=True
+            )
+            for r in fts_only:
+                r["_rrf_score"] = float(r.get("_fts_rank", 0.0))
+            return fts_only[:limit]
+
+        # Compute RRF scores
+        scored = _rrf_score(semantic_ranks, fts_ranks, alpha=alpha)
+
+        # Merge result dicts, deduplicating by memory ID
+        all_results: dict[str, dict] = {}
+        for r in fts_results:
+            all_results[r["id"]] = r
+        for mem, _score in semantic_results:
+            if mem["id"] not in all_results:
+                all_results[mem["id"]] = mem
+
+        # Apply type_filter
+        if type_filter:
+            all_results = {
+                mid: r for mid, r in all_results.items() if r.get("type") == type_filter
+            }
+
+        # Build final sorted list with RRF scores
+        results: list[dict] = []
+        for mid, rrf_score in scored:
+            if mid in all_results:
+                mem = dict(all_results[mid])
+                mem["_rrf_score"] = rrf_score
+                results.append(mem)
 
         return results[:limit]
 
