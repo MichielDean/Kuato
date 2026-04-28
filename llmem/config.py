@@ -1,7 +1,8 @@
-"""Configuration loading for llmem."""
+"""Configuration loading and writing for llmem."""
 
 import copy
 import logging
+import os
 from pathlib import Path
 
 import yaml
@@ -351,3 +352,40 @@ def is_correction_detection_enabled(
     if val is None:
         return defaults["correction_detection"]["enabled"]
     return _as_bool(val)
+
+
+def write_config_yaml(path: Path, config: dict, force: bool = False) -> bool:
+    """Write *config* as YAML to *path*, creating parent directories if needed.
+
+    Creates the parent directory with ``0o700`` permissions (matching
+    ``llmem/store.py`` and ``llmem/paths.py`` conventions).  Uses
+    ``yaml.dump`` with ``default_flow_style=False`` for human-readable
+    output.
+
+    Args:
+        path: Destination file path (e.g. ``get_llmem_home() / "config.yaml"``).
+        config: The configuration dict to write.
+        force: If ``False`` (default) and *path* already exists, return
+            ``False`` without writing. If ``True``, overwrite the
+            existing file.
+
+    Returns:
+        ``True`` if the file was written successfully, ``False`` if the
+        file already existed and *force* was ``False``.
+
+    Raises:
+        OSError: On I/O failures (permission denied, disk full, etc.).
+    """
+    if path.exists() and not force:
+        log.info(
+            "llmem: config: %s already exists, skipping (use force=True to overwrite)",
+            path,
+        )
+        return False
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(str(path.parent), 0o700)
+
+    content = yaml.dump(config, default_flow_style=False, sort_keys=False)
+    path.write_text(content)
+    return True
