@@ -10,8 +10,11 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 from .store import MemoryStore, register_memory_type, get_registered_types
-from .paths import get_db_path, get_config_path
+from .paths import get_db_path, get_config_path, get_llmem_home
 from .registry import get_registered_cli_plugins
+from .config import write_config_yaml
+from .ollama import ProviderDetector
+from .paths import migrate_from_lobsterdog
 
 
 VALID_SOURCES = ["manual", "session", "heartbeat", "extraction", "import"]
@@ -227,6 +230,100 @@ def cmd_types(args):
         print(f"  {t}")
 
 
+def cmd_init(args):
+    """Initialize the llmem memory system: config, database, and provider detection.
+
+    Creates ``~/.config/llmem/`` (or ``LMEM_HOME``) with ``config.yaml``
+    and initializes the SQLite database (``memory.db``). Detects available
+    LLM providers (Ollama, OpenAI, Anthropic).
+
+    In interactive mode (default), prompts the user for configuration
+    values with sensible defaults shown in brackets. In non-interactive
+    mode (``--non-interactive``), uses all defaults without prompting.
+
+    Idempotent: if ``config.yaml`` already exists and ``--force`` is not
+    given, prints a message and returns without error.
+
+    Args:
+        args: An argparse Namespace with attributes:
+            - ollama_url (str or None): Override Ollama URL.
+            - non_interactive (bool): Skip prompts, use defaults.
+            - force (bool): Overwrite existing config.yaml.
+            - db (Path or None): Not used by init (always creates default).
+
+    Returns:
+        None. Prints to stdout on success, or stderr + sys.exit(1) on error.
+    """
+    detector = ProviderDetector()
+    ollama_url = args.ollama_url or "http://localhost:11434"
+
+    # Detect providers
+    detection = detector.detect(ollama_url=ollama_url)
+
+    # Build config dict
+    config = {
+        "memory": {
+            "ollama_url": detection["ollama_url"],
+            "embed_model": "nomic-embed-text",
+            "extract_model": "qwen2.5:1.5b",
+        },
+        "dream": {
+            "enabled": True,
+        },
+    }
+
+    if detection["provider"] != "none":
+        config["memory"]["provider"] = detection["provider"]
+
+    # Interactive prompts (unless --non-interactive)
+    if not args.non_interactive:
+        try:
+            url_input = input(f"Ollama URL [{detection['ollama_url']}]: ").strip()
+            if url_input:
+                config["memory"]["ollama_url"] = url_input
+
+            dream_default = "Y"
+            dream_input = (
+                input(f"Enable dream cycle? [{dream_default}]: ").strip().lower()
+            )
+            if dream_input not in ("", "y", "yes"):
+                config["dream"]["enabled"] = False
+        except KeyboardInterrupt:
+            print("\nInit cancelled.")
+            sys.exit(1)
+
+    # Ensure the home directory exists
+    home = get_llmem_home()
+
+    # Migrate from ~/.lobsterdog/ if it exists
+    old_home = Path.home() / ".lobsterdog"
+    if old_home.exists():
+        migrated = migrate_from_lobsterdog()
+        if migrated:
+            print(f"Migrated data from {old_home} to {home}")
+
+    # Write config.yaml
+    config_path = get_config_path()
+    written = write_config_yaml(config_path, config, force=args.force)
+    if not written and not args.force:
+        print(f"Config already exists at {config_path}. Use --force to overwrite.")
+        print("Skipping config write. Database will be verified.")
+
+    # Initialize the database via MemoryStore (runs migrations)
+    db_path = get_db_path()
+    try:
+        store = MemoryStore(db_path=db_path, disable_vec=True)
+        store.close()
+    except Exception as e:
+        print(f"Error: failed to initialize database: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Initialized llmem in {home}")
+    print(f"  Config: {config_path}")
+    print(f"  Database: {db_path}")
+    print(f"  Provider: {detection['provider']}")
+
+
 def main():
     """Entry point for the llmem CLI."""
     parser = argparse.ArgumentParser(
@@ -311,6 +408,24 @@ def main():
     # types
     subparsers.add_parser("types", help="List registered memory types")
 
+    # init
+    p_init = subparsers.add_parser("init", help="Initialize the llmem memory system")
+    p_init.add_argument(
+        "--ollama-url",
+        default=None,
+        help="Ollama base URL (default: http://localhost:11434)",
+    )
+    p_init.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Skip prompts and use defaults",
+    )
+    p_init.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing config.yaml",
+    )
+
     # Register CLI plugins
     for plugin_name in sorted(get_registered_cli_plugins()):
         from .registry import get_cli_plugin_setup_fn
@@ -345,6 +460,7 @@ def main():
         "import": cmd_import,
         "register-type": cmd_register_type,
         "types": cmd_types,
+        "init": cmd_init,
     }
 
     handler = commands.get(args.command)
