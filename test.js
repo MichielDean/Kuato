@@ -16,6 +16,7 @@ const os = require('os');
 const { execSync } = require('child_process');
 
 const SKILLS_DIR = path.join(__dirname, 'skills');
+const TEMPLATES_DIR = path.join(__dirname, 'templates');
 const EXPECTED_SKILLS = [
   'git-sync',
   'task-intake',
@@ -24,6 +25,11 @@ const EXPECTED_SKILLS = [
   'critical-code-reviewer',
   'pre-pr-review',
   'visual-explainer'
+];
+const EXPECTED_TEMPLATES = [
+  'rules.md',
+  'identity.md',
+  'user.md'
 ];
 const FORBIDDEN_PATTERNS = [
   /\blogmem\b/,
@@ -40,6 +46,7 @@ const FORBIDDEN_PATTERNS = [
   /\bcastellarius\b/,
   /\bcataractae\b/,
   /\baqueduct\b/,
+  /\blobresume\b/,
   /xargs.*sh\s+-c/,         // Command injection vulnerability
   /\bpass\s+github\b/,      // Internal credential path convention
 ];
@@ -189,8 +196,7 @@ function testFrontmatterNameValidFormat(skillDir) {
     path.basename(skillDir) + ' name "' + fm.name + '" matches ^[a-z0-9]+(-[a-z0-9]+)*$');
 }
 
-function testNoLobsterdogReferences(skillDir) {
-  const dirName = path.basename(skillDir);
+function checkNoPersonalReferences(dirPath, label) {
   var foundProblems = [];
   function checkFile(filePath, relativePath) {
     var content = fs.readFileSync(filePath, 'utf8');
@@ -215,10 +221,21 @@ function testNoLobsterdogReferences(skillDir) {
       }
     }
   }
-  walkDir(skillDir, dirName);
+  // Support both directory (for skills) and single file (for templates)
+  var stat = fs.statSync(dirPath);
+  if (stat.isDirectory()) {
+    walkDir(dirPath, label);
+  } else {
+    checkFile(dirPath, label);
+  }
   assert(foundProblems.length === 0,
-    dirName + ' has no Lobsterdog/Cistern/personal references' +
+    label + ' has no Lobsterdog/Cistern/personal references' +
     (foundProblems.length > 0 ? ' (found: ' + foundProblems.join('; ') + ')' : ''));
+}
+
+function testNoLobsterdogReferences(skillDir) {
+  var dirName = path.basename(skillDir);
+  checkNoPersonalReferences(skillDir, dirName);
 }
 
 function testLicenseFieldPresent(skillDir) {
@@ -244,6 +261,38 @@ function testNoClaudePluginFiles(skillDir) {
   const dirName = path.basename(skillDir);
   const claudePluginDir = path.join(skillDir, '.claude-plugin');
   assert(!fs.existsSync(claudePluginDir), dirName + ' has no .claude-plugin/ directory');
+}
+
+// ── Template Validation Tests ─────────────────────────────────────────
+
+function testTemplateExists(templateFile) {
+  var templatePath = path.join(TEMPLATES_DIR, templateFile);
+  assert(fs.existsSync(templatePath), templateFile + ' exists in templates/');
+  if (fs.existsSync(templatePath)) {
+    var content = fs.readFileSync(templatePath, 'utf8');
+    assert(content.trim().length > 0, templateFile + ' is non-empty');
+  }
+}
+
+function testTemplateEndsWithNewline(templateFile) {
+  var templatePath = path.join(TEMPLATES_DIR, templateFile);
+  if (!fs.existsSync(templatePath)) {
+    assert(false, templateFile + ' ends with newline: file missing');
+    return;
+  }
+  var content = fs.readFileSync(templatePath);
+  var lastByte = content[content.length - 1];
+  assert(lastByte === 0x0A,
+    templateFile + ' ends with trailing newline (cat-safe)');
+}
+
+function testTemplateNoPersonalReferences(templateFile) {
+  var templatePath = path.join(TEMPLATES_DIR, templateFile);
+  if (!fs.existsSync(templatePath)) {
+    assert(false, templateFile + ' no personal references: file missing');
+    return;
+  }
+  checkNoPersonalReferences(templatePath, 'templates/' + templateFile);
 }
 
 // ── Integration Tests ─────────────────────────────────────────────────
@@ -427,6 +476,22 @@ function testShareShRejectsSecrets() {
   }
 }
 
+function testTemplatesInPackageJsonFiles() {
+  var pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+  var hasTemplates = pkg.files && pkg.files.indexOf('templates/') !== -1;
+  assert(hasTemplates, 'package.json files array includes "templates/"');
+}
+
+function testOpencodeJsonLoadsAllHarnessFiles() {
+  var config = JSON.parse(fs.readFileSync(path.join(__dirname, 'opencode.json'), 'utf8'));
+  var expected = ['harness/identity.md', 'harness/user.md', 'harness/rules.md'];
+  var instructions = config.instructions || [];
+  for (var i = 0; i < expected.length; i++) {
+    assert(instructions.indexOf(expected[i]) !== -1,
+      'opencode.json instructions includes ' + expected[i]);
+  }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────
 
 console.log('\n=== Validation Tests ===\n');
@@ -446,6 +511,17 @@ for (var i = 0; i < EXPECTED_SKILLS.length; i++) {
   console.log('');
 }
 
+console.log('=== Template Validation Tests ===\n');
+
+for (var t = 0; t < EXPECTED_TEMPLATES.length; t++) {
+  var tmplFile = EXPECTED_TEMPLATES[t];
+  console.log('--- ' + tmplFile + ' ---');
+  testTemplateExists(tmplFile);
+  testTemplateNoPersonalReferences(tmplFile);
+  testTemplateEndsWithNewline(tmplFile);
+  console.log('');
+}
+
 console.log('=== Integration Tests ===\n');
 
 testInstallCreatesTargetDir();
@@ -453,6 +529,8 @@ testInstallCopiesAllSkills();
 testInstallOverwritesExisting();
 testInstallFailsOnPermissionError();
 testShareShRejectsSecrets();
+testTemplatesInPackageJsonFiles();
+testOpencodeJsonLoadsAllHarnessFiles();
 
 console.log('\n=== Results ===\n');
 console.log('Passed: ' + passes);
