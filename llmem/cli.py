@@ -134,7 +134,7 @@ def cmd_search(args):
     code_results: list[dict] = []
     if getattr(args, "include_code", False):
         from .code_index import CodeIndex
-        from .retrieve import _rrf_score as _compute_rrf_score, DEFAULT_RRF_K
+        from .retrieve import DEFAULT_RRF_K
 
         code_index = CodeIndex(db_path=args.db)
         try:
@@ -416,9 +416,8 @@ def cmd_learn(args):
                 for chunk, chunk_id in zip(chunks, chunk_ids):
                     try:
                         vec = embedder.embed(chunk.content)
-                        from .embed import EmbeddingEngine as _EE
 
-                        embedding_bytes = _EE.vec_to_bytes(vec)
+                        embedding_bytes = EmbeddingEngine.vec_to_bytes(vec)
                         conn.execute(
                             'UPDATE "code_chunks" SET "embedding" = ? WHERE "id" = ?',
                             (embedding_bytes, chunk_id),
