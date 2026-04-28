@@ -63,6 +63,12 @@ This pulls in `sqlite-vec>=0.1.6`.
 ## Quick Start
 
 ```bash
+# Initialize the memory system (creates config, database, detects providers)
+llmem init
+
+# Non-interactive mode (skip prompts, use defaults)
+llmem init --non-interactive
+
 # Add a memory
 llmem add --type fact --content "Project uses pytest for testing"
 
@@ -175,6 +181,7 @@ Commands:
   import          Import memories from a JSON file
   register-type   Register a new memory type
   types           List registered memory types
+  init            Initialize the llmem memory system
 ```
 
 Plugins registered via [`register_cli_plugin`](#cli-plugin-registry) add additional subcommands at runtime.
@@ -254,6 +261,25 @@ llmem types
 
 The default types are: `fact`, `decision`, `preference`, `event`, `project_state`, `procedure`, `conversation`, `self_assessment`. Register additional types at runtime via `register-type`. Type names must match `^[a-z][a-z0-9_]*$` and be at most 64 characters.
 
+### `llmem init`
+
+```bash
+llmem init [--ollama-url URL] [--non-interactive] [--force]
+```
+
+Initialize the llmem memory system. Creates `~/.config/llmem/` (or `LMEM_HOME`) with `config.yaml` and initializes the SQLite database (`memory.db`). Detects available LLM providers in order of precedence: Ollama (if reachable) > OpenAI (if `OPENAI_API_KEY` is set) > Anthropic (if `ANTHROPIC_API_KEY` is set).
+
+- `--ollama-url URL`: Override the Ollama base URL (default: `http://localhost:11434`). Must be a valid `http://` or `https://` URL.
+- `--non-interactive`: Skip all prompts and use defaults. Useful for scripting and CI.
+- `--force`: Overwrite an existing `config.yaml`. Without this flag, init is idempotent — running it twice prints a message and exits without error.
+
+In interactive mode, you'll be prompted for:
+
+1. **Ollama URL** — press Enter to accept the detected/default URL, or type a custom URL (validated for safety).
+2. **Dream cycle** — enable or disable the background dream cycle (default: enabled).
+
+If `~/.lobsterdog/` exists (legacy path), init automatically migrates data to `~/.config/llmem/`.
+
 ## Python API
 
 ```python
@@ -271,6 +297,8 @@ from llmem import (
     register_dream_hook,
     register_cli_plugin,
 )
+from llmem.config import write_config_yaml
+from llmem.ollama import ProviderDetector, is_ollama_running
 
 # Open a store
 store = MemoryStore()  # uses default path ~/.config/llmem/memory.db
@@ -320,6 +348,23 @@ config = load_config()
 home = get_llmem_home()
 db_path = get_db_path()
 config_path = get_config_path()
+
+# Programmatically write config.yaml
+written = write_config_yaml(
+    config_path,
+    {"memory": {"ollama_url": "http://localhost:11434", "embed_model": "nomic-embed-text"}},
+    force=False,  # Set True to overwrite existing
+)
+
+# Detect available LLM providers
+detector = ProviderDetector()
+result = detector.detect(ollama_url="http://localhost:11434")
+# result["provider"] → "ollama" | "openai" | "anthropic" | "none"
+# result["ollama_url"], result["openai_key_found"], result["anthropic_key_found"]
+
+# Check if Ollama is running
+if is_ollama_running("http://localhost:11434"):
+    print("Ollama is reachable")
 ```
 
 ### Session Adapters
