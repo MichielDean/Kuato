@@ -139,3 +139,67 @@ class TestMigration_004Inbox:
         # Should NOT contain data DML (no INSERT INTO memories, etc.)
         # But it does contain the schema_migrations version insert which is fine
         assert "BEGIN TRANSACTION" not in sql_content  # No transaction wrapping for DDL
+
+
+class TestMigration_CodeChunksTable:
+    """Test that migration 005 creates the code_chunks table properly."""
+
+    def test_migration_005_applied(self, tmp_path):
+        """Migration 005 is tracked in _schema_migrations."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        conn = store._connect()
+        rows = conn.execute(
+            'SELECT "version" FROM "_schema_migrations" ORDER BY "version"'
+        ).fetchall()
+        versions = [row[0] for row in rows]
+        store.close()
+        assert 5 in versions
+
+    def test_code_chunks_table_has_required_columns(self, tmp_path):
+        """code_chunks table has all columns from the spec."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        conn = store._connect()
+        cursor = conn.execute("PRAGMA table_info('code_chunks')")
+        columns = {row[1] for row in cursor.fetchall()}
+        store.close()
+        expected = {
+            "id",
+            "file_path",
+            "start_line",
+            "end_line",
+            "content",
+            "embedding",
+            "language",
+            "chunk_type",
+            "created_at",
+        }
+        assert expected.issubset(columns)
+
+    def test_code_chunks_indexes_exist(self, tmp_path):
+        """code_chunks table has the expected indexes."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        conn = store._connect()
+        indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        }
+        store.close()
+        assert "idx_code_chunks_file_path" in indexes
+        assert "idx_code_chunks_language" in indexes
+        assert "idx_code_chunks_chunk_type" in indexes
+
+    def test_005_is_ddl_only(self):
+        """Migration 005 should only contain DDL, not DML (no BEGIN TRANSACTION)."""
+        import importlib.resources
+
+        migrations_pkg = importlib.resources.files("llmem_migrations")
+        sql_content = migrations_pkg.joinpath("005_add_code_chunks.sql").read_text()
+        assert "CREATE TABLE" in sql_content
+        assert "BEGIN TRANSACTION" not in sql_content
+        # Only the schema_migrations INSERT is allowed, no data DML
+        assert 'INSERT INTO "memory_types"' not in sql_content

@@ -410,4 +410,52 @@ class TestStore_ExportAll_Limit:
         # limit=None should return all memories without capping
         result = store.export_all(limit=None)
         assert len(result) == 5
+
+
+class TestStore_Migration005Compatibility:
+    """Test that migration 005 (code_chunks) doesn't break existing MemoryStore functionality."""
+
+    def test_store_init_with_code_chunks_table(self, tmp_path):
+        """MemoryStore can initialize when code_chunks table exists."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        # Verify the memories table still works
+        mid = store.add(type="fact", content="test after migration 005")
+        result = store.get(mid)
+        assert result is not None
+        assert result["content"] == "test after migration 005"
+        store.close()
+
+    def test_code_chunks_table_exists_after_store_init(self, tmp_path):
+        """The code_chunks table is created by migration 005 after MemoryStore init."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        conn = store._connect()
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='code_chunks'"
+        ).fetchone()
+        store.close()
+        assert result is not None
+
+    def test_store_operations_unchanged_after_migration(self, tmp_path):
+        """All basic MemoryStore operations still work after migration 005."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        # add
+        mid = store.add(type="fact", content="migration 005 test", confidence=0.9)
+        # get
+        result = store.get(mid)
+        assert result["content"] == "migration 005 test"
+        # search
+        results = store.search(query="migration")
+        assert len(results) >= 1
+        # count
+        assert store.count() >= 1
+        # update
+        store.update(mid, content="updated migration 005 test")
+        result = store.get(mid)
+        assert result["content"] == "updated migration 005 test"
+        # delete
+        assert store.delete(mid)
+        assert store.get(mid) is None
         store.close()

@@ -1,6 +1,7 @@
 """Tests for the llmem CLI entry point."""
 
 import argparse
+import io
 import subprocess
 import sys
 from pathlib import Path
@@ -480,3 +481,117 @@ class TestCli_Consolidate:
         store2 = MemoryStore(db_path=db, disable_vec=True)
         assert store2.inbox_count() == 1
         store2.close()
+
+
+class TestCli_Learn:
+    """Test the cmd_learn CLI handler."""
+
+    def test_learn_processes_directory(self, tmp_path):
+        """cmd_learn processes a directory and reports chunk count."""
+        from llmem.cli import cmd_learn
+
+        # Create a small code directory
+        code_dir = tmp_path / "code"
+        code_dir.mkdir()
+        (code_dir / "hello.py").write_text("def hello():\n    print('hello')\n")
+        (code_dir / "world.py").write_text("def world():\n    print('world')\n")
+
+        db = tmp_path / "learn_test.db"
+        import argparse
+
+        args = argparse.Namespace(
+            path=str(code_dir),
+            db=db,
+            strategy="paragraph",
+            window_size=50,
+            overlap=10,
+            no_embed=True,
+            ollama_url=None,
+        )
+
+        # Capture stdout
+        import io
+
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            cmd_learn(args)
+        finally:
+            output = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+
+        assert "Ingested" in output
+        assert "chunks" in output
+
+    def test_learn_with_fixed_strategy(self, tmp_path):
+        """cmd_learn with --strategy=fixed uses FixedLineChunking."""
+        from llmem.cli import cmd_learn
+
+        code_dir = tmp_path / "code"
+        code_dir.mkdir()
+        (code_dir / "app.py").write_text("\n".join(f"line{i}" for i in range(20)))
+
+        db = tmp_path / "learn_fixed.db"
+        import argparse
+
+        args = argparse.Namespace(
+            path=str(code_dir),
+            db=db,
+            strategy="fixed",
+            window_size=10,
+            overlap=2,
+            no_embed=True,
+            ollama_url=None,
+        )
+
+        import io
+
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            cmd_learn(args)
+        finally:
+            output = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+
+        assert "Ingested" in output
+
+    def test_learn_nonexistent_directory_exits(self, tmp_path):
+        """cmd_learn exits with error for non-existent directory."""
+        from llmem.cli import cmd_learn
+
+        import argparse
+
+        args = argparse.Namespace(
+            path=str(tmp_path / "nonexistent"),
+            db=tmp_path / "test.db",
+            strategy="paragraph",
+            window_size=50,
+            overlap=10,
+            no_embed=True,
+            ollama_url=None,
+        )
+
+        with pytest.raises(SystemExit):
+            cmd_learn(args)
+
+    def test_search_include_code_flag(self, tmp_path):
+        """The search command accepts --include-code flag."""
+        from llmem.cli import main
+
+        # Just verify the flag is recognized in the parser
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        try:
+            sys.argv = ["llmem", "search", "--help"]
+            main()
+        except SystemExit:
+            pass
+        finally:
+            output = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+        assert "--include-code" in output
