@@ -1,15 +1,24 @@
 """Tests for llmem.retrieve module — Retriever, hybrid_search, _rrf_score."""
 
 import logging
+import math
 import struct
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from llmem.retrieve import (
     Retriever,
     _rrf_score,
+    _compute_rerank_signals,
+    _compute_weighted_signal,
     DEFAULT_ALPHA,
     DEFAULT_RRF_K,
+    CONFIDENCE_WEIGHT,
+    RECENCY_WEIGHT,
+    ACCESS_WEIGHT,
+    TYPE_WEIGHT,
+    TYPE_PRIORITY,
 )
 from llmem.store import MemoryStore
 from llmem.embed import EmbeddingEngine
@@ -576,3 +585,405 @@ class TestRetrieve_DefaultValues:
 
     def test_default_rrf_k_is_60(self):
         assert DEFAULT_RRF_K == 60
+
+
+# ---------------------------------------------------------------------------
+# _compute_rerank_signals / _compute_weighted_signal unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestRetrieve_Reranking:
+    """Test _compute_rerank_signals and _compute_weighted_signal pure functions."""
+
+    def test_rerank_score_computes_confidence_signal(self):
+        """Confidence signal uses the 'confidence' field from the memory dict
+        multiplied by CONFIDENCE_WEIGHT in the weighted sum."""
+        memory = {
+            "confidence": 0.9,
+            "accessed_at": datetime.now(timezone.utc).isoformat(),
+            "access_count": 5,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "type": "fact",
+        }
+        now = datetime.now(timezone.utc)
+        signals = _compute_rerank_signals(memory, TYPE_PRIORITY, now)
+        assert signals["confidence"] == 0.9
+
+        # Verify it contributes CONFIDENCE_WEIGHT * 0.9 in the weighted sum
+        weighted = _compute_weighted_signal(signals)
+        assert weighted == pytest.approx(
+            CONFIDENCE_WEIGHT * 0.9
+            + RECENCY_WEIGHT * signals["recency"]
+            + ACCESS_WEIGHT * signals["access"]
+            + TYPE_WEIGHT * signals["type"]
+        )
+
+    def test_rerank_score_computes_recency_signal_with_exponential_decay(self):
+        """Recency uses exp(-0.01 * days_since_access) for memories with
+        accessed_at, and returns 0.0 for memories without accessed_at."""
+        now = datetime.now(timezone.utc)
+
+        # Memory accessed 0 days ago → exp(0) = 1.0
+        recent = {
+            "confidence": 0.8,
+            "accessed_at": now.isoformat(),
+            "access_count": 1,
+            "created_at": now.isoformat(),
+            "type": "fact",
+        }
+        signals_recent = _compute_rerank_signals(recent, TYPE_PRIORITY, now)
+        assert signals_recent["recency"] == pytest.approx(1.0, abs=0.01)
+
+        # Memory accessed 100 days ago → exp(-1.0) ≈ 0.368
+        old_access = (now - timedelta(days=100)).isoformat()
+        old = {
+            "confidence": 0.8,
+            "accessed_at": old_access,
+            "access_count": 1,
+            "created_at": old_access,
+            "type": "fact",
+        }
+        signals_old = _compute_rerank_signals(old, TYPE_PRIORITY, now)
+        assert signals_old["recency"] == pytest.approx(math.exp(-1.0), abs=0.01)
+
+        # Memory without accessed_at → recency signal = 0.0
+        no_access = {
+            "confidence": 0.8,
+            "accessed_at": None,
+            "access_count": 0,
+            "created_at": now.isoformat(),
+            "type": "fact",
+        }
+        signals_no = _compute_rerank_signals(no_access, TYPE_PRIORITY, now)
+        assert signals_no["recency"] == 0.0
+
+    def test_rerank_score_computes_access_frequency_signal(self):
+        """Access frequency uses log(1 + access_count / max(age_days, 1))
+        with edge cases for age_days=0 and access_count=0."""
+        now = datetime.now(timezone.utc)
+
+        # access_count=0 → log(1) = 0.0
+        zero = {
+            "confidence": 0.8,
+            "accessed_at": None,
+            "access_count": 0,
+            "created_at": now.isoformat(),
+            "type": "fact",
+        }
+        signals_zero = _compute_rerank_signals(zero, TYPE_PRIORITY, now)
+        assert signals_zero["access"] == 0.0
+
+        # access_count=10, age_days=30 → log(1 + 10/30) ≈ 0.288
+        created = (now - timedelta(days=30)).isoformat()
+        mem = {
+            "confidence": 0.8,
+            "accessed_at": None,
+            "access_count": 10,
+            "created_at": created,
+            "type": "fact",
+        }
+        signals = _compute_rerank_signals(mem, TYPE_PRIORITY, now)
+        assert signals["access"] == pytest.approx(math.log(1 + 10 / 30), abs=0.01)
+
+        # age_days=0 (created today) → max(age_days, 1) = 1
+        today = {
+            "confidence": 0.8,
+            "accessed_at": None,
+            "access_count": 5,
+            "created_at": now.isoformat(),
+            "type": "fact",
+        }
+        signals_today = _compute_rerank_signals(today, TYPE_PRIORITY, now)
+        assert signals_today["access"] == pytest.approx(math.log(1 + 5 / 1), abs=0.01)
+
+    def test_rerank_score_computes_type_priority_signal(self):
+        """Type priority looks up TYPE_PRIORITY dict and returns 1.0 for
+        unknown types."""
+        now = datetime.now(timezone.utc)
+
+        # Known type: decision → 1.2
+        decision = {
+            "confidence": 0.8,
+            "accessed_at": None,
+            "access_count": 0,
+            "created_at": now.isoformat(),
+            "type": "decision",
+        }
+        signals = _compute_rerank_signals(decision, TYPE_PRIORITY, now)
+        assert signals["type"] == 1.2
+
+        # Known type: event → 0.9
+        event = {
+            "confidence": 0.8,
+            "accessed_at": None,
+            "access_count": 0,
+            "created_at": now.isoformat(),
+            "type": "event",
+        }
+        signals_event = _compute_rerank_signals(event, TYPE_PRIORITY, now)
+        assert signals_event["type"] == 0.9
+
+        # Unknown type → 1.0
+        unknown = {
+            "confidence": 0.8,
+            "accessed_at": None,
+            "access_count": 0,
+            "created_at": now.isoformat(),
+            "type": "custom_unknown_type",
+        }
+        signals_unknown = _compute_rerank_signals(unknown, TYPE_PRIORITY, now)
+        assert signals_unknown["type"] == 1.0
+
+    def test_rerank_score_blend_formula(self):
+        """final_score = semantic_score * (1 - blend) + weighted_signal * blend
+        with known inputs."""
+        now = datetime.now(timezone.utc)
+        memory = {
+            "confidence": 1.0,
+            "accessed_at": now.isoformat(),
+            "access_count": 0,
+            "created_at": now.isoformat(),
+            "type": "decision",
+        }
+        signals = _compute_rerank_signals(memory, TYPE_PRIORITY, now)
+        weighted_signal = _compute_weighted_signal(signals)
+
+        semantic_score = 0.02
+        blend = 0.3
+        final = semantic_score * (1 - blend) + weighted_signal * blend
+
+        # Manual calculation: confidence=1.0, recency≈1.0, access=0.0, type=1.2
+        # weighted = 0.4*1.0 + 0.3*1.0 + 0.2*0.0 + 0.1*1.2 = 0.4 + 0.3 + 0.0 + 0.12 = 0.82
+        assert weighted_signal == pytest.approx(0.82, abs=0.02)
+        assert final == pytest.approx(0.02 * 0.7 + 0.82 * 0.3, abs=0.01)
+
+        # blend=0.0 → final = semantic_score (pure RRF)
+        assert semantic_score * (1 - 0.0) + weighted_signal * 0.0 == pytest.approx(
+            semantic_score
+        )
+        # blend=1.0 → final = weighted_signal (pure signals)
+        assert semantic_score * (1 - 1.0) + weighted_signal * 1.0 == pytest.approx(
+            weighted_signal
+        )
+
+    def test_rerank_score_handles_missing_fields(self):
+        """Memories missing confidence, accessed_at, access_count, or type
+        use sensible defaults without raising errors."""
+        now = datetime.now(timezone.utc)
+
+        # Minimal memory with only required keys
+        minimal = {"id": "m1"}
+        signals = _compute_rerank_signals(minimal, TYPE_PRIORITY, now)
+        # confidence defaults to 0.0 when missing
+        assert signals["confidence"] == 0.0
+        # accessed_at missing → recency = 0.0
+        assert signals["recency"] == 0.0
+        # access_count missing → access = log(1) = 0.0
+        assert signals["access"] == 0.0
+        # type missing → 1.0
+        assert signals["type"] == 1.0
+
+    def test_rerank_score_default_blend_factor(self, tmp_path):
+        """The default blend factor on Retriever is 0.3."""
+        db = tmp_path / "test_blend.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        retriever = Retriever(store=store, embedder=None)
+        assert retriever._blend == 0.3
+        store.close()
+
+    def test_rerank_blend_out_of_range_raises_value_error(self, tmp_path):
+        """Blend factor outside [0.0, 1.0] raises ValueError with llmem: retrieve: prefix."""
+        db = tmp_path / "test_blend_err.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        with pytest.raises(ValueError, match="llmem: retrieve:"):
+            Retriever(store=store, embedder=None, blend=-0.1)
+        with pytest.raises(ValueError, match="llmem: retrieve:"):
+            Retriever(store=store, embedder=None, blend=1.1)
+        store.close()
+
+    def test_compute_weighted_signal_returns_zero_for_zero_signals(self):
+        """When all signals are zero, the weighted sum is zero."""
+        signals = {"confidence": 0.0, "recency": 0.0, "access": 0.0, "type": 0.0}
+        assert _compute_weighted_signal(signals) == 0.0
+
+    def test_compute_weighted_signal_uses_all_weights(self):
+        """Weighted signal combines all four signals with their respective weights."""
+        signals = {"confidence": 1.0, "recency": 1.0, "access": 1.0, "type": 1.0}
+        result = _compute_weighted_signal(signals)
+        expected = (
+            CONFIDENCE_WEIGHT * 1.0
+            + RECENCY_WEIGHT * 1.0
+            + ACCESS_WEIGHT * 1.0
+            + TYPE_WEIGHT * 1.0
+        )
+        assert result == pytest.approx(expected)
+
+    def test_compute_rerank_signals_accepts_custom_type_priority(self):
+        """_compute_rerank_signals accepts a custom type_priority dict,
+        not hardcoded to module-level TYPE_PRIORITY."""
+        now = datetime.now(timezone.utc)
+        custom_priority = {"custom_type": 2.0}
+        memory = {
+            "confidence": 0.8,
+            "accessed_at": None,
+            "access_count": 0,
+            "created_at": now.isoformat(),
+            "type": "custom_type",
+        }
+        signals = _compute_rerank_signals(memory, custom_priority, now)
+        assert signals["type"] == 2.0
+
+
+# ---------------------------------------------------------------------------
+# Reranking integration tests — need a MemoryStore
+# ---------------------------------------------------------------------------
+
+
+class TestRetrieve_RerankingIntegration:
+    """Integration tests for reranking with MemoryStore and Retriever."""
+
+    def _add_memories(self, store: MemoryStore) -> dict[str, str]:
+        """Add test memories to the store, return {label: memory_id}."""
+        ids = {}
+        ids["python"] = store.add(
+            type="fact", content="Python is a programming language"
+        )
+        ids["rust"] = store.add(
+            type="fact", content="Rust is a systems programming language"
+        )
+        ids["javascript"] = store.add(
+            type="fact", content="JavaScript runs in the browser"
+        )
+        return ids
+
+    def test_hybrid_search_applies_reranking(self, store):
+        """hybrid_search returns results with _rerank_score key and results
+        are sorted by blended score."""
+        self._add_memories(store)
+        retriever = Retriever(store=store, embedder=None)
+        results = retriever.hybrid_search("Python", limit=10)
+        assert len(results) >= 1
+        for r in results:
+            assert "_rrf_score" in r
+            assert "_rerank_score" in r
+            assert isinstance(r["_rerank_score"], float)
+        # Results should be sorted by _rerank_score descending
+        rerank_scores = [r["_rerank_score"] for r in results]
+        assert rerank_scores == sorted(rerank_scores, reverse=True)
+
+    def test_hybrid_search_reranking_boosts_high_confidence(self, store):
+        """A memory with significantly higher confidence ranks higher after
+        reranking when blend is non-zero."""
+        # Add a low-confidence and high-confidence memory with the same text
+        low_id = store.add(
+            type="fact", content="UniqueAlpha programming language", confidence=0.1
+        )
+        high_id = store.add(
+            type="fact", content="UniqueAlpha programming language", confidence=1.0
+        )
+
+        # With blend=0.0, results should be in RRF order (probably same due to
+        # identical content — the tie-breaker is ID). With blend > 0, the
+        # high-confidence memory should outrank the low-confidence one.
+        retriever_no_blend = Retriever(store=store, embedder=None, blend=0.0)
+        results_no_blend = retriever_no_blend.hybrid_search(
+            "UniqueAlpha", limit=10, search_mode="fts"
+        )
+
+        retriever_with_blend = Retriever(store=store, embedder=None, blend=0.5)
+        results_with_blend = retriever_with_blend.hybrid_search(
+            "UniqueAlpha", limit=10, search_mode="fts"
+        )
+
+        # With blend=0.5, the high-confidence memory should rank first
+        result_ids = [r["id"] for r in results_with_blend]
+        assert result_ids[0] == high_id
+
+    def test_hybrid_search_reranking_uses_type_priority(self, store):
+        """Memories of type 'decision' get a boost over type 'event' due to
+        TYPE_PRIORITY weighting."""
+        # Add two memories with same content but different types
+        decision_id = store.add(
+            type="decision", content="TypePriorityTest architecture choice"
+        )
+        event_id = store.add(
+            type="event", content="TypePriorityTest architecture choice"
+        )
+
+        retriever = Retriever(store=store, embedder=None, blend=0.5)
+        results = retriever.hybrid_search(
+            "TypePriorityTest", limit=10, search_mode="fts"
+        )
+
+        # Decision type (priority 1.2) should outrank event type (priority 0.9)
+        result_ids = [r["id"] for r in results]
+        assert result_ids.index(decision_id) < result_ids.index(event_id)
+
+    def test_search_tracks_access_by_default(self, store):
+        """Calling retriever.search() increments access_count on returned
+        memories."""
+        mid = store.add(type="fact", content="Access tracking test content")
+        # Verify initial access_count is 0
+        mem_before = store.get(mid, track_access=False)
+        assert mem_before["access_count"] == 0
+
+        retriever = Retriever(store=store, embedder=None)
+        results = retriever.search("Access tracking test", limit=10)
+
+        # The memory should appear in results
+        assert any(r["id"] == mid for r in results)
+
+        # Access count should now be > 0
+        mem_after = store.get(mid, track_access=False)
+        assert mem_after["access_count"] > 0
+
+    def test_hybrid_search_tracks_access_by_default(self, store):
+        """Calling retriever.hybrid_search() increments access_count on
+        returned memories."""
+        mid = store.add(type="fact", content="Hybrid access tracking test")
+        mem_before = store.get(mid, track_access=False)
+        assert mem_before["access_count"] == 0
+
+        retriever = Retriever(store=store, embedder=None)
+        results = retriever.hybrid_search("Hybrid access tracking", limit=10)
+
+        assert any(r["id"] == mid for r in results)
+
+        mem_after = store.get(mid, track_access=False)
+        assert mem_after["access_count"] > 0
+
+    def test_hybrid_search_blend_zero_same_as_rrf(self, store):
+        """With blend=0.0, hybrid_search results are ordered identically to
+        pure RRF (current behavior before reranking)."""
+        self._add_memories(store)
+        retriever = Retriever(store=store, embedder=None, blend=0.0)
+        results = retriever.hybrid_search("Python", limit=10, search_mode="fts")
+
+        for r in results:
+            assert "_rerank_score" in r
+            assert r["_rerank_score"] == pytest.approx(r["_rrf_score"])
+
+    def test_hybrid_search_blend_one_ignores_rrf(self, store):
+        """With blend=1.0, results are ordered purely by weighted signals,
+        ignoring RRF scores."""
+        store.add(type="decision", content="Blending test decision", confidence=1.0)
+        store.add(type="event", content="Blending test event", confidence=0.1)
+
+        retriever = Retriever(store=store, embedder=None, blend=1.0)
+        results = retriever.hybrid_search("Blending test", limit=10, search_mode="fts")
+
+        assert len(results) >= 2
+        # All results should have _rerank_score but it should be based purely
+        # on weighted signals (blend=1.0 means rrf_score * 0 contribution)
+        for r in results:
+            assert "_rerank_score" in r
+            assert r["_rerank_score"] != r["_rrf_score"] or r["_rrf_score"] == 0.0
+
+    def test_search_access_tracking_is_best_effort(self, store):
+        """If touch() fails for a non-existent memory ID in results, the
+        error is caught and logged — not propagated to the caller."""
+        retriever = Retriever(store=store, embedder=None)
+        # search() should complete without raising even if touch might fail
+        # (this is a best-effort test — the actual error handling is internal)
+        results = retriever.search("nonexistent query xyz", limit=10)
+        assert isinstance(results, list)

@@ -329,13 +329,13 @@ llmem add --type TYPE --content TEXT [--summary TEXT] [--source SOURCE] \
 llmem search QUERY [--type TYPE] [--limit N] [--json] [--fts-only | --semantic-only]
 ```
 
-Hybrid search combining FTS5 keyword search and vector semantic search via Reciprocal Rank Fusion (RRF). By default, both search modes are merged with `alpha=0.7` (favoring semantic results while keeping keyword relevance).
+Hybrid search combining FTS5 keyword search and vector semantic search via Reciprocal Rank Fusion (RRF), followed by multi-signal reranking. By default, both search modes are merged with `alpha=0.7` (favoring semantic results while keeping keyword relevance), then reranked with `blend=0.3` (70% semantic, 30% confidence/recency/access/type signals).
 
 - `--fts-only`: Use FTS5 keyword search only (no embedder needed).
 - `--semantic-only`: Use semantic (embedding) search only (requires an embedder). Raises an error if no embedder is available.
-- Without either flag: hybrid mode — runs both FTS5 and semantic search, fuses results via RRF. Falls back to FTS5-only if no embedder is configured.
+- Without either flag: hybrid mode — runs both FTS5 and semantic search, fuses results via RRF, then applies reranking. Falls back to FTS5-only if no embedder is configured.
 
-With `--json`, outputs raw JSON (each result includes an `_rrf_score` key); otherwise, a human-readable table with an `rrf=` score column.
+With `--json`, outputs raw JSON (each result includes `_rrf_score` and `_rerank_score` keys); otherwise, a human-readable table with an `rrf=` score column.
 
 ### `llmem list`
 
@@ -409,6 +409,37 @@ In interactive mode, you'll be prompted for:
 
 If `~/.lobsterdog/` exists (legacy path), init automatically migrates data to `~/.config/llmem/`.
 
+## Multi-Signal Reranking
+
+After RRF fusion, search results are automatically reranked using a blend of the RRF score and four weighted signals:
+
+```
+final_score = rrf_score * (1 - blend) + weighted_signal * blend
+```
+
+**Default blend factor: 0.3** (70% RRF, 30% signals). Configure via `Retriever(store, embedder, blend=...)`. Range: 0.0 (pure RRF) to 1.0 (pure signals). Out-of-range values raise `ValueError`.
+
+### Signals and Weights
+
+| Signal | Weight | Formula |
+|--------|--------|---------|
+| Confidence | 0.4 | Direct use of `confidence` field (0.0–1.0, default 0.0 for missing) |
+| Recency | 0.3 | `exp(-0.01 * days_since_access)` (0.0 if never accessed) |
+| Access frequency | 0.2 | `log(1 + access_count / max(age_days, 1))` (0.0 if never accessed) |
+| Type priority | 0.1 | Lookup in `TYPE_PRIORITY` dict (default 1.0 for unknown types) |
+
+### Type Priority
+
+| Type | Priority | | Type | Priority |
+|------|----------|-|------|----------|
+| decision | 1.2 | | fact | 1.0 |
+| preference | 1.1 | | project_state | 1.0 |
+| procedure | 1.1 | | self_assessment | 1.0 |
+| | | | event | 0.9 |
+| | | | conversation | 0.7 |
+
+Search results include both `_rrf_score` (raw RRF fusion score) and `_rerank_score` (blended final score). Results are sorted by `_rerank_score` descending, with ties broken by ascending memory ID. Search operations (`Retriever.search()` and `Retriever.hybrid_search()`) automatically track access — each returned result's `access_count` and `accessed_at` are updated (best-effort), keeping the recency and access frequency signals current.
+
 ## Python API
 
 ```python
@@ -446,7 +477,7 @@ from llmem.embed import EmbeddingEngine
 embedder = EmbeddingEngine()
 retriever = Retriever(store=store, embedder=embedder)
 
-# Default: hybrid mode (alpha=0.7, favors semantic)
+# Default: hybrid mode (alpha=0.7, favors semantic), reranking blend=0.3
 results = retriever.hybrid_search("Python async patterns", limit=10)
 
 # FTS5-only (no embedder needed)
@@ -458,7 +489,11 @@ results = retriever.hybrid_search("Python async patterns", search_mode="semantic
 # Control semantic vs. keyword weight (0.0 = pure FTS, 1.0 = pure semantic)
 results = retriever.hybrid_search("query", alpha=0.5)
 
-# Each result dict includes an "_rrf_score" key with the RRF score
+# Control reranking blend (0.0 = pure RRF, 1.0 = pure signal-based)
+# blend=0.3 default: 70% RRF score + 30% weighted signals (confidence, recency, access, type)
+retriever = Retriever(store=store, embedder=embedder, blend=0.5)
+
+# Each result dict includes "_rrf_score" (RRF fusion score) and "_rerank_score" (blended final score)
 
 # Get by ID
 mem = store.get(mid)
