@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "llmem"
 version = "0.1.0"
-description = "LLMem — structured memory with semantic search"
+description = "LLMem — structured memory with semantic search and provider abstraction"
 requires-python = ">=3.11"
 dependencies = [
     "pyyaml",
@@ -13,13 +13,13 @@ dependencies = [
 
 [project.optional-dependencies]
 vec = ["sqlite-vec>=0.1.6"]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=9.0"]
 
 [project.scripts]
 llmem = "llmem.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["llmem*", "llmem_migrations*"]
+include = ["llmem*", "llmem_migrations*", "memory*"]
 
 [tool.setuptools.package-data]
 llmem = ["py.typed"]
