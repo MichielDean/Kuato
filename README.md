@@ -438,7 +438,7 @@ final_score = rrf_score * (1 - blend) + weighted_signal * blend
 | | | | event | 0.9 |
 | | | | conversation | 0.7 |
 
-Search results include both `_rrf_score` (raw RRF fusion score) and `_rerank_score` (blended final score). Results are sorted by `_rerank_score` descending, with ties broken by ascending memory ID. Search operations (`Retriever.search()` and `Retriever.hybrid_search()`) automatically track access — each returned result's `access_count` and `accessed_at` are updated (best-effort), keeping the recency and access frequency signals current.
+Search results include both `_rrf_score` (raw RRF fusion score) and `_rerank_score` (blended final score). Results are sorted by `_rerank_score` descending, with ties broken by ascending memory ID. Search operations (`Retriever.search()` and `Retriever.hybrid_search()`) automatically track access — each returned result's `access_count` and `accessed_at` are updated (best-effort), keeping the recency and access frequency signals current. This Hebbian reinforcement is on by default (`track_access=True`); pass `track_access=False` to skip access tracking (useful for analytics queries that shouldn't inflate counts).
 
 ## Python API
 
@@ -496,6 +496,10 @@ results = retriever.hybrid_search("query", alpha=0.5)
 # blend=0.3 default: 70% RRF score + 30% weighted signals (confidence, recency, access, type)
 retriever = Retriever(store=store, embedder=embedder, blend=0.5)
 
+# Skip access tracking (don't increment access_count for this query)
+results = retriever.search("analytics query", limit=10, track_access=False)
+results = retriever.hybrid_search("analytics query", limit=10, track_access=False)
+
 # Each result dict includes "_rrf_score" (RRF fusion score) and "_rerank_score" (blended final score)
 
 # Get by ID
@@ -506,6 +510,11 @@ store.update(mid, content="Updated content")
 
 # Invalidate (soft delete)
 store.invalidate(mid, reason="No longer relevant")
+
+# Batch access tracking (efficient single UPDATE for multiple IDs)
+# Increments access_count and updates accessed_at for each listed memory.
+# Returns the number of rows actually updated (non-existent IDs are silently ignored).
+affected = store.touch_batch([id1, id2, id3])
 
 # List with filters
 memories = store.list_all(type="fact", valid_only=True, limit=50)
@@ -898,7 +907,7 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 - `LMEM_HOME` is validated against path traversal, system directories, and symlink attacks.
 - Write paths are validated against system directories and symbolic links.
 - `validate_session_id()` rejects session IDs containing `/`, `\`, or `..` to prevent path traversal when constructing context file paths.
-- URL validation (`is_safe_url`) blocks private/reserved IPs and SSRF vectors, including percent-encoded IP hostnames (e.g. `%31%32%37%2e%30%2e%30%2e%31` is decoded before IP checks). `safe_urlopen` enforces URL validation, blocks redirects, mitigates DNS rebinding, and strips credentials from error messages. It accepts both string URLs and `urllib.request.Request` objects, and requires an explicit `allow_remote` parameter (defaults to `False`) for non-loopback addresses.
+- URL validation (`is_safe_url`) blocks private/reserved IPs and SSRF vectors, including percent-encoded IP hostnames (e.g. `%31%32%37%2e%30%2e%30%2e%31` is decoded before IP checks). When `allow_remote=False` (the default), only loopback addresses on the Ollama default port are permitted — all other IPs including public addresses are rejected. `safe_urlopen` enforces URL validation, blocks redirects, mitigates DNS rebinding, and strips credentials from error messages. It accepts both string URLs and `urllib.request.Request` objects, and requires an explicit `allow_remote` parameter (defaults to `False`) for non-loopback addresses.
 - API keys are masked in `__repr__` on provider instances (`***masked***`).
 - API keys are refused over plain HTTP to non-loopback hosts. `OpenAIProvider` and `AnthropicProvider` raise `ValueError` if `base_url` is `http://` and the hostname is not an exact loopback address (`localhost`, `127.0.0.1`, or `::1`). Substring matches like `localhost.evil.com` are blocked.
 - A warning is logged when API keys are sent to a non-default base URL to alert the user of potential credential exfiltration risk.
