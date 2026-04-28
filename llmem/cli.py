@@ -11,6 +11,7 @@ log = logging.getLogger(__name__)
 
 from .store import MemoryStore, register_memory_type, get_registered_types
 from .paths import get_db_path, get_config_path
+from .registry import get_registered_cli_plugins
 
 
 VALID_SOURCES = ["manual", "session", "heartbeat", "extraction", "import"]
@@ -309,6 +310,17 @@ def main():
 
     # types
     subparsers.add_parser("types", help="List registered memory types")
+
+    # Register CLI plugins
+    for plugin_name in sorted(get_registered_cli_plugins()):
+        from .registry import get_cli_plugin_setup_fn
+
+        setup_fn = get_cli_plugin_setup_fn(plugin_name)
+        if setup_fn is not None:
+            try:
+                setup_fn(subparsers)
+            except Exception as e:
+                log.error("llmem: cli: plugin '%s' setup failed: %s", plugin_name, e)
 
     args = parser.parse_args()
 

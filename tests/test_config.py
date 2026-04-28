@@ -151,3 +151,20 @@ class TestConfig_GetConfigValue:
             "dream.schedule", config_path=Path("/nonexistent.yaml")
         )
         assert result == "*-*-* 03:00:00"
+
+
+class TestConfig_NoSkillPatchThreshold:
+    """Test that skill_patch_threshold is removed from core DEFAULTS."""
+
+    def test_no_skill_patch_threshold_in_defaults(self):
+        """Core DEFAULTS must not contain skill_patch_threshold."""
+        from llmem.config import DEFAULTS
+
+        assert "skill_patch_threshold" not in DEFAULTS.get("dream", {})
+
+    def test_no_skill_patch_threshold_in_resolved_defaults(self):
+        """Resolved defaults must not contain skill_patch_threshold in dream section."""
+        from llmem.config import _resolve_defaults
+
+        resolved = _resolve_defaults()
+        assert "skill_patch_threshold" not in resolved.get("dream", {})

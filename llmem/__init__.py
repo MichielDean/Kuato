@@ -13,6 +13,11 @@ from .paths import (
 from .config import load_config
 from .adapters.base import SessionAdapter
 from .adapters.opencode import OpenCodeAdapter
+from .registry import (
+    register_session_adapter,
+    register_dream_hook,
+    register_cli_plugin,
+)
 
 __all__ = [
     "MemoryStore",
@@ -27,4 +32,7 @@ __all__ = [
     "load_config",
     "SessionAdapter",
     "OpenCodeAdapter",
+    "register_session_adapter",
+    "register_dream_hook",
+    "register_cli_plugin",
 ]

@@ -60,7 +60,6 @@ DEFAULTS = {
         "report_path": str(Path("~/.agent/diagrams/dream-report.html").expanduser()),
         "behavioral_threshold": 3,
         "behavioral_lookback_days": 30,
-        "skill_patch_threshold": 3,
         "proposed_changes_path": None,  # Resolved from get_proposed_changes_path()
         "calibration_enabled": True,
         "stale_procedure_days": 30,
