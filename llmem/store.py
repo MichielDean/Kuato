@@ -168,6 +168,11 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             raise
 
 
+# Maximum number of rows scanned by brute-force embedding search.
+# Prevents OOM on large databases by capping the result set size.
+_BRUTE_FORCE_MAX_ROWS = 10000
+
+
 class MemoryStore:
     """SQLite-backed memory store with FTS5 full-text and optional vector search.
 
@@ -207,20 +212,46 @@ class MemoryStore:
         self._conn_lock = threading.Lock()
         self._vec_available: bool | None = None
         self._disable_vec = disable_vec
-        self._init_db()
+        # Set restrictive umask before DB creation so the file is created
+        # with 0o600 permissions from the start (not default umask + chmod).
+        # This prevents a race window where the DB file is world-readable.
+        old_umask = None
         if str(self.db_path) != ":memory:":
-            try:
-                os.chmod(str(self.db_path), 0o600)
-            except OSError as e:
-                logger.warning(
-                    "llmem: store: failed to set permissions on %s: %s", self.db_path, e
-                )
+            old_umask = os.umask(0o177)
+        try:
+            self._init_db()
+        finally:
+            if old_umask is not None:
+                os.umask(old_umask)
+        # Also chmod WAL/SHM sidecar files — SQLite creates these with
+        # default umask, so sensitive memory content would be world-readable
+        # on multi-user systems without explicit chmod.
+        if str(self.db_path) != ":memory:":
+            self._chmod_db_files()
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
+    def _chmod_db_files(self):
+        """Set 0o600 permissions on the DB file and its WAL/SHM sidecars.
+
+        SQLite creates -wal and -shm files with default umask permissions.
+        On multi-user systems, these files contain sensitive memory content
+        and must be restricted to the owner only.
+        """
+        db_path_str = str(self.db_path)
+        for suffix in ("", "-wal", "-shm"):
+            path = db_path_str + suffix
+            if os.path.exists(path):
+                try:
+                    os.chmod(path, 0o600)
+                except OSError as e:
+                    logger.warning(
+                        "llmem: store: failed to set permissions on %s: %s", path, e
+                    )
 
     def _init_db(self):
         conn = self._connect()
@@ -717,9 +748,12 @@ class MemoryStore:
         import struct
 
         conn = self._connect()
+        where = 'WHERE "embedding" IS NOT NULL'
+        if valid_only:
+            where += ' AND "valid_until" IS NULL'
         rows = conn.execute(
-            'SELECT "id", "embedding" FROM "memories" WHERE "embedding" IS NOT NULL'
-            + (' AND "valid_until" IS NULL' if valid_only else "")
+            f'SELECT "id", "embedding" FROM "memories" {where} LIMIT ?',
+            (_BRUTE_FORCE_MAX_ROWS,),
         ).fetchall()
         if not rows:
             return []
@@ -969,10 +1003,32 @@ class MemoryStore:
                     seen.add(r2["id"])
         return pairs
 
-    def export_all(self) -> list[dict]:
+    _EXPORT_MAX_ROWS = 50000
+
+    def export_all(self, limit: int = 0) -> list[dict]:
+        """Export all memories as a list of dicts.
+
+        Args:
+            limit: Maximum number of memories to export. If 0 (default),
+                uses _EXPORT_MAX_ROWS to prevent OOM on large databases.
+
+        Returns:
+            List of memory dicts ordered by created_at.
+        """
+        cap = limit if limit > 0 else self._EXPORT_MAX_ROWS
         conn = self._connect()
-        rows = conn.execute('SELECT * FROM "memories" ORDER BY "created_at"').fetchall()
+        rows = conn.execute(
+            'SELECT * FROM "memories" ORDER BY "created_at" LIMIT ?', (cap,)
+        ).fetchall()
         return [self._row_to_dict(r) for r in rows]
+
+    # Maximum embedding byte length accepted by import_memories.
+    # Prevents OOM from embedding fields that claim unreasonable sizes.
+    _MAX_EMBEDDING_BYTES = 1024 * 1024  # 1 MB per embedding vector
+
+    # Maximum length for imported memory IDs.
+    # Prevents abuse via excessively long IDs that could cause index bloat.
+    _MAX_ID_LENGTH = 256
 
     def import_memories(self, memories: list[dict]) -> int:
         """Import a list of memory dicts into the store.
@@ -1006,6 +1062,52 @@ class MemoryStore:
                     i,
                 )
                 continue
+            # Validate id format and length
+            entry_id = m.get("id")
+            if entry_id is not None:
+                if not isinstance(entry_id, str):
+                    logger.warning(
+                        "llmem: store: import: skipping entry %d: 'id' must be a string, got %s",
+                        i,
+                        type(entry_id).__name__,
+                    )
+                    continue
+                if len(entry_id) > self._MAX_ID_LENGTH:
+                    logger.warning(
+                        "llmem: store: import: skipping entry %d: 'id' too long (%d chars, max %d)",
+                        i,
+                        len(entry_id),
+                        self._MAX_ID_LENGTH,
+                    )
+                    continue
+            # Validate embedding size to prevent OOM from excessively large vectors
+            embedding = m.get("embedding")
+            if embedding is not None:
+                if not isinstance(embedding, bytes):
+                    logger.warning(
+                        "llmem: store: import: skipping entry %d: 'embedding' must be bytes, got %s",
+                        i,
+                        type(embedding).__name__,
+                    )
+                    continue
+                if len(embedding) > self._MAX_EMBEDDING_BYTES:
+                    logger.warning(
+                        "llmem: store: import: skipping entry %d: embedding too large (%d bytes, max %d)",
+                        i,
+                        len(embedding),
+                        self._MAX_EMBEDDING_BYTES,
+                    )
+                    continue
+            # Validate confidence range
+            confidence = m.get("confidence")
+            if confidence is not None:
+                if not isinstance(confidence, (int, float)):
+                    logger.warning(
+                        "llmem: store: import: skipping entry %d: 'confidence' must be a number, got %s",
+                        i,
+                        type(confidence).__name__,
+                    )
+                    continue
             hints = m.get("hints")
             if isinstance(hints, str):
                 try:

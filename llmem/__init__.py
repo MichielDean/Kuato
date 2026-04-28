@@ -9,6 +9,7 @@ from .paths import (
     get_proposed_changes_path,
     get_context_dir,
     migrate_from_lobsterdog,
+    validate_session_id,
 )
 from .config import load_config
 from .adapters.base import SessionAdapter
@@ -17,6 +18,8 @@ from .registry import (
     register_session_adapter,
     register_dream_hook,
     register_cli_plugin,
+    register_session_hook,
+    get_registered_session_hooks,
 )
 
 __all__ = [
@@ -29,10 +32,13 @@ __all__ = [
     "get_proposed_changes_path",
     "get_context_dir",
     "migrate_from_lobsterdog",
+    "validate_session_id",
     "load_config",
     "SessionAdapter",
     "OpenCodeAdapter",
     "register_session_adapter",
     "register_dream_hook",
     "register_cli_plugin",
+    "register_session_hook",
+    "get_registered_session_hooks",
 ]

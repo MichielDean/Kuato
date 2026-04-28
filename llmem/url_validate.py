@@ -1,10 +1,11 @@
 """URL validation for urllib calls — prevent SSRF and file-scheme attacks."""
 
+import http.client
 import ipaddress
 import socket
 import urllib.request
 import urllib.error
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, unquote
 
 OLLAMA_DEFAULT_PORT = 11434
 
@@ -99,6 +100,8 @@ def is_safe_url(url: str, allow_remote: bool = False) -> bool:
     Checks:
     - Scheme must be http or https (blocks file://, ftp://, data://, etc.)
     - Must have a hostname
+    - Percent-encoded hostnames are decoded before IP checks to prevent
+      SSRF bypass (e.g. %31%32%37%2e%30%2e%30%2e%31 → 127.0.0.1).
     - If allow_remote is False (default), only loopback addresses on the
       Ollama default port are allowed.
     - If allow_remote is True, any reachable hostname is allowed (still
@@ -116,14 +119,27 @@ def is_safe_url(url: str, allow_remote: bool = False) -> bool:
     if parsed.username or parsed.password:
         return False
     port = _get_effective_port(parsed)
+    # Percent-decode the hostname before IP checks to prevent SSRF bypass
+    # via encoded IP addresses (e.g. %31%32%37%2e%30%2e%30%2e%31 → 127.0.0.1).
+    # urllib normalizes percent-encoded hostnames, so we must check the
+    # decoded form to match what urllib will actually connect to.
+    decoded_hostname = unquote(hostname)
     try:
-        ip = ipaddress.ip_address(hostname)
+        ip = ipaddress.ip_address(decoded_hostname)
         return _check_ip_access(ip, allow_remote, port)
     except ValueError:
-        resolved = _resolve_hostname(hostname)
+        resolved = _resolve_hostname(decoded_hostname)
         if resolved is None:
             if not allow_remote:
                 return False
+            # If DNS fails but the decoded hostname looks like a raw IP,
+            # block it — DNS failure on a percent-encoded IP means urllib
+            # may still connect to the decoded private IP.
+            try:
+                ip = ipaddress.ip_address(decoded_hostname)
+                return _check_ip_access(ip, allow_remote, port)
+            except ValueError:
+                pass
         else:
             for addr in resolved:
                 try:
@@ -149,10 +165,20 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _extract_url_string(url: str | urllib.request.Request) -> str:
-    """Extract a URL string from either a str or urllib.request.Request.
+    """Extract the URL string from a Request object or return the string as-is.
 
-    Request objects have a .full_url attribute; using urlparse on a Request
-    directly raises AttributeError because urlparse expects a string.
+    Callers may pass either a URL string or a urllib.request.Request object
+    to safe_urlopen(). This helper normalises the input so that downstream
+    validation functions (which expect str) always receive a string.
+
+    Args:
+        url: A URL string or a urllib.request.Request object.
+
+    Returns:
+        The URL string.
+
+    Raises:
+        ValueError: If url is a Request with no full_url attribute.
     """
     if isinstance(url, urllib.request.Request):
         return url.full_url
@@ -164,7 +190,7 @@ def safe_urlopen(
     timeout: int = DEFAULT_URLOPEN_TIMEOUT,
     allow_remote: bool = False,
     **kwargs,
-) -> urllib.request.OpenerDirector:
+) -> http.client.HTTPResponse:
     """Open a URL with SSRF protections: validates URL, blocks redirects, sets timeout.
 
     This is the safe replacement for urllib.request.urlopen(). It:
@@ -175,17 +201,17 @@ def safe_urlopen(
     5. Strips credentials from error messages
 
     Args:
-        url: The URL to open (string or urllib.request.Request). Must pass
-            is_safe_url() validation.
+        url: The URL to open — either a string or a urllib.request.Request
+            object. Must pass is_safe_url() validation.
         timeout: Request timeout in seconds. Defaults to 30.
         allow_remote: If True, allow non-loopback addresses. Must match the
             policy used during URL construction (e.g. ExtractionEngine passes
             allow_remote=True because Ollama can run on remote hosts). Defaults
             to False for safety.
-        **kwargs: Additional arguments passed to OpenerDirector.open().
+        **kwargs: Additional arguments passed to the opener's open() method.
 
     Returns:
-        The response object from the opener.
+        An http.client.HTTPResponse object (context manager).
 
     Raises:
         ValueError: If the URL fails is_safe_url() validation.
@@ -208,8 +234,10 @@ def safe_urlopen(
     parsed = urlparse(url_str)
     hostname = parsed.hostname
     if hostname:
+        # Use percent-decoded hostname for re-resolution (matches is_safe_url behavior)
+        decoded_hostname = unquote(hostname)
         port = _get_effective_port(parsed)
-        resolved = _resolve_hostname(hostname)
+        resolved = _resolve_hostname(decoded_hostname)
         if resolved:
             for addr in resolved:
                 try:
@@ -250,3 +278,34 @@ def validate_url(url: str, allow_remote: bool = False) -> str:
             f"URL rejected: must be http(s) to a permitted address — got {_strip_credentials(url)!r}"
         )
     return url
+
+
+def validate_base_url(base_url: str, module: str = "url_validate") -> str:
+    """Validate and normalize an Ollama base URL.
+
+    Performs three checks shared by EmbeddingEngine, ExtractionEngine,
+    and IntrospectionAnalyzer constructors:
+    1. Strips trailing slash
+    2. Validates http:// or https:// prefix
+    3. Validates via is_safe_url with allow_remote=True
+
+    Args:
+        base_url: The Ollama base URL to validate.
+        module: Module name for error messages (e.g. 'embed', 'extract', 'introspection').
+
+    Returns:
+        The stripped, validated URL string.
+
+    Raises:
+        ValueError: If the URL is not http(s) or fails is_safe_url().
+    """
+    base_url = base_url.rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        raise ValueError(
+            f"llmem: {module}: unsafe Ollama URL (must be http/https): {_strip_credentials(base_url)!r}"
+        )
+    if not is_safe_url(base_url, allow_remote=True):
+        raise ValueError(
+            f"llmem: {module}: unsafe Ollama URL (blocked address): {_strip_credentials(base_url)!r}"
+        )
+    return base_url

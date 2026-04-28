@@ -6,7 +6,7 @@ import struct
 import urllib.request
 import urllib.error
 
-from .url_validate import is_safe_url, _strip_credentials
+from .url_validate import validate_base_url
 
 import math
 
@@ -24,15 +24,7 @@ class EmbeddingEngine:
         base_url: str = OLLAMA_BASE,
         max_cache_size: int = 2048,
     ):
-        base_url = base_url.rstrip("/")
-        if not base_url.startswith(("http://", "https://")):
-            raise ValueError(
-                f"llmem: embed: unsafe Ollama URL (must be http/https): {_strip_credentials(base_url)!r}"
-            )
-        if not is_safe_url(base_url, allow_remote=True):
-            raise ValueError(
-                f"llmem: embed: unsafe Ollama URL (blocked address): {_strip_credentials(base_url)!r}"
-            )
+        base_url = validate_base_url(base_url, module="embed")
         self._model = model
         self._base_url = base_url
         self._max_cache_size = max_cache_size

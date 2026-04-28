@@ -712,6 +712,38 @@ function testNoLobsterdogRefsInPython() {
     (foundProblems.length > 0 ? ' (found: ' + foundProblems.join('; ') + ')' : ''));
 }
 
+// ── opencode-llmem Package Validation Tests ─────────────────────────────
+
+var LLMEM_PKG_DIR = path.join(__dirname, 'opencode-llmem');
+
+function testLlmemPackageJsonExists() {
+  var pkgPath = path.join(LLMEM_PKG_DIR, 'package.json');
+  if (!fs.existsSync(pkgPath)) {
+    assert(false, 'opencode-llmem/package.json exists');
+    return;
+  }
+  var pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  assert(pkg.name === 'opencode-llmem', 'opencode-llmem package name is opencode-llmem');
+  assert(pkg.files && pkg.files.indexOf('src/') !== -1, 'opencode-llmem package files includes "src/"');
+  assert(pkg.scripts && pkg.scripts.postinstall === 'node install.js', 'opencode-llmem has postinstall script');
+}
+
+function testLlmemNoForbiddenRefs() {
+  if (!fs.existsSync(LLMEM_PKG_DIR)) {
+    return; // skip if directory doesn't exist
+  }
+  // Only check the src/ directory — test files contain pattern strings used for detection
+  var srcDir = path.join(LLMEM_PKG_DIR, 'src');
+  if (fs.existsSync(srcDir)) {
+    checkNoPersonalReferences(srcDir, 'opencode-llmem/src');
+  }
+}
+
+function testLlmemInstallScript() {
+  var installPath = path.join(LLMEM_PKG_DIR, 'install.js');
+  assert(fs.existsSync(installPath), 'opencode-llmem/install.js exists');
+}
+
 // ── Main ──────────────────────────────────────────────────────────────
 
 console.log('\n=== Validation Tests ===\n');
@@ -776,6 +808,12 @@ testInstallFailsOnPermissionError();
 testShareShRejectsSecrets();
 testTemplatesInPackageJsonFiles();
 testOpencodeJsonLoadsAllHarnessFiles();
+
+console.log('\n=== opencode-llmem Package Validation Tests ===\n');
+
+testLlmemPackageJsonExists();
+testLlmemNoForbiddenRefs();
+testLlmemInstallScript();
 
 console.log('\n=== Results ===\n');
 console.log('Passed: ' + passes);

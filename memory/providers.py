@@ -11,11 +11,37 @@ import logging
 import os
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
 
 from .ollama import check_ollama_model, _call_ollama_generate
 from .url_validate import is_safe_url, safe_urlopen
 
 log = logging.getLogger(__name__)
+
+
+# Loopback hostnames that are safe for HTTP (non-HTTPS) API key delivery.
+# These are checked via exact hostname match (not substring) to prevent
+# bypass via URLs like http://localhost.evil.com or http://127.0.0.1.evil.com
+_LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _is_loopback_hostname(url: str) -> bool:
+    """Check whether a URL's hostname is an exact loopback address.
+
+    Uses urlparse to extract the hostname and compares it against known
+    loopback identifiers. This prevents substring-matching bypasses where
+    a URL like http://localhost.evil.com contains 'localhost' as a
+    substring but actually resolves to a remote host.
+
+    Args:
+        url: The URL to check.
+
+    Returns:
+        True if the hostname is exactly 'localhost', '127.0.0.1', or '::1'.
+    """
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    return hostname in _LOOPBACK_HOSTNAMES if hostname else False
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +286,10 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
     Uses the OpenAI /v1/embeddings and /v1/chat/completions endpoints.
     API key is sourced from the constructor parameter or the OPENAI_API_KEY
     environment variable.
+
+    Security: API keys are only sent to HTTPS URLs or loopback HTTP URLs.
+    When the base_url differs from the official OpenAI endpoint, a warning
+    is logged to alert the user of potential credential exfiltration risk.
     """
 
     def __init__(
@@ -280,6 +310,20 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
             raise ValueError("providers: OpenAI URL must be http/https")
         if not is_safe_url(base_url, allow_remote=True):
             raise ValueError("providers: OpenAI URL blocked (unsafe address)")
+        # Block credential exfiltration: refuse to send API keys over
+        # non-HTTPS to non-loopback hosts. Uses exact hostname matching
+        # (not substring) to prevent bypass via localhost.evil.com.
+        if base_url.startswith("http://") and not _is_loopback_hostname(base_url):
+            raise ValueError(
+                "providers: OpenAI API key cannot be sent over non-HTTPS to non-loopback URL "
+                f"— use HTTPS or a localhost base URL, got {base_url!r}"
+            )
+        if base_url != DEFAULT_OPENAI_BASE_URL:
+            log.warning(
+                "providers: OpenAI API key sent to non-default base_url %r "
+                "— verify this is not a credential exfiltration attack",
+                base_url,
+            )
         self._embed_model = embed_model
         self._generate_model = generate_model
         self._base_url = base_url
@@ -446,6 +490,10 @@ class AnthropicProvider(GenerateProvider):
 
     Anthropic does not provide an embedding API, so this provider
     implements GenerateProvider only. Use OpenAIProvider for embeddings.
+
+    Security: API keys are only sent to HTTPS URLs or loopback HTTP URLs.
+    When the base_url differs from the official Anthropic endpoint, a warning
+    is logged to alert the user of potential credential exfiltration risk.
     """
 
     def __init__(
@@ -465,6 +513,20 @@ class AnthropicProvider(GenerateProvider):
             raise ValueError("providers: Anthropic URL must be http/https")
         if not is_safe_url(base_url, allow_remote=True):
             raise ValueError("providers: Anthropic URL blocked (unsafe address)")
+        # Block credential exfiltration: refuse to send API keys over
+        # non-HTTPS to non-loopback hosts. Uses exact hostname matching
+        # (not substring) to prevent bypass via localhost.evil.com.
+        if base_url.startswith("http://") and not _is_loopback_hostname(base_url):
+            raise ValueError(
+                "providers: Anthropic API key cannot be sent over non-HTTPS to non-loopback URL "
+                f"— use HTTPS or a localhost base URL, got {base_url!r}"
+            )
+        if base_url != DEFAULT_ANTHROPIC_BASE_URL:
+            log.warning(
+                "providers: Anthropic API key sent to non-default base_url %r "
+                "— verify this is not a credential exfiltration attack",
+                base_url,
+            )
         self._model = model
         self._base_url = base_url
         self._api_key = resolved_key
