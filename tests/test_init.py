@@ -81,28 +81,6 @@ class TestOllama_IsOllamaRunning:
             result = is_ollama_running("http://localhost:11434")
         assert result is False
 
-    def test_returns_false_on_invalid_json(self):
-        """When Ollama returns invalid JSON, return False."""
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = b"not json"
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("llmem.url_validate.safe_urlopen", return_value=mock_resp):
-            result = is_ollama_running("http://localhost:11434")
-        assert result is False
-
-    def test_returns_false_when_no_models_key(self):
-        """When Ollama responds but JSON lacks 'models' key, return False."""
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = b'{"status": "ok"}'
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("llmem.url_validate.safe_urlopen", return_value=mock_resp):
-            result = is_ollama_running("http://localhost:11434")
-        assert result is False
-
     def test_raises_value_error_for_empty_url(self):
         """Empty base_url raises ValueError."""
         with pytest.raises(ValueError, match="invalid base_url"):

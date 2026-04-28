@@ -292,15 +292,20 @@ def cmd_init(args):
             print("\nInit cancelled.")
             sys.exit(1)
 
-    # Ensure the home directory exists
-    home = get_llmem_home()
-
     # Migrate from ~/.lobsterdog/ if it exists
+    # Must run before resolving paths so get_llmem_home() returns the
+    # new location (~/.config/llmem/) after migration rather than the
+    # legacy path (~/.lobsterdog/).
     old_home = Path.home() / ".lobsterdog"
+    migrated = False
     if old_home.exists():
         migrated = migrate_from_lobsterdog()
-        if migrated:
-            print(f"Migrated data from {old_home} to {home}")
+
+    # Resolve home AFTER migration so the path matches config/db paths
+    home = get_llmem_home()
+
+    if migrated:
+        print(f"Migrated data from {old_home} to {home}")
 
     # Write config.yaml
     config_path = get_config_path()

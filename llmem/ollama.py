@@ -43,7 +43,6 @@ def is_ollama_running(base_url: str) -> bool:
 
     url = f"{base_url.rstrip('/')}/api/tags"
     try:
-        req = urllib.request.Request(url)
         with safe_urlopen(url) as resp:
             data = json.loads(resp.read())
             return isinstance(data, dict) and "models" in data
@@ -55,10 +54,10 @@ def is_ollama_running(base_url: str) -> bool:
 class ProviderDetector:
     """Detect available LLM providers from environment variables and HTTP probes.
 
-    Checks (in order):
-    1. ``OPENAI_API_KEY`` environment variable
-    2. ``ANTHROPIC_API_KEY`` environment variable
-    3. Whether Ollama is reachable at the given base URL
+    Checks (in order of precedence):
+    1. Whether Ollama is reachable at the given base URL
+    2. ``OPENAI_API_KEY`` environment variable
+    3. ``ANTHROPIC_API_KEY`` environment variable
 
     Ollama takes precedence over API keys when running (local inference
     is the default preference). OpenAI takes precedence over Anthropic
