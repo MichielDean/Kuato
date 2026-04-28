@@ -41,51 +41,51 @@ cp -rf source dest          # NOT: cp -r source dest
 
 ## Memory — Search at Every Decision Point
 
-The memory system (`lobmem`) is backed by SQLite with semantic search. It is your working memory — not a startup ritual you forget after the first five minutes. The session-start load gives you a foundation; mid-session searches keep you from re-deriving things you already know.
+The memory system (`llmem`) is backed by SQLite with semantic search. It is your working memory — not a startup ritual you forget after the first five minutes. The session-start load gives you a foundation; mid-session searches keep you from re-deriving things you already know.
 
 **Why:** Memory contains decisions, locations, preferences, and procedures that the filesystem can't tell you. Going to the filesystem first means re-deriving answers that were already known. That's wasted work and missed context.
 
 **Session start — MANDATORY:**
-1. `lobmem context "session start"` — recall recent state and pending work
-2. `lobmem stats` — check memory health
+1. `llmem context "session start"` — recall recent state and pending work
+2. `llmem stats` — check memory health
 3. Do NOT proceed with any task until both commands succeed
 
-**Mid-session search triggers — search `lobmem search "topic"` whenever:**
+**Mid-session search triggers — search `llmem search "topic"` whenever:**
 - **Looking up how something works** — before reading a config, grepping for a pattern, checking docs. Memory may already know.
 - **Making a choice** — picking an approach, choosing a library, deciding on structure. Check for prior decisions first.
 - **Encountering a project-specific name/concept** — internal tools, custom conventions, user preferences. If it feels local, memory probably has it.
 - **Answering a state question** — "Where are we with X?", "Did we decide on Z?". Check memory before the filesystem.
 - **Topic shift** — moving from debugging to design, from one codebase to another, from code to deployment. Search for the new topic before diving in.
 
-**Write when you learn.** `lobmem add --type <type> "content"` for decisions, preferences, facts, and events worth retaining. If you just searched and found nothing, the next search should find what you learned.
+**Write when you learn.** `llmem add --type <type> "content"` for decisions, preferences, facts, and events worth retaining. If you just searched and found nothing, the next search should find what you learned.
 
-**Invalidate when stale.** `lobmem invalidate <id> --reason "..."` when something is no longer true.
+**Invalidate when stale.** `llmem invalidate <id> --reason "..."` when something is no longer true.
 
 **Session end:**
-- Capture key outcomes with `lobmem add --type event`
-- Run `lobmem consolidate` to find and merge near-duplicates
+- Capture key outcomes with `llmem add --type event`
+- Run `llmem consolidate` to find and merge near-duplicates
 
 **Types:** fact, decision, preference, event, project_state, procedure
 
 **Examples:**
 ```bash
 # Mid-session: about to look up where skills live
-lobmem search "where are skills"          # BEFORE: ls ~/.agents/skills/
+llmem search "where are skills"          # BEFORE: ls ~/.agents/skills/
 
 # Mid-session: about to decide on auth approach
-lobmem search "auth design decisions"     # BEFORE: reading code
+llmem search "auth design decisions"     # BEFORE: reading code
 
 # Mid-session: user mentions a new concept for the first time this session
-lobmem search "new concept"               # BEFORE: asking what it is
+llmem search "new concept"               # BEFORE: asking what it is
 
 # Mid-session: switching from one project to another
-lobmem search "resume tailor"             # BEFORE: looking at files
+llmem search "resume tailor"             # BEFORE: looking at files
 
-lobmem add --type decision "Using SQLite for local memory" --confidence 0.95
-lobmem invalidate abc123 --reason "Superseded by new approach"
+llmem add --type decision "Using SQLite for local memory" --confidence 0.95
+llmem invalidate abc123 --reason "Superseded by new approach"
 ```
 
-Use the lobmem skill for memory operations. Auto-extract memories from conversations when valuable information is shared.
+Use the llmem skill for memory operations. Auto-extract memories from conversations when valuable information is shared.
 
 ## Skills
 
@@ -100,7 +100,7 @@ Agent skills are at `~/.agents/skills/`. Source of truth: `~/source/lobsterdog/s
 
 **On-demand skills:**
 
-- **`lobmem`** — Memory operations: search, add, invalidate, consolidate, context.
+- **`llmem`** — Memory operations: search, add, invalidate, consolidate, context.
 - **`pre-pr-review`** — Adversarial code review via isolated subagent before PR creation.
 - **`critical-code-reviewer`** — Rigorous code review with severity tiers (Blocking/Required/Suggestions).
 - **`scaledtest`** — ScaledTest platform operations.
@@ -120,7 +120,7 @@ This applies to warnings in build output, deprecation notices, failing tests, li
 
 ## Continuity
 
-Each session, you wake up fresh. Memory persists through lobmem. Search it before assuming. Update it when you learn.
+Each session, you wake up fresh. Memory persists through llmem. Search it before assuming. Update it when you learn.
 
 If you change any of the instruction files, tell the user — they are your configuration, and they should know.
 
@@ -151,51 +151,51 @@ The user chats remotely almost exclusively. They cannot open local files from th
 
 ## Auto-Extraction Hook
 
-After a coding session, run `lobmem hook` to automatically extract memories from session transcripts. Introspection runs automatically on every `lobmem hook` invocation. Use `--no-introspect` to skip introspection for trivial sessions (e.g., one-line changes). The `--introspect` flag is still accepted for backward compatibility but is now a no-op.
+After a coding session, run `llmem hook` to automatically extract memories from session transcripts. Introspection runs automatically on every `llmem hook` invocation. Use `--no-introspect` to skip introspection for trivial sessions (e.g., one-line changes). The `--introspect` flag is still accepted for backward compatibility but is now a no-op.
 
 ```bash
 # Process all opencode session transcripts (default, with introspection)
-lobmem hook
+llmem hook
 
 # Process a specific transcript file
-lobmem hook --file path/to/transcript.md
+llmem hook --file path/to/transcript.md
 
 # Process all transcripts in a directory
-lobmem hook --directory ~/.local/share/opencode/sessions
+llmem hook --directory ~/.local/share/opencode/sessions
 
 # Force re-extraction of already-processed sessions
-lobmem hook --force
+llmem hook --force
 
 # Skip embedding generation (faster, no Ollama required)
-lobmem hook --no-embed
+llmem hook --no-embed
 
 # Skip introspection for trivial sessions
-lobmem hook --no-introspect
+llmem hook --no-introspect
 
 # Combine flags: force re-extract, skip introspection
-lobmem hook --no-introspect --force
+llmem hook --no-introspect --force
 ```
 
-The `lobmem hook` command:
+The `llmem hook` command:
 - Discovers transcript files (markdown by default) in the opencode sessions directory
 - Skips already-processed sessions using the extraction_log table (prevents duplicates)
 - Uses `source_type='session'` with a deterministic `source_id` derived from the file path
-- Respects the `auto_extract` flag in `~/.lobsterdog/config.yaml` (disabled = exit early)
+- Respects the `auto_extract` flag in `~/.config/llmem/config.yaml` (disabled = exit early)
 - Introspection runs by default on every invocation. Use `--no-introspect` to skip it for trivial sessions.
-- Add `lobmem hook` to your session teardown or cron for ambient memory collection
+- Add `llmem hook` to your session teardown or cron for ambient memory collection
 
 ## Session-End Checklist
 
-Before closing a session, run through this checklist. Complete every item — do not skip steps. Run the checklist **before** the Auto-Extraction Hook (`lobmem hook`) so the hook can capture the full session transcript including your self-assessment.
+Before closing a session, run through this checklist. Complete every item — do not skip steps. Run the checklist **before** the Auto-Extraction Hook (`llmem hook`) so the hook can capture the full session transcript including your self-assessment.
 
-1. **Did you search memory before making assumptions?** — If you assumed something about a project, tool, or preference, did you check `lobmem search` first?
+1. **Did you search memory before making assumptions?** — If you assumed something about a project, tool, or preference, did you check `llmem search` first?
 2. **Did you run `task-intake` on unfamiliar repos?** — If you touched a repo you hadn't worked in recently, did you discover its stack, test commands, and conventions before editing?
 3. **Did you self-review with `critical-code-reviewer`?** — If you made code changes, did you run the review skill before declaring done?
-4. **After running critical-code-reviewer, record findings as self_assessment memories.** Run the introspection-review-tracker skill to persist each review finding. For each finding, create a `lobmem introspect` memory with the error category, file reference, and severity. If the review was clean, record that too.
+4. **After running critical-code-reviewer, record findings as self_assessment memories.** Run the introspection-review-tracker skill to persist each review finding. For each finding, create a `llmem introspect` memory with the error category, file reference, and severity. If the review was clean, record that too.
 5. **Did you commit and push?** — See **Landing the Plane** below for the full push protocol. Work that exists only on disk is orphaned.
-6. **Did you record any skipped steps and why?** — Use `lobmem add --type self_assessment "self_assessment: skipped X because Y"`.
+6. **Did you record any skipped steps and why?** — Use `llmem add --type self_assessment "self_assessment: skipped X because Y"`.
 
-After completing the checklist, run `lobmem hook` to extract memories from the session transcript and run an introspection pass. Introspection runs by default — no additional flags needed.
+After completing the checklist, run `llmem hook` to extract memories from the session transcript and run an introspection pass. Introspection runs by default — no additional flags needed.
 
 ## Landing the Plane (Session Completion)
 
@@ -222,7 +222,7 @@ After completing the checklist, run `lobmem hook` to extract memories from the s
 
 A background consolidation pass ("dream") runs nightly via systemd user timer. This keeps memory healthy by decaying idle memories, boosting frequently accessed ones, promoting high-value memories, and merging near-duplicates.
 
-The dream is configured in `~/.lobsterdog/config.yaml`:
+The dream is configured in `~/.config/llmem/config.yaml`:
 
 ```yaml
 dream:
@@ -232,16 +232,16 @@ dream:
 
 ```bash
 # Preview what would happen (default, no changes applied)
-lobmem dream
+llmem dream
 
 # Actually apply changes
-lobmem dream --apply
+llmem dream --apply
 
 # Run a single phase
-lobmem dream --phase deep --apply
+llmem dream --phase deep --apply
 
 # Generate an HTML report (served via diagrams server)
-lobmem dream --apply --report
+llmem dream --apply --report
 
 # The timer is deployed by install.sh and enabled/disabled based on config.
 # Re-deploy the timer after changing the schedule:
@@ -249,7 +249,7 @@ lobmem dream --apply --report
 ```
 
 After each `--apply` run, the dream:
-- Writes a markdown diary to `~/.lobsterdog/dream-diary.md` (append — entries accumulate)
+- Writes a markdown diary to `~/.config/llmem/dream-diary.md` (append — entries accumulate)
 - With `--report`, generates an HTML report at `http://lobsterdog.local:8321/dream-report.html` and archives a timestamped copy to `~/.agent/diagrams/dream-reports/`
 - Stores a summary `event` memory so the next session surfaces the dream outcome
 
