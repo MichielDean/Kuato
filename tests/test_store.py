@@ -393,3 +393,21 @@ class TestStore_ExportAll_Limit:
         result = store.export_all(limit=None)
         assert len(result) == 1
         store.close()
+
+    def test_export_all_limit_none_returns_all(self, tmp_path):
+        """export_all(limit=None) returns all memories without a cap.
+
+        The default limit of 10000 prevents unbounded memory usage, but
+        passing limit=None explicitly removes the cap for true export-all
+        use cases (e.g. the CLI export command).
+        """
+        from llmem.store import MemoryStore
+
+        store = MemoryStore(db_path=tmp_path / "test.db", disable_vec=True)
+        # Add 5 memories
+        for i in range(5):
+            store.add(type="fact", content=f"Memory {i}", source="test")
+        # limit=None should return all memories without capping
+        result = store.export_all(limit=None)
+        assert len(result) == 5
+        store.close()

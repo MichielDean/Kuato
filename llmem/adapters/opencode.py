@@ -175,10 +175,16 @@ class OpenCodeAdapter(SessionAdapter):
                     f"llmem: opencode adapter: db_path targets a system directory: {resolved}"
                 )
 
-        # Must not be a symlink
-        if Path(db_path).is_symlink():
+        # Must not be a symlink — OSError on inaccessible paths is treated
+        # as unsafe (matching _validate_home_path's handling in paths.py).
+        try:
+            if Path(db_path).is_symlink():
+                raise ValueError(
+                    f"llmem: opencode adapter: db_path is a symlink (not allowed): {db_path}"
+                )
+        except OSError:
             raise ValueError(
-                f"llmem: opencode adapter: db_path is a symlink (not allowed): {db_path}"
+                f"llmem: opencode adapter: db_path cannot be accessed (permission denied): {db_path}"
             )
 
         if not Path(db_path).exists():

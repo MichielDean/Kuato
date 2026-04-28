@@ -86,6 +86,23 @@ class TestOpenCodeAdapter_Ctor:
         with pytest.raises(ValueError, match="system directory"):
             OpenCodeAdapter(db_path=Path("/root/opencode/opencode.db"))
 
+    def test_ctor_symlink_oserror_yields_value_error(self, tmp_path):
+        """is_symlink() OSError on non-blocked path yields clear ValueError.
+
+        If is_symlink() raises OSError (e.g. permission denied) on a path
+        that is NOT under a blocked prefix, the adapter must raise a
+        descriptive ValueError rather than letting the OSError propagate.
+        """
+        from unittest.mock import patch
+
+        db_path = tmp_path / "inaccessible.db"
+        # Create the file so the blocked-prefix and traversal checks pass,
+        # but mock is_symlink to raise OSError (simulating permission denied).
+        db_path.touch()
+        with patch.object(Path, "is_symlink", side_effect=OSError("Permission denied")):
+            with pytest.raises(ValueError, match="cannot be accessed"):
+                OpenCodeAdapter(db_path=db_path)
+
 
 class TestOpenCodeAdapter_NoPipelineDetection:
     """Test that OpenCodeAdapter does not contain pipeline detection logic."""
