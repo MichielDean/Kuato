@@ -164,10 +164,20 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _extract_url_string(url: str | urllib.request.Request) -> str:
-    """Extract a URL string from either a str or urllib.request.Request.
+    """Extract the URL string from a Request object or return the string as-is.
 
-    Request objects have a .full_url attribute; using urlparse on a Request
-    directly raises AttributeError because urlparse expects a string.
+    Callers may pass either a URL string or a urllib.request.Request object
+    to safe_urlopen(). This helper normalises the input so that downstream
+    validation functions (which expect str) always receive a string.
+
+    Args:
+        url: A URL string or a urllib.request.Request object.
+
+    Returns:
+        The URL string.
+
+    Raises:
+        ValueError: If url is a Request with no full_url attribute.
     """
     if isinstance(url, urllib.request.Request):
         return url.full_url
@@ -190,8 +200,8 @@ def safe_urlopen(
     5. Strips credentials from error messages
 
     Args:
-        url: The URL to open (string or urllib.request.Request). Must pass
-            is_safe_url() validation.
+        url: The URL to open — either a string or a urllib.request.Request
+            object. Must pass is_safe_url() validation.
         timeout: Request timeout in seconds. Defaults to 30.
         allow_remote: If True, allow non-loopback addresses. Must match the
             policy used during URL construction (e.g. ExtractionEngine passes

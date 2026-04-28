@@ -29,6 +29,7 @@ import logging
 import os
 import socket
 import tempfile
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -38,6 +39,7 @@ from llmem.url_validate import (
     is_safe_url,
     validate_url,
     _strip_credentials,
+    _extract_url_string,
     _NoRedirectHandler,
     safe_urlopen,
     _extract_url_string,
@@ -185,6 +187,80 @@ class TestUrlValidate_SafeUrlopen:
             safe_urlopen(blocked_with_creds)
         assert "s3cret" not in str(exc_info.value)
         assert "admin" not in str(exc_info.value)
+
+    def test_safe_urlopen_rejects_unsafe_request_object(self):
+        """safe_urlopen must validate URLs from Request objects, not crash."""
+        req = urllib.request.Request("http://192.168.1.1:8080/api/tags")
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen(req)
+
+    def test_safe_urlopen_rejects_file_scheme_request_object(self):
+        """safe_urlopen must reject file:// scheme in Request objects."""
+        req = urllib.request.Request("file:///etc/passwd")
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen(req)
+
+    def test_safe_urlopen_request_object_strips_credentials_from_error(self):
+        """safe_urlopen must strip credentials from errors when given a Request."""
+        blocked_with_creds = "http://admin:s3cret@192.168.1.1/api/tags"
+        req = urllib.request.Request(blocked_with_creds)
+        with pytest.raises(ValueError) as exc_info:
+            safe_urlopen(req)
+        assert "s3cret" not in str(exc_info.value)
+        assert "admin" not in str(exc_info.value)
+
+    def test_safe_urlopen_request_object_validates_dangerous_hostname(self):
+        """safe_urlopen must reject Request objects targeting dangerous hostnames."""
+        req = urllib.request.Request("http://169.254.169.254/latest/meta-data/")
+        with pytest.raises(ValueError):
+            safe_urlopen(req)
+
+    def test_safe_urlopen_request_object_rejects_percent_encoded_private_ip(self):
+        """safe_urlopen must reject percent-encoded private IPs in Request objects."""
+        req = urllib.request.Request("http://%31%30%2e%30%2e%30%2e%31:11434/api/tags")
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen(req)
+
+    def test_safe_urlopen_request_object_with_post_data(self):
+        """safe_urlopen must validate Request objects that carry POST data."""
+        req = urllib.request.Request(
+            "http://10.0.0.1:11434/api/generate",
+            data=b'{"model":"test"}',
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen(req)
+
+
+class TestUrlValidate_ExtractUrlString:
+    """Test _extract_url_string correctly extracts URL from Request objects."""
+
+    def test_extract_url_string_from_string(self):
+        """_extract_url_string returns the URL string unchanged."""
+        url = "http://127.0.0.1:11434/api/tags"
+        assert _extract_url_string(url) == url
+
+    def test_extract_url_string_from_request_object(self):
+        """_extract_url_string extracts full_url from Request objects."""
+        url = "http://127.0.0.1:11434/api/tags"
+        req = urllib.request.Request(url)
+        assert _extract_url_string(req) == url
+
+    def test_extract_url_string_from_request_with_data(self):
+        """_extract_url_string extracts URL even from POST Request objects."""
+        url = "http://127.0.0.1:11434/api/generate"
+        req = urllib.request.Request(
+            url,
+            data=b'{"model":"test"}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert _extract_url_string(req) == url
+
+    def test_extract_url_string_from_request_with_private_ip(self):
+        """_extract_url_string extracts URL from Request targeting private IP."""
+        url = "http://10.0.0.1/api/tags"
+        req = urllib.request.Request(url)
+        assert _extract_url_string(req) == url
 
 
 # ============================================================================
