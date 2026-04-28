@@ -658,19 +658,19 @@ def resolve_provider(
     if config is None:
         config = {}
 
-    provider_cfg = config.get("provider", {})
+    provider_cfg = config.get("provider") or {}
     default_name = provider_cfg.get("default", "ollama")
 
     # Also support the legacy memory.ollama_url for backward compat
-    legacy_ollama_url = config.get("memory", {}).get("ollama_url")
+    legacy_ollama_url = (config.get("memory") or {}).get("ollama_url")
 
-    embed_cfg = provider_cfg.get("embed", {})
-    generate_cfg = provider_cfg.get("generate", {})
+    embed_cfg = provider_cfg.get("embed") or {}
+    generate_cfg = provider_cfg.get("generate") or {}
 
     embed_provider_name = embed_cfg.get("provider") or default_name
     generate_provider_name = generate_cfg.get("provider") or default_name
 
-    ollama_cfg = provider_cfg.get("ollama", {})
+    ollama_cfg = provider_cfg.get("ollama") or {}
     ollama_base_url = (
         ollama_cfg.get("base_url") or legacy_ollama_url or DEFAULT_OLLAMA_BASE_URL
     )
@@ -730,8 +730,8 @@ def _resolve_embed_provider(
         log.info("providers: ollama embed not available, trying fallback")
         return _fallback_embed_provider(config)
     elif name == "openai":
-        provider_cfg = config.get("provider", {})
-        openai_cfg = provider_cfg.get("openai", {})
+        provider_cfg = config.get("provider") or {}
+        openai_cfg = provider_cfg.get("openai") or {}
         api_key = openai_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY")
         if not api_key:
             log.info(
@@ -797,8 +797,8 @@ def _resolve_generate_provider(
         log.info("providers: ollama generate not available, trying fallback")
         return _fallback_generate_provider(config)
     elif name == "openai":
-        provider_cfg = config.get("provider", {})
-        openai_cfg = provider_cfg.get("openai", {})
+        provider_cfg = config.get("provider") or {}
+        openai_cfg = provider_cfg.get("openai") or {}
         api_key = openai_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY")
         if not api_key:
             log.info(
@@ -819,8 +819,8 @@ def _resolve_generate_provider(
             )
             return _fallback_generate_provider(config, skip_openai=True)
     elif name == "anthropic":
-        provider_cfg = config.get("provider", {})
-        anthropic_cfg = provider_cfg.get("anthropic", {})
+        provider_cfg = config.get("provider") or {}
+        anthropic_cfg = provider_cfg.get("anthropic") or {}
         api_key = anthropic_cfg.get("api_key") or os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             log.info(
@@ -861,8 +861,8 @@ def _fallback_embed_provider(
         An EmbedProvider instance (at worst, NoneProvider).
     """
     if not skip_openai:
-        provider_cfg = config.get("provider", {})
-        openai_cfg = provider_cfg.get("openai", {})
+        provider_cfg = config.get("provider") or {}
+        openai_cfg = provider_cfg.get("openai") or {}
         api_key = openai_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY")
         if api_key:
             try:
@@ -894,9 +894,9 @@ def _fallback_generate_provider(
     Returns:
         A GenerateProvider instance (at worst, NoneProvider).
     """
-    provider_cfg = config.get("provider", {})
+    provider_cfg = config.get("provider") or {}
     if not skip_openai:
-        openai_cfg = provider_cfg.get("openai", {})
+        openai_cfg = provider_cfg.get("openai") or {}
         openai_api_key = openai_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY")
         if openai_api_key:
             try:
@@ -910,7 +910,7 @@ def _fallback_generate_provider(
             except ValueError:
                 log.info("providers: openai generate fallback config invalid (bad URL)")
     if not skip_anthropic:
-        anthropic_cfg = provider_cfg.get("anthropic", {})
+        anthropic_cfg = provider_cfg.get("anthropic") or {}
         anthropic_api_key = anthropic_cfg.get("api_key") or os.environ.get(
             "ANTHROPIC_API_KEY"
         )

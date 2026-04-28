@@ -20,6 +20,7 @@ from memory.providers import (
     resolve_provider,
     DEFAULT_NONE_EMBED_DIMENSIONS,
     DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_OLLAMA_BASE_URL,
 )
 from memory.config import get_provider_config, DEFAULTS, load_config
 
@@ -1962,3 +1963,198 @@ class TestAnthropicProvider_GenerateNeverReturnsNone:
             result = provider.generate("test prompt")
         assert result == ""
         assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-qjc6n / Issue 17: config.get(K, {}) None-safety
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProvider_NoneConfigValues:
+    """resolve_provider must handle config values of None gracefully.
+
+    When YAML contains a key with no value (e.g., `provider:` with no
+    subkeys), yaml.safe_load returns None for that key. dict.get(K, {}) only
+    uses the default when the KEY is missing, not when the VALUE is None.
+    This causes AttributeError when chaining .get() on the result.
+
+    Fix: use config.get(K) or {} instead of config.get(K, {}).
+    """
+
+    def test_resolve_with_none_provider(self):
+        """When config['provider'] is None, resolve_provider should not crash."""
+        with patch("memory.providers.check_ollama_model", return_value=False):
+            embed, gen = resolve_provider({"provider": None})
+        assert isinstance(embed, NoneProvider)
+        assert isinstance(gen, NoneProvider)
+
+    def test_resolve_with_none_provider_embed(self):
+        """When config['provider']['embed'] is None, should not crash."""
+        with patch("memory.providers.check_ollama_model", return_value=True):
+            config = {"provider": {"default": "ollama", "embed": None}}
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, OllamaProvider)
+
+    def test_resolve_with_none_provider_generate(self):
+        """When config['provider']['generate'] is None, should not crash."""
+        with patch("memory.providers.check_ollama_model", return_value=True):
+            config = {"provider": {"default": "ollama", "generate": None}}
+            embed, gen = resolve_provider(config)
+        assert isinstance(gen, OllamaProvider)
+
+    def test_resolve_with_none_provider_ollama(self):
+        """When config['provider']['ollama'] is None, should use defaults."""
+        with patch("memory.providers.check_ollama_model", return_value=True):
+            config = {"provider": {"default": "ollama", "ollama": None}}
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, OllamaProvider)
+        assert embed._base_url == DEFAULT_OLLAMA_BASE_URL
+
+    def test_resolve_with_none_memory(self):
+        """When config['memory'] is None, legacy_ollama_url should not crash."""
+        with patch("memory.providers.check_ollama_model", return_value=True):
+            config = {"memory": None}
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, OllamaProvider)
+
+    def test_resolve_openai_with_none_provider_openai(self):
+        """When config['provider']['openai'] is None, should not crash on openai path."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False):
+            os.environ["OPENAI_API_KEY"] = "test-key"
+            config = {"provider": {"default": "openai", "openai": None}}
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, OpenAIProvider)
+        assert isinstance(gen, OpenAIProvider)
+
+    def test_resolve_anthropic_with_none_provider_anthropic(self):
+        """When config['provider']['anthropic'] is None, should not crash."""
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False):
+            os.environ["ANTHROPIC_API_KEY"] = "test-key"
+            config = {"provider": {"default": "anthropic", "anthropic": None}}
+            embed, gen = resolve_provider(config)
+        assert isinstance(gen, AnthropicProvider)
+
+    def test_fallback_embed_with_none_provider(self):
+        """_fallback_embed_provider must handle None provider config sections."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            from memory.providers import _fallback_embed_provider
+
+            config = {"provider": None}
+            provider = _fallback_embed_provider(config)
+        assert isinstance(provider, NoneProvider)
+
+    def test_fallback_generate_with_none_provider(self):
+        """_fallback_generate_provider must handle None provider config sections."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            from memory.providers import _fallback_generate_provider
+
+            config = {"provider": None}
+            provider = _fallback_generate_provider(config)
+        assert isinstance(provider, NoneProvider)
+
+    def test_fallback_generate_with_none_openai_section(self):
+        """_fallback_generate_provider must handle None openai config section."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "env-key"}, clear=False):
+            os.environ["OPENAI_API_KEY"] = "env-key"
+            from memory.providers import _fallback_generate_provider
+
+            config = {"provider": {"openai": None}}
+            provider = _fallback_generate_provider(config)
+        assert isinstance(provider, OpenAIProvider)
+        assert provider._api_key == "env-key"
+
+
+class TestConfigGetNoneSafety:
+    """config.py functions must handle None values in config dict.
+
+    When YAML contains `memory:` with no subkeys, yaml.safe_load returns
+    {'memory': None}. dict.get('memory', {}) returns None (not {}),
+    causing AttributeError on chained .get() calls.
+    """
+
+    def test_get_db_path_with_none_memory(self):
+        from memory.config import get_db_path
+
+        result = get_db_path(config={"memory": None})
+        # Should return default, not crash
+        assert isinstance(result, object)
+
+    def test_get_ollama_url_with_none_memory(self):
+        from memory.config import get_ollama_url
+
+        result = get_ollama_url(config={"memory": None})
+        # Should return default, not crash
+        assert result == "http://localhost:11434"
+
+    def test_is_auto_extract_with_none_memory(self):
+        from memory.config import is_auto_extract
+
+        result = is_auto_extract(config={"memory": None})
+        # Should return default (True), not crash
+        assert result is True
+
+    def test_get_session_dirs_with_none_memory(self):
+        from memory.config import get_session_dirs
+
+        result = get_session_dirs(config={"memory": None})
+        # Should return default, not crash
+        assert isinstance(result, list)
+
+    def test_get_max_file_size_with_none_memory(self):
+        from memory.config import get_max_file_size
+
+        result = get_max_file_size(config={"memory": None})
+        # Should return default, not crash
+        assert result == 10 * 1024 * 1024
+
+    def test_get_prospective_model_with_none_memory(self):
+        from memory.config import get_prospective_model
+
+        result = get_prospective_model(config={"memory": None})
+        # Should return default, not crash
+        assert result == "qwen2.5:1.5b"
+
+    def test_get_dream_config_with_none_dream(self):
+        from memory.config import get_dream_config
+
+        result = get_dream_config(config={"dream": None})
+        # Should return defaults, not crash
+        assert "enabled" in result
+
+    def test_get_provider_config_with_none_provider(self):
+        from memory.config import get_provider_config
+
+        result = get_provider_config(config={"provider": None})
+        # Should return defaults, not crash
+        assert result["default"] == "ollama"
+
+    def test_get_server_auth_token_with_none_server(self):
+        from memory.config import get_server_auth_token
+
+        result = get_server_auth_token(config={"server": None})
+        # Should return None, not crash
+        assert result is None
+
+    def test_get_server_port_with_none_server(self):
+        from memory.config import get_server_port
+
+        result = get_server_port(config={"server": None})
+        # Should return default port, not crash
+        assert result == 8322
+
+    def test_is_correction_detection_enabled_with_none_section(self):
+        from memory.config import is_correction_detection_enabled
+
+        result = is_correction_detection_enabled(config={"correction_detection": None})
+        # Should return default (True), not crash
+        assert result is True
+
+    def test_get_source_filter_with_none_hook(self):
+        from memory.config import get_source_filter
+
+        result = get_source_filter(config={"hook": None})
+        # Should return default ("direct"), not crash
+        assert result == "direct"

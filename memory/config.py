@@ -100,14 +100,16 @@ def get_config_value(key_path: str, config_path: Path | None = None) -> object:
 def get_db_path(config_path: Path | None = None, config: dict | None = None) -> Path:
     if config is None:
         config = load_config(config_path)
-    db = config.get("memory", {}).get("db") or DEFAULTS["memory"]["db"]
+    db = (config.get("memory") or {}).get("db") or DEFAULTS["memory"]["db"]
     return Path(db).expanduser()
 
 
 def get_ollama_url(config_path: Path | None = None, config: dict | None = None) -> str:
     if config is None:
         config = load_config(config_path)
-    url = config.get("memory", {}).get("ollama_url") or DEFAULTS["memory"]["ollama_url"]
+    url = (config.get("memory") or {}).get("ollama_url") or DEFAULTS["memory"][
+        "ollama_url"
+    ]
     if not url.startswith(("http://", "https://")):
         raise ValueError("config: Ollama URL must be http/https")
     return url
@@ -126,7 +128,7 @@ def is_auto_extract(
 ) -> bool:
     if config is None:
         config = load_config(config_path)
-    val = config.get("memory", {}).get("auto_extract")
+    val = (config.get("memory") or {}).get("auto_extract")
     if val is None:
         return DEFAULTS["memory"]["auto_extract"]
     return _as_bool(val)
@@ -137,7 +139,7 @@ def get_session_dirs(
 ) -> list[Path]:
     if config is None:
         config = load_config(config_path)
-    dirs = config.get("memory", {}).get("session_dirs")
+    dirs = (config.get("memory") or {}).get("session_dirs")
     if dirs is None:
         return [Path(d) for d in DEFAULTS["memory"]["session_dirs"]]
     if isinstance(dirs, str):
@@ -150,7 +152,7 @@ def get_max_file_size(
 ) -> int:
     if config is None:
         config = load_config(config_path)
-    size = config.get("memory", {}).get("max_file_size")
+    size = (config.get("memory") or {}).get("max_file_size")
     if size is None:
         return DEFAULTS["memory"]["max_file_size"]
     return int(size)
@@ -161,10 +163,9 @@ def get_prospective_model(
 ) -> str:
     if config is None:
         config = load_config(config_path)
-    return (
-        config.get("memory", {}).get("prospective_model")
-        or DEFAULTS["memory"]["prospective_model"]
-    )
+    return (config.get("memory") or {}).get("prospective_model") or DEFAULTS["memory"][
+        "prospective_model"
+    ]
 
 
 def get_dream_config(
@@ -172,7 +173,7 @@ def get_dream_config(
 ) -> dict:
     if config is None:
         config = load_config(config_path)
-    dream = config.get("dream", {})
+    dream = config.get("dream") or {}
     defaults = DEFAULTS["dream"]
     result = {}
     for key, default_val in defaults.items():
@@ -185,7 +186,7 @@ def is_dream_enabled(
 ) -> bool:
     if config is None:
         config = load_config(config_path)
-    val = config.get("dream", {}).get("enabled")
+    val = (config.get("dream") or {}).get("enabled")
     if val is None:
         return DEFAULTS["dream"]["enabled"]
     return _as_bool(val)
@@ -196,7 +197,7 @@ def get_dream_schedule(
 ) -> str:
     if config is None:
         config = load_config(config_path)
-    return config.get("dream", {}).get("schedule") or DEFAULTS["dream"]["schedule"]
+    return (config.get("dream") or {}).get("schedule") or DEFAULTS["dream"]["schedule"]
 
 
 def get_dream_report_path(
@@ -204,9 +205,9 @@ def get_dream_report_path(
 ) -> Path:
     if config is None:
         config = load_config(config_path)
-    path = (
-        config.get("dream", {}).get("report_path") or DEFAULTS["dream"]["report_path"]
-    )
+    path = (config.get("dream") or {}).get("report_path") or DEFAULTS["dream"][
+        "report_path"
+    ]
     return Path(path).expanduser()
 
 
@@ -215,7 +216,7 @@ def get_server_auth_token(
 ) -> str | None:
     if config is None:
         config = load_config(config_path)
-    token = config.get("server", {}).get("auth_token")
+    token = (config.get("server") or {}).get("auth_token")
     if not token:
         return None
     return token
@@ -224,7 +225,7 @@ def get_server_auth_token(
 def get_server_port(config_path: Path | None = None, config: dict | None = None) -> int:
     if config is None:
         config = load_config(config_path)
-    port = config.get("server", {}).get("port")
+    port = (config.get("server") or {}).get("port")
     if port is None:
         return 8322
     try:
@@ -238,7 +239,7 @@ def get_resume_config(
 ) -> dict:
     if config is None:
         config = load_config(config_path)
-    resume = config.get("resume", {})
+    resume = config.get("resume") or {}
     defaults = DEFAULTS["resume"]
     result = {}
     for key, default_val in defaults.items():
@@ -251,7 +252,7 @@ def get_resume_model(
 ) -> str:
     if config is None:
         config = load_config(config_path)
-    return config.get("resume", {}).get("model") or DEFAULTS["resume"]["model"]
+    return (config.get("resume") or {}).get("model") or DEFAULTS["resume"]["model"]
 
 
 def get_resume_output_dir(
@@ -259,9 +260,9 @@ def get_resume_output_dir(
 ) -> Path:
     if config is None:
         config = load_config(config_path)
-    path = (
-        config.get("resume", {}).get("output_dir") or DEFAULTS["resume"]["output_dir"]
-    )
+    path = (config.get("resume") or {}).get("output_dir") or DEFAULTS["resume"][
+        "output_dir"
+    ]
     return Path(path).expanduser()
 
 
@@ -284,7 +285,9 @@ def get_opencode_db_path(
     """
     if config is None:
         config = load_config(config_path)
-    path = config.get("opencode", {}).get("db_path") or DEFAULTS["opencode"]["db_path"]
+    path = (config.get("opencode") or {}).get("db_path") or DEFAULTS["opencode"][
+        "db_path"
+    ]
     return Path(path).expanduser().resolve()
 
 
@@ -310,7 +313,7 @@ def get_source_filter(
     """
     if config is None:
         config = load_config(config_path)
-    val = config.get("hook", {}).get("source_filter")
+    val = (config.get("hook") or {}).get("source_filter")
     if val is None:
         return DEFAULTS["hook"]["source_filter"]
     if val not in _VALID_SOURCE_FILTERS:
@@ -342,7 +345,7 @@ def is_correction_detection_enabled(
     """
     if config is None:
         config = load_config(config_path)
-    val = config.get("correction_detection", {}).get("enabled")
+    val = (config.get("correction_detection") or {}).get("enabled")
     if val is None:
         return DEFAULTS["correction_detection"]["enabled"]
     return _as_bool(val)
@@ -367,7 +370,7 @@ def get_provider_config(
     """
     if config is None:
         config = load_config(config_path)
-    provider = config.get("provider", {})
+    provider = config.get("provider") or {}
     defaults = DEFAULTS["provider"]
     result = {}
     for key, default_val in defaults.items():
