@@ -45,8 +45,13 @@ INTROSPECTION_SOURCE_TYPE = "introspection"
 
 
 def discover_transcript_files(directory: Path, pattern: str = "*.md") -> list[Path]:
-    """Find transcript files in a directory."""
-    return sorted(directory.glob(pattern))
+    """Find transcript files in a directory.
+
+    Symlinks are excluded to prevent reading arbitrary files via symlink attacks.
+    """
+    return sorted(
+        p for p in directory.glob(pattern) if p.is_file() and not p.is_symlink()
+    )
 
 
 def generate_source_id(file_path: Path) -> str:
@@ -174,18 +179,24 @@ class SessionHook:
         return results
 
 
+_INTROSPECT_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
 class IntrospectionAnalyzer:
     """Analyze session transcripts for self-assessment patterns."""
 
     def __init__(self, model: str = DEFAULT_MODEL, base_url: str = OLLAMA_BASE):
-        from .url_validate import is_safe_url
-        from .extract import OLLAMA_BASE
+        from .url_validate import is_safe_url, _strip_credentials
 
         self._model = model
         self._base_url = base_url.rstrip("/")
         if not self._base_url.startswith(("http://", "https://")):
             raise ValueError(
-                f"llmem: introspection: unsafe Ollama URL: {self._base_url!r}"
+                f"llmem: introspection: unsafe Ollama URL: {_strip_credentials(self._base_url)!r}"
+            )
+        if not is_safe_url(self._base_url, allow_remote=True):
+            raise ValueError(
+                f"llmem: introspection: unsafe Ollama URL: {_strip_credentials(self._base_url)!r}"
             )
 
     @property
@@ -194,11 +205,11 @@ class IntrospectionAnalyzer:
 
     def check_available(self) -> bool:
         """Check if the introspection model is available."""
+        from .url_validate import safe_urlopen
+
         url = f"{self._base_url}/api/tags"
         try:
-            import urllib.request
-
-            with urllib.request.urlopen(url) as resp:
+            with safe_urlopen(url) as resp:
                 data = json.loads(resp.read())
                 models = [m["name"] for m in data.get("models", [])]
                 return any(m.startswith(self._model) for m in models)
@@ -212,10 +223,19 @@ def introspect_session(
     analyzer: IntrospectionAnalyzer,
     embedder: EmbeddingEngine | None = None,
     force: bool = False,
+    max_file_size: int = _INTROSPECT_MAX_FILE_SIZE,
 ) -> tuple[str, str | None]:
     """Analyze a session transcript and store a self_assessment memory."""
     if not file_path.exists():
         return INTROSPECT_RESULT_FILE_NOT_FOUND, None
+
+    try:
+        file_size = file_path.stat().st_size
+    except OSError:
+        return INTROSPECT_RESULT_FILE_NOT_FOUND, None
+
+    if file_size > max_file_size:
+        return INTROSPECT_RESULT_FILE_TOO_LARGE, None
 
     source_id = generate_source_id(file_path)
     if not force and store.is_extracted(INTROSPECTION_SOURCE_TYPE, source_id):
@@ -276,6 +296,8 @@ Produce a structured self-assessment or state "NO_ASSESSMENT" if nothing notable
     import urllib.request
     import urllib.error
 
+    from .url_validate import safe_urlopen
+
     url = f"{analyzer._base_url}/api/generate"
     payload = json.dumps(
         {
@@ -289,7 +311,7 @@ Produce a structured self-assessment or state "NO_ASSESSMENT" if nothing notable
     )
 
     try:
-        with urllib.request.urlopen(req) as resp:
+        with safe_urlopen(req) as resp:
             data = json.loads(resp.read())
             assessment = data.get("response", "").strip()
     except Exception as e:

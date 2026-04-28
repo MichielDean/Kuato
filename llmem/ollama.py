@@ -5,7 +5,7 @@ import logging
 import urllib.request
 import urllib.error
 
-from .url_validate import is_safe_url
+from .url_validate import is_safe_url, _strip_credentials
 
 log = logging.getLogger(__name__)
 
@@ -29,8 +29,10 @@ def _call_ollama_generate(
     Returns:
         The generated text, or None on error.
     """
+    from .url_validate import safe_urlopen
+
     if not is_safe_url(base_url, allow_remote=True):
-        raise ValueError(f"llmem: ollama: unsafe URL: {base_url!r}")
+        raise ValueError(f"llmem: ollama: unsafe URL: {_strip_credentials(base_url)!r}")
 
     url = f"{base_url.rstrip('/')}/api/generate"
     payload = json.dumps(
@@ -45,7 +47,7 @@ def _call_ollama_generate(
         url, data=payload, headers={"Content-Type": "application/json"}
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with safe_urlopen(req) as resp:
             data = json.loads(resp.read())
             return data.get("response", "").strip()
     except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as e:

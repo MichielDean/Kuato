@@ -8,7 +8,7 @@ import urllib.request
 import urllib.error
 
 from .taxonomy import ERROR_TAXONOMY, ERROR_TAXONOMY_KEYS, SELF_ASSESSMENT_FIELDS
-from .url_validate import is_safe_url
+from .url_validate import is_safe_url, _strip_credentials
 
 log = logging.getLogger(__name__)
 
@@ -37,14 +37,20 @@ class ExtractionEngine:
     def __init__(self, model: str = DEFAULT_MODEL, base_url: str = OLLAMA_BASE):
         base_url = base_url.rstrip("/")
         if not base_url.startswith(("http://", "https://")):
-            raise ValueError(f"llmem: extract: unsafe Ollama URL: {base_url!r}")
+            raise ValueError(
+                f"llmem: extract: unsafe Ollama URL: {_strip_credentials(base_url)!r}"
+            )
         if not is_safe_url(base_url, allow_remote=True):
-            raise ValueError(f"llmem: extract: unsafe Ollama URL: {base_url!r}")
+            raise ValueError(
+                f"llmem: extract: unsafe Ollama URL: {_strip_credentials(base_url)!r}"
+            )
         self._model = model
         self._base_url = base_url
 
     def extract(self, text: str) -> list[dict]:
         """Extract memories from text using Ollama."""
+        from .url_validate import safe_urlopen
+
         prompt = EXTRACTION_PROMPT + text
         url = f"{self._base_url}/api/generate"
         payload = json.dumps(
@@ -60,7 +66,7 @@ class ExtractionEngine:
             url, data=payload, headers={"Content-Type": "application/json"}
         )
         try:
-            with urllib.request.urlopen(req) as resp:
+            with safe_urlopen(req) as resp:
                 data = json.loads(resp.read())
                 response_text = data.get("response", "").strip()
         except (
@@ -105,9 +111,11 @@ class ExtractionEngine:
 
     def check_available(self) -> bool:
         """Check if the extraction model is available in Ollama."""
+        from .url_validate import safe_urlopen
+
         url = f"{self._base_url}/api/tags"
         try:
-            with urllib.request.urlopen(url) as resp:
+            with safe_urlopen(url) as resp:
                 data = json.loads(resp.read())
                 models = [m["name"] for m in data.get("models", [])]
                 return any(m.startswith(self._model) for m in models)
@@ -116,13 +124,15 @@ class ExtractionEngine:
 
     def pull_model(self) -> bool:
         """Pull the extraction model from Ollama."""
+        from .url_validate import safe_urlopen
+
         url = f"{self._base_url}/api/pull"
         payload = json.dumps({"name": self._model, "stream": False}).encode()
         req = urllib.request.Request(
             url, data=payload, headers={"Content-Type": "application/json"}
         )
         try:
-            with urllib.request.urlopen(req) as resp:
+            with safe_urlopen(req) as resp:
                 data = json.loads(resp.read())
                 return data.get("status") == "success"
         except Exception as e:

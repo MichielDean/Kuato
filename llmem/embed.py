@@ -6,7 +6,7 @@ import struct
 import urllib.request
 import urllib.error
 
-from .url_validate import is_safe_url
+from .url_validate import is_safe_url, _strip_credentials
 
 import math
 
@@ -26,9 +26,13 @@ class EmbeddingEngine:
     ):
         base_url = base_url.rstrip("/")
         if not base_url.startswith(("http://", "https://")):
-            raise ValueError(f"Unsafe Ollama URL (must be http/https): {base_url!r}")
+            raise ValueError(
+                f"llmem: embed: unsafe Ollama URL (must be http/https): {_strip_credentials(base_url)!r}"
+            )
         if not is_safe_url(base_url, allow_remote=True):
-            raise ValueError(f"Unsafe Ollama URL (blocked address): {base_url!r}")
+            raise ValueError(
+                f"llmem: embed: unsafe Ollama URL (blocked address): {_strip_credentials(base_url)!r}"
+            )
         self._model = model
         self._base_url = base_url
         self._max_cache_size = max_cache_size
@@ -40,6 +44,8 @@ class EmbeddingEngine:
 
     def embed(self, text: str) -> list[float]:
         """Generate embedding vector for text."""
+        from .url_validate import safe_urlopen
+
         if text in self._cache:
             return self._cache[text]
 
@@ -50,7 +56,7 @@ class EmbeddingEngine:
         )
 
         try:
-            with urllib.request.urlopen(req) as resp:
+            with safe_urlopen(req) as resp:
                 data = json.loads(resp.read())
                 vec = data.get("embedding", [])
         except (
@@ -72,9 +78,11 @@ class EmbeddingEngine:
 
     def check_available(self) -> bool:
         """Check if the embedding model is available in Ollama."""
+        from .url_validate import safe_urlopen
+
         url = f"{self._base_url}/api/tags"
         try:
-            with urllib.request.urlopen(url) as resp:
+            with safe_urlopen(url) as resp:
                 data = json.loads(resp.read())
                 models = [m["name"] for m in data.get("models", [])]
                 return any(m.startswith(self._model) for m in models)

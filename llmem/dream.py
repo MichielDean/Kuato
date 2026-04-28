@@ -43,15 +43,50 @@ DEFAULT_CALIBRATION_ENABLED = True
 DEFAULT_STALE_PROCEDURE_DAYS = 30
 DEFAULT_CALIBRATION_LOOKBACK_DAYS = 90
 
-_DANGEROUS_PATH_PREFIXES = ("/etc/", "/var/", "/sys/", "/proc/", "/dev/", "/boot/")
+_DANGEROUS_PATH_PREFIXES = (
+    "/etc/",
+    "/var/",
+    "/sys/",
+    "/proc/",
+    "/dev/",
+    "/boot/",
+    "/root/",
+)
 
 
 def _validate_output_path(path: Path, label: str) -> Path:
+    """Validate that an output path is safe for writing.
+
+    Checks:
+    - Must not contain '..' traversal components
+    - Must not target protected system directories
+    - Must not be a symlink itself
+
+    Does NOT require the path to be within the llmem home directory —
+    users may configure custom output paths. This function prevents
+    clearly dangerous writes, not all writes outside the default home.
+
+    Args:
+        path: The candidate output path.
+        label: Description of the file (for error messages).
+
+    Returns:
+        The resolved path.
+
+    Raises:
+        ValueError: If the path is unsafe.
+    """
+    # Check traversal BEFORE resolving (resolve eliminates ..)
+    if ".." in str(path):
+        raise ValueError(f"{label} path contains '..' traversal: {path}")
+
     resolved = path.resolve()
     if any(str(resolved).startswith(p) for p in _DANGEROUS_PATH_PREFIXES):
-        raise ValueError(f"{label} path targets a protected directory: {resolved!s}")
-    if ".." in str(path):
-        raise ValueError(f"{label} path contains '..' traversal: {path!s}")
+        raise ValueError(f"{label} path targets a protected directory: {resolved}")
+    if path.is_symlink():
+        raise ValueError(
+            f"{label} path is a symlink (not allowed for write targets): {path}"
+        )
     return resolved
 
 

@@ -16,8 +16,16 @@ def generate_dream_report(result: DreamResult, report_path: Path) -> None:
 
     Args:
         result: DreamResult from a dream run.
-        report_path: Path to write the HTML report to.
+        report_path: Path to write the HTML report to. Must be within the
+            user's llmem home directory.
+
+    Raises:
+        ValueError: If report_path resolves outside the llmem home directory
+            or targets a protected system directory.
     """
+    from .paths import get_llmem_home, _validate_write_path
+
+    _validate_write_path(report_path, "dream report")
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     # Build sections

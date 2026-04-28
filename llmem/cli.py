@@ -169,7 +169,41 @@ def cmd_export(args):
 
 def cmd_import(args):
     store = MemoryStore(args.db)
-    data = json.loads(Path(args.file).read_text())
+    try:
+        raw = Path(args.file).read_text()
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"Error: invalid JSON in {args.file}: {e}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as e:
+        print(f"Error: cannot read {args.file}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not isinstance(data, list):
+        print(
+            "Error: import file must contain a JSON array of memory objects",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Schema validation: each entry must have at least 'type' and 'content'
+    for i, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            print(f"Error: entry {i} is not a JSON object", file=sys.stderr)
+            sys.exit(1)
+        if "type" not in entry or "content" not in entry:
+            print(
+                f"Error: entry {i} missing required 'type' or 'content' field",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not isinstance(entry["type"], str) or not isinstance(entry["content"], str):
+            print(
+                f"Error: entry {i} 'type' and 'content' must be strings",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     count = store.import_memories(data)
     print(f"Imported {count} memories.")
     store.close()

@@ -35,9 +35,13 @@ def register_memory_type(type_name: str) -> None:
 
     Args:
         type_name: The type name to register (e.g., 'custom_type').
+            Must be a non-empty string matching ^[a-z][a-z0-9_]*$
+            (lowercase alphanumeric + underscores, starting with a letter,
+            max 64 characters).
 
     Raises:
-        ValueError: If type_name is already registered.
+        ValueError: If type_name is already registered, empty, or doesn't
+            match the allowed pattern.
 
     After registration, store.add(type=type_name, ...) will succeed.
     Before registration, store.add(type=type_name, ...) raises ValueError.
@@ -48,6 +52,18 @@ def register_memory_type(type_name: str) -> None:
         requiring callers to pass a store reference just to check valid
         type names (e.g., from the CLI argparse layer).
     """
+    if not type_name or not isinstance(type_name, str):
+        raise ValueError(
+            "llmem: register_memory_type: type_name must be a non-empty string"
+        )
+    if len(type_name) > 64:
+        raise ValueError(
+            f"llmem: register_memory_type: type_name too long (max 64 chars): {type_name!r}"
+        )
+    if not re.match(r"^[a-z][a-z0-9_]*$", type_name):
+        raise ValueError(
+            f"llmem: register_memory_type: type_name must match ^[a-z][a-z0-9_]*$: {type_name!r}"
+        )
     if type_name in _global_registry:
         raise ValueError(
             f"llmem: register_memory_type: type '{type_name}' is already registered"
@@ -959,8 +975,37 @@ class MemoryStore:
         return [self._row_to_dict(r) for r in rows]
 
     def import_memories(self, memories: list[dict]) -> int:
+        """Import a list of memory dicts into the store.
+
+        Each entry must have at least 'type' and 'content' keys with string
+        values. Entries without these are skipped.
+
+        Args:
+            memories: List of memory dicts to import.
+
+        Returns:
+            The number of memories successfully imported.
+        """
         count = 0
-        for m in memories:
+        for i, m in enumerate(memories):
+            # Per-entry schema validation
+            if not isinstance(m, dict):
+                logger.warning("llmem: store: import: skipping entry %d: not a dict", i)
+                continue
+            if "type" not in m or "content" not in m:
+                logger.warning(
+                    "llmem: store: import: skipping entry %d: missing 'type' or 'content'",
+                    i,
+                )
+                continue
+            if not isinstance(m.get("type"), str) or not isinstance(
+                m.get("content"), str
+            ):
+                logger.warning(
+                    "llmem: store: import: skipping entry %d: 'type' and 'content' must be strings",
+                    i,
+                )
+                continue
             hints = m.get("hints")
             if isinstance(hints, str):
                 try:
@@ -984,6 +1029,9 @@ class MemoryStore:
                 if str(e).startswith("UNIQUE constraint failed"):
                     continue
                 raise
+            except ValueError as e:
+                logger.warning("llmem: store: import: skipping entry %d: %s", i, e)
+                continue
         return count
 
     @staticmethod
