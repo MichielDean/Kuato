@@ -96,7 +96,7 @@ class TestOllamaProvider:
     def test_embed_delegates_to_ollama_embeddings_api(self):
         provider = OllamaProvider()
         vec = [0.1] * 768
-        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = json.dumps({"embedding": vec}).encode()
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -128,7 +128,7 @@ class TestOllamaProvider:
             resp.__exit__ = MagicMock(return_value=False)
             return resp
 
-        with patch("memory.providers.urllib.request.urlopen", side_effect=mock_urlopen):
+        with patch("memory.providers.safe_urlopen", side_effect=mock_urlopen):
             result = provider.embed_batch(["text a", "text b"])
         assert len(result) == 2
         assert result[0] == vec_a
@@ -260,7 +260,7 @@ class TestOpenAIProvider:
 
     def test_check_available_true_on_valid_key(self):
         provider = OpenAIProvider(api_key="test-key")
-        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = json.dumps({"data": []}).encode()
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -273,7 +273,7 @@ class TestOpenAIProvider:
         import urllib.error
 
         with patch(
-            "memory.providers.urllib.request.urlopen",
+            "memory.providers.safe_urlopen",
             side_effect=urllib.error.HTTPError(
                 url="https://api.openai.com/v1/models",
                 code=401,
@@ -306,7 +306,7 @@ class TestOpenAIProvider:
 
     def test_authorization_header(self):
         provider = OpenAIProvider(api_key="test-key-123")
-        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = json.dumps({"data": []}).encode()
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -335,7 +335,7 @@ class TestAnthropicProvider:
 
     def test_generate_calls_anthropic_messages_api(self):
         provider = AnthropicProvider(api_key="test-key")
-        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = json.dumps(
                 {
@@ -356,7 +356,7 @@ class TestAnthropicProvider:
 
     def test_check_available_true_on_valid_key(self):
         provider = AnthropicProvider(api_key="test-key")
-        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = json.dumps(
                 {
@@ -373,7 +373,7 @@ class TestAnthropicProvider:
         import urllib.error
 
         with patch(
-            "memory.providers.urllib.request.urlopen",
+            "memory.providers.safe_urlopen",
             side_effect=urllib.error.HTTPError(
                 url="https://api.anthropic.com/v1/messages",
                 code=401,
@@ -400,7 +400,7 @@ class TestAnthropicProvider:
 
     def test_x_api_key_header(self):
         provider = AnthropicProvider(api_key="test-key-456")
-        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = json.dumps(
                 {
@@ -419,7 +419,7 @@ class TestAnthropicProvider:
 
     def test_anthropic_version_header(self):
         provider = AnthropicProvider(api_key="test-key-789")
-        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = json.dumps(
                 {
@@ -627,7 +627,7 @@ class TestOpenAI_URL_NoDoubleV1:
 
     def test_embed_url_no_double_v1(self):
         provider = OpenAIProvider(api_key="test-key")
-        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = json.dumps(
                 {"data": [{"embedding": [0.1] * 1536, "index": 0}]}
@@ -646,7 +646,7 @@ class TestOpenAI_URL_NoDoubleV1:
 
     def test_generate_url_no_double_v1(self):
         provider = OpenAIProvider(api_key="test-key")
-        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = json.dumps(
                 {"choices": [{"message": {"content": "ok"}}]}
@@ -665,7 +665,7 @@ class TestOpenAI_URL_NoDoubleV1:
 
     def test_check_available_url_no_double_v1(self):
         provider = OpenAIProvider(api_key="test-key")
-        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = json.dumps({"data": []}).encode()
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -776,7 +776,7 @@ class TestOpenAIProvider_TimeoutPassedToMakeRequest:
     def test_make_request_uses_timeout_param_not_hardcoded(self):
         """Verify _make_request actually uses the timeout parameter in urlopen."""
         provider = OpenAIProvider(api_key="test-key", timeout=30)
-        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = json.dumps(
                 {"data": [{"embedding": [0.1] * 1536, "index": 0}]}
@@ -991,7 +991,7 @@ class TestAnthropicProvider_TimeoutPassthrough:
 
     def test_generate_passes_custom_timeout(self):
         provider = AnthropicProvider(api_key="test-key")
-        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = json.dumps(
                 {"content": [{"text": "ok"}]}
@@ -1009,7 +1009,7 @@ class TestAnthropicProvider_TimeoutPassthrough:
         """When generate() is called without explicit timeout, the constructor
         default (60s) should be used."""
         provider = AnthropicProvider(api_key="test-key")
-        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = json.dumps(
                 {"content": [{"text": "ok"}]}
@@ -1027,7 +1027,7 @@ class TestAnthropicProvider_TimeoutPassthrough:
         """When generate() is called without an explicit timeout, it should
         use the constructor-configured timeout (not the old method default of 60)."""
         provider = AnthropicProvider(api_key="test-key", timeout=45)
-        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = json.dumps(
                 {"content": [{"text": "ok"}]}
@@ -1427,3 +1427,112 @@ class TestFallbackGenerateProvider_ConfigApiKey:
         assert isinstance(embed, NoneProvider)
         assert isinstance(gen, AnthropicProvider)
         assert gen._api_key == "from-config"
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-bownn: API key __repr__ masking
+# ---------------------------------------------------------------------------
+
+
+class TestProviderReprMasksApiKey:
+    """Provider __repr__ must never expose API keys in logs or tracebacks."""
+
+    def test_openai_repr_masks_api_key(self):
+        provider = OpenAIProvider(api_key="sk-super-secret-key-12345")
+        r = repr(provider)
+        assert "sk-super-secret-key-12345" not in r
+        assert "***masked***" in r
+
+    def test_anthropic_repr_masks_api_key(self):
+        provider = AnthropicProvider(api_key="sk-ant-secret-key-67890")
+        r = repr(provider)
+        assert "sk-ant-secret-key-67890" not in r
+        assert "***masked***" in r
+
+    def test_ollama_repr_does_not_contain_secrets(self):
+        provider = OllamaProvider()
+        r = repr(provider)
+        # Ollama has no API key, but should still have a safe repr
+        assert "OllamaProvider" in r
+        assert "base_url=" in r
+
+    def test_none_provider_repr(self):
+        provider = NoneProvider()
+        r = repr(provider)
+        assert "NoneProvider" in r
+
+    def test_openai_repr_shows_base_url(self):
+        provider = OpenAIProvider(api_key="test-key", base_url="https://api.openai.com")
+        r = repr(provider)
+        assert "api.openai.com" in r
+        assert "test-key" not in r
+
+    def test_anthropic_repr_shows_base_url(self):
+        provider = AnthropicProvider(
+            api_key="test-key", base_url="https://api.anthropic.com"
+        )
+        r = repr(provider)
+        assert "api.anthropic.com" in r
+        assert "test-key" not in r
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-b71fv: Error messages must not embed user-supplied URLs
+# ---------------------------------------------------------------------------
+
+
+class TestErrorMessagesDoNotLeakCredentials:
+    """Error messages and logs must not include user-supplied URLs that
+    could contain embedded credentials (e.g., https://user:pass@host).
+    """
+
+    def test_openai_invalid_scheme_no_url_in_message(self):
+        """ValueError for invalid scheme should not include the raw URL."""
+        with pytest.raises(ValueError) as exc_info:
+            OpenAIProvider(api_key="test-key", base_url="ftp://user:secret@evil.com")
+        msg = str(exc_info.value)
+        assert "user:secret" not in msg
+        assert "evil.com" not in msg
+
+    def test_openai_unsafe_url_no_url_in_message(self):
+        """ValueError for unsafe URL should not include the raw URL."""
+        with patch("memory.providers.is_safe_url", return_value=False):
+            with pytest.raises(ValueError) as exc_info:
+                OpenAIProvider(
+                    api_key="test-key", base_url="http://admin:pass@169.254.169.254/"
+                )
+            msg = str(exc_info.value)
+            assert "admin:pass" not in msg
+            assert "169.254.169.254" not in msg
+
+    def test_anthropic_invalid_scheme_no_url_in_message(self):
+        with pytest.raises(ValueError) as exc_info:
+            AnthropicProvider(api_key="test-key", base_url="ftp://user:secret@evil.com")
+        msg = str(exc_info.value)
+        assert "user:secret" not in msg
+        assert "evil.com" not in msg
+
+    def test_anthropic_unsafe_url_no_url_in_message(self):
+        with patch("memory.providers.is_safe_url", return_value=False):
+            with pytest.raises(ValueError) as exc_info:
+                AnthropicProvider(
+                    api_key="test-key", base_url="http://admin:pass@169.254.169.254/"
+                )
+            msg = str(exc_info.value)
+            assert "admin:pass" not in msg
+            assert "169.254.169.254" not in msg
+
+    def test_ollama_invalid_scheme_no_url_in_message(self):
+        with pytest.raises(ValueError) as exc_info:
+            OllamaProvider(base_url="ftp://user:secret@evil.com")
+        msg = str(exc_info.value)
+        assert "user:secret" not in msg
+        assert "evil.com" not in msg
+
+    def test_ollama_unsafe_url_no_url_in_message(self):
+        with patch("memory.providers.is_safe_url", return_value=False):
+            with pytest.raises(ValueError) as exc_info:
+                OllamaProvider(base_url="http://admin:pass@169.254.169.254:11434/")
+            msg = str(exc_info.value)
+            assert "admin:pass" not in msg
+            assert "169.254.169.254" not in msg

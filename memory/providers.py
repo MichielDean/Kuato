@@ -13,7 +13,7 @@ import urllib.request
 import urllib.error
 
 from .ollama import check_ollama_model, _call_ollama_generate
-from .url_validate import is_safe_url
+from .url_validate import is_safe_url, safe_urlopen, sanitize_url_for_log
 
 log = logging.getLogger(__name__)
 
@@ -125,15 +125,16 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
     ):
         base_url = base_url.rstrip("/")
         if not base_url.startswith(("http://", "https://")):
-            raise ValueError(f"providers: Ollama URL must be http/https: {base_url!r}")
+            raise ValueError("providers: Ollama URL must be http/https")
         if not is_safe_url(base_url, allow_remote=True):
-            raise ValueError(
-                f"providers: Ollama URL blocked (unsafe address): {base_url!r}"
-            )
+            raise ValueError("providers: Ollama URL blocked (unsafe address)")
         self._embed_model = embed_model
         self._generate_model = generate_model
         self._base_url = base_url
         self._timeout = timeout
+
+    def __repr__(self) -> str:
+        return f"OllamaProvider(base_url={self._base_url!r})"
 
     def embed(self, text: str) -> list[float]:
         """Embed a single text string via Ollama /api/embeddings.
@@ -180,7 +181,7 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with safe_urlopen(req, timeout=self._timeout) as resp:
                 data = json.loads(resp.read())
             if "embedding" not in data:
                 raise ValueError(
@@ -267,16 +268,20 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
             )
         base_url = base_url.rstrip("/")
         if not base_url.startswith(("http://", "https://")):
-            raise ValueError(f"providers: OpenAI URL must be http/https: {base_url!r}")
+            raise ValueError("providers: OpenAI URL must be http/https")
         if not is_safe_url(base_url, allow_remote=True):
-            raise ValueError(
-                f"providers: OpenAI URL blocked (unsafe address): {base_url!r}"
-            )
+            raise ValueError("providers: OpenAI URL blocked (unsafe address)")
         self._embed_model = embed_model
         self._generate_model = generate_model
         self._base_url = base_url
         self._api_key = resolved_key
         self._timeout = timeout
+
+    def __repr__(self) -> str:
+        return f"OpenAIProvider(base_url={self._base_url!r}, api_key='***masked***')"
+
+    def __repr__(self) -> str:
+        return f"OpenAIProvider(base_url={self._base_url!r}, api_key='***masked***')"
 
     def _make_request(
         self,
@@ -310,7 +315,7 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
+            with safe_urlopen(req, timeout=effective_timeout) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as e:
             raise RuntimeError(
@@ -409,7 +414,7 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 method="GET",
             )
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with safe_urlopen(req, timeout=self._timeout) as resp:
                 json.loads(resp.read())
             return True
         except Exception:
@@ -446,17 +451,19 @@ class AnthropicProvider(GenerateProvider):
             )
         base_url = base_url.rstrip("/")
         if not base_url.startswith(("http://", "https://")):
-            raise ValueError(
-                f"providers: Anthropic URL must be http/https: {base_url!r}"
-            )
+            raise ValueError("providers: Anthropic URL must be http/https")
         if not is_safe_url(base_url, allow_remote=True):
-            raise ValueError(
-                f"providers: Anthropic URL blocked (unsafe address): {base_url!r}"
-            )
+            raise ValueError("providers: Anthropic URL blocked (unsafe address)")
         self._model = model
         self._base_url = base_url
         self._api_key = resolved_key
         self._timeout = timeout
+
+    def __repr__(self) -> str:
+        return f"AnthropicProvider(base_url={self._base_url!r}, api_key='***masked***')"
+
+    def __repr__(self) -> str:
+        return f"AnthropicProvider(base_url={self._base_url!r}, api_key='***masked***')"
 
     def generate(
         self,
@@ -500,7 +507,7 @@ class AnthropicProvider(GenerateProvider):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
+            with safe_urlopen(req, timeout=effective_timeout) as resp:
                 data = json.loads(resp.read())
         except urllib.error.HTTPError as e:
             raise RuntimeError(
@@ -532,7 +539,7 @@ class AnthropicProvider(GenerateProvider):
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with safe_urlopen(req, timeout=self._timeout) as resp:
                 json.loads(resp.read())
             return True
         except Exception:
@@ -554,6 +561,9 @@ class NoneProvider(EmbedProvider, GenerateProvider):
 
     def __init__(self, embed_dimensions: int = DEFAULT_NONE_EMBED_DIMENSIONS):
         self._embed_dimensions = embed_dimensions
+
+    def __repr__(self) -> str:
+        return f"NoneProvider(embed_dimensions={self._embed_dimensions})"
 
     def embed(self, text: str) -> list[float]:
         """Return a zero vector of the configured dimension.

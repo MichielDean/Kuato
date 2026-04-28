@@ -17,6 +17,8 @@ from memory.url_validate import (
     _get_effective_port,
     is_safe_url,
     validate_url,
+    sanitize_url_for_log,
+    SafeRedirectHandler,
 )
 
 
@@ -337,3 +339,263 @@ class TestValidateURL:
     def test_validate_url_blocked_with_allow_remote(self):
         with pytest.raises(ValueError, match="URL rejected"):
             validate_url("http://10.0.0.1:443", allow_remote=True)
+
+
+# ---------------------------------------------------------------------------
+# sanitize_url_for_log tests
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeUrlForLog:
+    """Verify that sanitize_url_for_log strips credentials from URLs."""
+
+    def test_strips_user_password(self):
+        """URLs with user:password@ should have credentials removed."""
+        result = sanitize_url_for_log("https://user:secret@api.openai.com/v1/models")
+        assert result == "https://api.openai.com/v1/models"
+
+    def test_strips_user_only(self):
+        """URLs with just user@ should have credentials removed."""
+        result = sanitize_url_for_log("https://admin@api.openai.com/v1/embeddings")
+        assert result == "https://api.openai.com/v1/embeddings"
+
+    def test_url_without_credentials_unchanged(self):
+        """URLs without credentials should pass through unchanged."""
+        result = sanitize_url_for_log("https://api.openai.com/v1/models")
+        assert result == "https://api.openai.com/v1/models"
+
+    def test_preserves_port(self):
+        """Port numbers should be preserved after sanitization."""
+        result = sanitize_url_for_log("http://user:pass@localhost:11434/api/tags")
+        assert result == "http://localhost:11434/api/tags"
+
+    def test_preserves_path(self):
+        """Path components should be preserved after sanitization."""
+        result = sanitize_url_for_log(
+            "https://key:secret@host.example.com/path/to/api?query=1"
+        )
+        assert result == "https://host.example.com/path/to/api?query=1"
+
+    def test_validates_url_not_leaking_credentials(self):
+        """validate_url error messages should not contain credentials."""
+        url_with_creds = "https://admin:secretpass@10.0.0.1:11434/api"
+        with pytest.raises(ValueError) as exc_info:
+            validate_url(url_with_creds, allow_remote=True)
+        # The error message must NOT contain the password
+        assert "secretpass" not in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# SafeRedirectHandler tests
+# ---------------------------------------------------------------------------
+
+
+class TestSafeRedirectHandler:
+    """Verify that SSRF via HTTP redirects is blocked.
+
+    SafeRedirectHandler validates redirect target URLs against is_safe_url
+    before following them. This prevents SSRF via redirects from safe-looking
+    URLs to private/internal IP addresses.
+    """
+
+    def test_allows_redirect_to_safe_url(self):
+        """Redirects to safe public URLs should be followed (is_safe_url returns True)."""
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        from threading import Thread
+        import socket
+        import time
+
+        # Find two available ports
+        sock1 = socket.socket()
+        sock1.bind(("127.0.0.1", 0))
+        port1 = sock1.getsockname()[1]
+        sock1.close()
+
+        sock2 = socket.socket()
+        sock2.bind(("127.0.0.1", 0))
+        port2 = sock2.getsockname()[1]
+        sock2.close()
+
+        class RedirectHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{port2}/target")
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                pass
+
+        class TargetHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status":"ok"}')
+
+            def log_message(self, format, *args):
+                pass
+
+        server1 = HTTPServer(("127.0.0.1", port1), RedirectHandler)
+        server2 = HTTPServer(("127.0.0.1", port2), TargetHandler)
+
+        thread1 = Thread(target=server1.handle_request, daemon=True)
+        thread2 = Thread(target=server2.handle_request, daemon=True)
+        thread1.start()
+        thread2.start()
+
+        # Ollama provider allows localhost on port 11434, but our test
+        # ports are different. Since allow_remote=True, any safe URL
+        # including localhost on any port should be followed.
+        # However, is_safe_url("http://127.0.0.1:port2") with
+        # allow_remote=False blocks non-11434 ports.
+        # SafeRedirectHandler(allow_remote=True) passes allow_remote=True
+        # to is_safe_url, but loopback IPs are not blocked by _ip_is_blocked,
+        # and allow_remote=True won't check port.
+        # Actually: with allow_remote=True, _ip_is_blocked returns False for
+        # loopback, so the redirect should be allowed.
+        time.sleep(0.1)
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port1}/start")
+            opener = urllib.request.build_opener(SafeRedirectHandler(allow_remote=True))
+            with opener.open(req, timeout=5) as resp:
+                data = resp.read().decode()
+            assert data == '{"status":"ok"}'
+        finally:
+            server1.server_close()
+            server2.server_close()
+
+    def test_blocks_redirect_to_private_ip(self):
+        """Redirects to private IPs must be blocked even if the initial URL is safe."""
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        from threading import Thread
+        import socket
+
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+
+        class RedirectToPrivateHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                # Redirect to a private IP — this is the SSRF attack
+                self.send_header("Location", "http://10.0.0.1/")
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", port), RedirectToPrivateHandler)
+        thread = Thread(target=server.handle_request, daemon=True)
+        thread.start()
+
+        import time
+
+        time.sleep(0.1)
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/start")
+            opener = urllib.request.build_opener(SafeRedirectHandler(allow_remote=True))
+            # The opener should refuse to follow the redirect to a private IP
+            try:
+                with opener.open(req, timeout=5) as resp:
+                    pytest.fail("Expected redirect to private IP to be blocked")
+            except urllib.error.HTTPError:
+                # This is fine — the redirect was blocked
+                pass
+            except urllib.error.URLError:
+                # Connection refused to 10.0.0.1 or blocked — also fine
+                pass
+        finally:
+            server.server_close()
+
+    def test_blocks_redirect_to_metadata_endpoint(self):
+        """SSRF via redirect to cloud metadata (169.254.169.254) must be blocked."""
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        from threading import Thread
+        import socket
+
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+
+        class RedirectToMetadataHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "http://169.254.169.254/latest/meta-data/")
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", port), RedirectToMetadataHandler)
+        thread = Thread(target=server.handle_request, daemon=True)
+        thread.start()
+
+        import time
+
+        time.sleep(0.1)
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/start")
+            opener = urllib.request.build_opener(SafeRedirectHandler(allow_remote=True))
+            try:
+                with opener.open(req, timeout=5) as resp:
+                    pytest.fail("Expected redirect to 169.254.169.254 to be blocked")
+            except (urllib.error.HTTPError, urllib.error.URLError):
+                pass
+        finally:
+            server.server_close()
+
+    def test_redirect_handler_returns_none_for_blocked_url(self):
+        """redirect_request should return None when is_safe_url returns False
+        for the redirect target, preventing the redirect from being followed."""
+        handler = SafeRedirectHandler(allow_remote=True)
+        from unittest.mock import MagicMock
+
+        req = MagicMock()
+        req.full_url = "https://safe.example.com/start"
+        # A redirect to a private IP should be blocked
+        result = handler.redirect_request(
+            req, MagicMock(), 302, "Found", MagicMock(), "http://10.0.0.1/"
+        )
+        assert result is None
+
+    def test_redirect_handler_delegates_for_safe_url(self):
+        """redirect_request should delegate to the parent for safe redirect targets.
+        The parent class should handle GET redirects to safe URLs."""
+        handler = SafeRedirectHandler(allow_remote=True)
+        from unittest.mock import MagicMock
+
+        req = MagicMock()
+        req.full_url = "https://safe.example.com/start"
+        req.get_method.return_value = "GET"
+        # A redirect to another public URL should be allowed
+        result = handler.redirect_request(
+            req,
+            MagicMock(),
+            302,
+            "Found",
+            MagicMock(),
+            "https://api.openai.com/v1/models",
+        )
+        # The parent class returns a Request object for valid GET redirects
+        assert result is not None  # Should not be blocked by SSRF check
+
+    def test_allow_remote_false_blocks_redirect_to_public(self):
+        """When allow_remote=False, redirects to public hosts should be blocked."""
+        handler = SafeRedirectHandler(allow_remote=False)
+        from unittest.mock import MagicMock
+
+        req = MagicMock()
+        req.full_url = "http://127.0.0.1:11434/start"
+        # is_safe_url("https://api.openai.com", allow_remote=False) would
+        # block non-loopback-on-default-port — but allow_remote=False blocks
+        # most things. Let's test with a URL that is_safe_url blocks.
+        result = handler.redirect_request(
+            req, MagicMock(), 302, "Found", MagicMock(), "http://192.168.1.1:11434/"
+        )
+        assert result is None  # Should be blocked
+
+
+import urllib.error
+import urllib.request

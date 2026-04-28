@@ -10,7 +10,7 @@ import logging
 import urllib.request
 import urllib.error
 
-from .url_validate import is_safe_url
+from .url_validate import is_safe_url, safe_urlopen, sanitize_url_for_log
 
 log = logging.getLogger(__name__)
 
@@ -27,11 +27,11 @@ def check_ollama_model(model: str, base_url: str) -> bool:
     equality on the full model tag.
     """
     if not is_safe_url(base_url, allow_remote=True):
-        log.warning("ollama: model check blocked — unsafe URL: %s", base_url)
+        log.warning("ollama: model check blocked — unsafe URL")
         return False
     try:
         req = urllib.request.Request(f"{base_url}/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with safe_urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
         models = [m["name"] for m in data.get("models", [])]
         model_base = model.split(":")[0]
@@ -56,7 +56,7 @@ def _call_ollama_generate(
     """
     if not is_safe_url(base_url, allow_remote=True):
         raise ValueError(
-            f"Unsafe Ollama URL in _call_ollama_generate (must be http/https to permitted address): {base_url!r}"
+            "ollama: _call_ollama_generate: URL must be http(s) to a permitted address"
         )
     payload = json.dumps(
         {
@@ -76,7 +76,7 @@ def _call_ollama_generate(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with safe_urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"Ollama API returned HTTP {e.code}: {e.reason}") from e

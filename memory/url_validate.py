@@ -1,8 +1,13 @@
 """URL validation for urllib calls — prevent SSRF and file-scheme attacks."""
 
 import ipaddress
+import logging
 import socket
+import urllib.request
 from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler
+
+log = logging.getLogger(__name__)
 
 OLLAMA_DEFAULT_PORT = 11434
 
@@ -76,7 +81,67 @@ def is_safe_url(url: str, allow_remote: bool = False) -> bool:
 def validate_url(url: str, allow_remote: bool = False) -> str:
     """Validate URL and return it, or raise ValueError."""
     if not is_safe_url(url, allow_remote=allow_remote):
-        raise ValueError(
-            f"URL rejected: must be http(s) to a permitted address — got {url!r}"
-        )
+        raise ValueError(f"URL rejected: must be http(s) to a permitted address")
     return url
+
+
+def sanitize_url_for_log(url: str) -> str:
+    """Strip credentials from a URL for safe inclusion in logs and error messages.
+
+    Removes userinfo (user:password@) from URLs like
+    'https://user:pass@host/path' → 'https://host/path'.
+    Returns the scheme and host/path portion only.
+    """
+    parsed = urlparse(url)
+    # Rebuild without netloc credentials
+    safe_netloc = parsed.hostname or ""
+    if parsed.port:
+        safe_netloc = f"{safe_netloc}:{parsed.port}"
+    return parsed._replace(netloc=safe_netloc).geturl()
+
+
+class SafeRedirectHandler(HTTPRedirectHandler):
+    """HTTP redirect handler that validates each redirect target URL against
+    is_safe_url before following it.
+
+    Prevents SSRF via HTTP redirects: an attacker could point a safe-looking URL
+    (e.g. https://attacker.com/) to redirect to a private IP (e.g. http://169.254.169.254/).
+    Without this handler, urllib would follow the redirect without re-checking the target.
+    """
+
+    def __init__(self, allow_remote: bool = False):
+        self.allow_remote = allow_remote
+        super().__init__()
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not is_safe_url(newurl, allow_remote=self.allow_remote):
+            log.warning(
+                "url_validate: blocked SSRF redirect from %s to %s",
+                sanitize_url_for_log(req.full_url),
+                sanitize_url_for_log(newurl),
+            )
+            return None  # abort the redirect
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# Module-level safe opener — uses SafeRedirectHandler to validate
+# redirect targets and prevent SSRF via HTTP redirects.
+_safe_opener = urllib.request.build_opener(SafeRedirectHandler(allow_remote=True))
+
+
+def safe_urlopen(request, timeout=None):
+    """Open a URL using the SSRF-safe opener that validates redirect targets.
+
+    This is a thin wrapper around the module-level opener's .open() method.
+    Use this instead of urllib.request.urlopen to get SSRF redirect protection.
+
+    Args:
+        request: A urllib.request.Request object or URL string.
+        timeout: Optional timeout in seconds.
+
+    Returns:
+        An http.client.HTTPResponse object (context manager).
+    """
+    if timeout is not None:
+        return _safe_opener.open(request, timeout=timeout)
+    return _safe_opener.open(request)

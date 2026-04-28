@@ -109,7 +109,7 @@ def get_ollama_url(config_path: Path | None = None, config: dict | None = None) 
         config = load_config(config_path)
     url = config.get("memory", {}).get("ollama_url") or DEFAULTS["memory"]["ollama_url"]
     if not url.startswith(("http://", "https://")):
-        raise ValueError(f"Unsafe Ollama URL in config (must be http/https): {url!r}")
+        raise ValueError("config: Ollama URL must be http/https")
     return url
 
 
