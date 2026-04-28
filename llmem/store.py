@@ -373,8 +373,17 @@ class MemoryStore:
 
             self._conn.enable_load_extension(True)
             sqlite_vec.load(self._conn)
+            # Disable extension loading immediately after use to prevent
+            # runtime loading of arbitrary shared libraries via SQLite.
+            self._conn.enable_load_extension(False)
             self._vec_available = True
         except Exception as e:
+            # Ensure extension loading is disabled even on failure
+            if self._conn:
+                try:
+                    self._conn.enable_load_extension(False)
+                except Exception:
+                    pass
             logger.warning("llmem: store: sqlite-vec extension unavailable: %s", e)
             self._vec_available = False
 
@@ -1120,6 +1129,30 @@ class MemoryStore:
                     hints = json.loads(hints)
                 except (json.JSONDecodeError, TypeError):
                     hints = []
+            # Validate embedding dimensionality if present
+            embedding = m.get("embedding")
+            if embedding is not None:
+                if isinstance(embedding, bytes):
+                    expected_len = self._vec_dimensions * 4  # float32 = 4 bytes each
+                    if len(embedding) != expected_len:
+                        logger.warning(
+                            "llmem: store: import: skipping entry %d: "
+                            "embedding length %d does not match dimensions %d "
+                            "(expected %d bytes)",
+                            i,
+                            len(embedding),
+                            self._vec_dimensions,
+                            expected_len,
+                        )
+                        continue
+                elif not isinstance(embedding, (bytes, type(None))):
+                    logger.warning(
+                        "llmem: store: import: skipping entry %d: "
+                        "embedding must be bytes, got %s",
+                        i,
+                        type(embedding).__name__,
+                    )
+                    continue
             try:
                 self.add(
                     type=m["type"],
@@ -1130,7 +1163,7 @@ class MemoryStore:
                     metadata=m.get("metadata"),
                     hints=hints,
                     id=m.get("id"),
-                    embedding=m.get("embedding"),
+                    embedding=embedding,
                 )
                 count += 1
             except sqlite3.IntegrityError as e:

@@ -15,6 +15,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+try:
+    import fcntl
+
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
+
 from .ollama import _call_ollama_generate
 from .store import MemoryStore
 from .taxonomy import ERROR_TAXONOMY, ERROR_TAXONOMY_KEYS, _parse_self_assessment
@@ -303,4 +310,15 @@ class Dreamer:
             entry += f"- Merged: {result.deep.merged_count}\n"
 
         with open(diary_path, "a") as f:
-            f.write(entry)
+            # Acquire an exclusive lock to prevent concurrent writes
+            # from corrupting the diary during parallel dream cycles.
+            # On Windows (no fcntl), the write proceeds without locking
+            # but is still append-mode atomic for small writes.
+            if _HAS_FCNTL:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX)
+                    f.write(entry)
+                finally:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+            else:
+                f.write(entry)

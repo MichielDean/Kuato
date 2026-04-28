@@ -33,6 +33,24 @@ BLOCKED_SYSTEM_PREFIXES = (
 )
 
 
+# Protected system directory prefixes — shared between _validate_home_path
+# and _validate_write_path. All validation functions must use this tuple
+# to ensure consistency.
+_BLOCKED_PATH_PREFIXES = (
+    "/etc",
+    "/var",
+    "/sys",
+    "/proc",
+    "/dev",
+    "/boot",
+    "/root",
+    "/sbin",
+    "/bin",
+    "/usr/sbin",
+    "/usr/bin",
+)
+
+
 def _validate_home_path(path: Path, source: str) -> Path:
     """Validate that a home path is safe to use.
 
@@ -62,7 +80,7 @@ def _validate_home_path(path: Path, source: str) -> Path:
     # Block obvious system directories — checked before symlink check
     # because is_symlink() requires stat access which may fail for
     # inaccessible paths like /root
-    for prefix in BLOCKED_SYSTEM_PREFIXES:
+    for prefix in _BLOCKED_PATH_PREFIXES:
         if str(resolved).startswith(prefix):
             raise ValueError(
                 f"llmem: paths: {source} targets a system directory: {resolved}"
@@ -153,8 +171,8 @@ def _validate_write_path(path: Path, label: str) -> Path:
 
     resolved = path.resolve()
 
-    # Block system directories
-    for prefix in BLOCKED_SYSTEM_PREFIXES:
+    # Block system directories (using shared constant)
+    for prefix in _BLOCKED_PATH_PREFIXES:
         if str(resolved).startswith(prefix):
             raise ValueError(
                 f"llmem: paths: {label} path targets a protected directory: {resolved}"

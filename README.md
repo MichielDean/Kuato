@@ -552,7 +552,7 @@ written = write_config_yaml(
 detector = ProviderDetector()
 result = detector.detect(ollama_url="http://localhost:11434")
 # result["provider"] → "ollama" | "openai" | "anthropic" | "none"
-# result["ollama_url"], result["openai_key_found"], result["anthropic_key_found"]
+# result["ollama_url"]
 
 # Check if Ollama is running
 if is_ollama_running("http://localhost:11434"):

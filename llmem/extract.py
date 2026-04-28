@@ -89,7 +89,10 @@ class ExtractionEngine:
                 pass
 
         # Try to find a JSON array anywhere in the response
-        match = re.search(r"\[.*\]", response_text, re.DOTALL)
+        # Use non-greedy match to avoid ReDoS on deeply nested brackets.
+        # The pattern matches from first '[' to last ']' but with a
+        # reasonable length limit to prevent catastrophic backtracking.
+        match = re.search(r"\[.{1,100000}?\]", response_text, re.DOTALL)
         if match:
             try:
                 memories = json.loads(match.group(0))

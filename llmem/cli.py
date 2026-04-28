@@ -12,6 +12,7 @@ log = logging.getLogger(__name__)
 
 from .store import MemoryStore, register_memory_type, get_registered_types
 from .paths import get_db_path, get_config_path, get_llmem_home
+from .paths import _validate_write_path
 from .registry import get_registered_cli_plugins
 from .config import write_config_yaml
 from .ollama import ProviderDetector
@@ -21,12 +22,27 @@ from .url_validate import is_safe_url
 
 VALID_SOURCES = ["manual", "session", "heartbeat", "extraction", "import"]
 
+# Maximum size for imported files (10 MiB, matching config max_file_size default)
+MAX_IMPORT_FILE_SIZE = 10 * 1024 * 1024
+
 
 def cmd_add(args):
     store = MemoryStore(args.db)
     content = args.content
     if not content and args.file:
-        content = Path(args.file).read_text().strip()
+        file_path = Path(args.file)
+        # Validate the file path to prevent arbitrary file read
+        resolved = file_path.resolve()
+        if any(
+            str(resolved).startswith(p)
+            for p in ("/etc/", "/var/", "/sys/", "/proc/", "/dev/", "/boot/", "/root/")
+        ):
+            print(
+                f"Error: --file path targets a protected directory: {resolved}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        content = file_path.read_text().strip()
     if not content:
         print("Error: provide --content or --file", file=sys.stderr)
         sys.exit(1)
@@ -201,7 +217,8 @@ def cmd_export(args):
     data = store.export_all(limit=None)
     out = json.dumps(data, indent=2, default=str)
     if args.output:
-        Path(args.output).write_text(out)
+        output_path = _validate_write_path(Path(args.output), "export")
+        output_path.write_text(out)
         print(f"Exported {len(data)} memories to {args.output}")
     else:
         print(out)
@@ -210,8 +227,32 @@ def cmd_export(args):
 
 def cmd_import(args):
     store = MemoryStore(args.db)
+    import_path = Path(args.file)
+    # Validate import file path to prevent arbitrary file read
+    resolved_import = import_path.resolve()
+    if any(
+        str(resolved_import).startswith(p)
+        for p in ("/etc/", "/var/", "/sys/", "/proc/", "/dev/", "/boot/", "/root/")
+    ):
+        print(
+            f"Error: import file targets a protected directory: {resolved_import}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    # Enforce file size limit
     try:
-        raw = Path(args.file).read_text()
+        file_size = import_path.stat().st_size
+    except OSError as e:
+        print(f"Error: cannot stat {args.file}: {e}", file=sys.stderr)
+        sys.exit(1)
+    if file_size > MAX_IMPORT_FILE_SIZE:
+        print(
+            f"Error: import file too large ({file_size} bytes, max {MAX_IMPORT_FILE_SIZE} bytes)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    try:
+        raw = import_path.read_text()
         data = json.loads(raw)
     except json.JSONDecodeError as e:
         print(f"Error: invalid JSON in {args.file}: {e}", file=sys.stderr)

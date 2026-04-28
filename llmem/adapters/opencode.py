@@ -158,10 +158,19 @@ class OpenCodeAdapter(SessionAdapter):
     """
 
     def __init__(self, db_path: Path) -> None:
-        # Check for path traversal before resolve
-        if ".." in str(db_path):
+        # Validate the path before any filesystem access to prevent
+        # URI injection attacks (e.g. file:path?mode=rw to escalate
+        # from read-only to read-write).
+        path_str = str(db_path)
+        for char in ("?", "#"):
+            if char in path_str:
+                raise ValueError(
+                    f"llmem: opencode: database path contains disallowed "
+                    f"character {char!r}: {db_path}"
+                )
+        if ".." in path_str:
             raise ValueError(
-                f"llmem: opencode adapter: db_path contains '..' traversal: {db_path}"
+                f"llmem: opencode: database path contains '..' traversal: {db_path}"
             )
 
         resolved = Path(db_path).resolve()
@@ -170,7 +179,7 @@ class OpenCodeAdapter(SessionAdapter):
         # check because is_symlink() requires stat access which may
         # OSError on inaccessible paths under blocked prefixes (e.g. /root).
         for prefix in BLOCKED_SYSTEM_PREFIXES:
-            if str(resolved).startswith(prefix):
+            if str(resolved).startswith(prefix + "/") or str(resolved) == prefix:
                 raise ValueError(
                     f"llmem: opencode adapter: db_path targets a system directory: {resolved}"
                 )
