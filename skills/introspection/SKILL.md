@@ -41,9 +41,9 @@ The session-end checklist covers six steps. This section explains how the intros
 
 **Step 2: Did you run task-intake on unfamiliar repos?** — Enrichment: if you skipped task-intake on a repo you hadn't worked in recently, run `llmem introspect --category MISSING_VERIFICATION --what-happened "skipped task-intake before editing in <repo>" --context "<repo>" --caught-by self-review` to record the gap.
 
-**Step 3: Did you self-review with critical-code-reviewer?** — Enrichment: after the review completes, run `llmem track-review` to persist findings as `self_assessment` memories. Then verify that memories were created by checking `llmem search "review_tracker" --type self_assessment`. If the `track-review` command was not run, run it manually as a fallback.
+**Step 3: Did you self-review with an adversarial code reviewer?** — Enrichment: after the review completes, run `llmem track-review` to persist findings as `self_assessment` memories. Then verify that memories were created by checking `llmem search "review_tracker" --type self_assessment`. If the `track-review` command was not run, run it manually as a fallback.
 
-**Step 4: Did you record findings as self_assessment memories?** — Enrichment: the primary mechanism is `llmem track-review` (CLI) which runs mechanically after every `critical-code-reviewer` invocation. Use `llmem introspect --category <CATEGORY>` as a fallback only for findings the hook missed. For recurring patterns (3+ occurrences), search `llmem search "<CATEGORY>" --type self_assessment` to check for recurrence before recording.
+**Step 4: Did you record findings as self_assessment memories?** — Enrichment: the primary mechanism is `llmem track-review` (CLI) which runs mechanically after every adversarial code review invocation. Use `llmem introspect --category <CATEGORY>` as a fallback only for findings the hook missed. For recurring patterns (3+ occurrences), search `llmem search "<CATEGORY>" --type self_assessment` to check for recurrence before recording.
 
 **Step 5: Did you commit and push?** — Enrichment: if you skipped this step, record why with `llmem add --type self_assessment "skipped commit/push because <reason>"` and flag it as a `MISSING_VERIFICATION` pattern.
 
@@ -72,7 +72,7 @@ Sampajanna (clear comprehension) is continuous self-monitoring during task execu
 
 ## Section 4: Error Taxonomy
 
-The canonical source of truth is `memory/taxonomy.py:3-14`. Category names and descriptions below are reproduced verbatim from that file. When the taxonomy is updated, update `memory/taxonomy.py` first — the skill follows.
+The canonical source of truth is `llmem/taxonomy.py:3-15`. Category names and descriptions below are reproduced verbatim from that file. When the taxonomy is updated, update `llmem/taxonomy.py` first — the skill follows.
 
 | Category | Description |
 |----------|-------------|
@@ -90,7 +90,7 @@ The canonical source of truth is `memory/taxonomy.py:3-14`. Category names and d
 
 ### Severity-to-Category Mapping
 
-The `REVIEW_SEVERITY_TAXONOMY` at `memory/taxonomy.py:18-23` maps reviewer severity tiers to likely error categories:
+The `REVIEW_SEVERITY_TAXONOMY` at `llmem/taxonomy.py:21-27` maps reviewer severity tiers to likely error categories:
 
 | Severity Tier | Applicable Categories |
 |---|---|
@@ -100,7 +100,7 @@ The `REVIEW_SEVERITY_TAXONOMY` at `memory/taxonomy.py:18-23` maps reviewer sever
 | Noted | OFF_BY_ONE |
 | Passed | REVIEW_PASSED |
 
-The `introspection-review-tracker` skill (`skills/introspection-review-tracker/SKILL.md`) bridges these: after a `critical-code-reviewer` run, it converts each finding into a `self_assessment` memory using the appropriate category.
+The `introspection-review-tracker` skill (`skills/introspection-review-tracker/SKILL.md`) bridges these: after an adversarial code review run, it converts each finding into a `self_assessment` memory using the appropriate category.
 
 ### Using the Taxonomy
 
@@ -125,9 +125,9 @@ The deployed outside-view procedures are in two locations:
 
 1. **Contrastive self-assessment** — four specific behavioral checks to run before declaring any task done: verify test results, check actual HTTP responses, read actual output files, compare output against objective standards.
 
-2. **Adversarial review questions** at `skills/critical-code-reviewer/SKILL.md:109-121` (Section 7) — four specific questions that force outside-view perspective during self-review: would you flag this issue in someone else's PR, are you giving yourself passes, what would an adversarial reviewer find, and where are you trusting reasoning instead of verifying behavior.
+2. **Adversarial review questions** — four specific questions that force outside-view perspective during self-review: would you flag this issue in someone else's PR, are you giving yourself passes, what would an adversarial reviewer find, and where are you trusting reasoning instead of verifying behavior. If your agent framework provides an adversarial code-review skill, load it and apply its questions.
 
-3. **Pre-PR introspection illusion check** at `skills/pre-pr-review/SKILL.md:97-100` — three checks embedded in the review protocol: is the author trusting reasoning without evidence, are there self-serving assumptions, and what would an adversarial reviewer see that the author doesn't.
+3. **Pre-PR introspection illusion check** — three checks embedded in a pre-PR review protocol: is the author trusting reasoning without evidence, are there self-serving assumptions, and what would an adversarial reviewer see that the author doesn't. If your agent framework provides a pre-PR review skill, apply its introspection illusion checks.
 
 **The principle:** Before declaring work done, switch perspective. Treat your output as if someone else wrote it. Apply the standards you'd apply to their code, not your own. Do not trust your intent — verify your output.
 
@@ -137,7 +137,7 @@ Load this skill when:
 
 1. **At session end** — before running the session-end checklist. Load this skill first so the enrichment procedures from Section 2 are available during the checklist.
 
-2. **After running self-review** — after `critical-code-reviewer` completes, load this skill to run the `introspection-review-tracker` skill and persist findings as `self_assessment` memories.
+2. **After running self-review** — after an adversarial code-review completes, load this skill to run the `introspection-review-tracker` skill and persist findings as `self_assessment` memories.
 
 3. **When running `llmem introspect`** — load this skill to ensure you're using the correct taxonomy categories and recording all required fields.
 
@@ -149,8 +149,8 @@ These triggers correspond to the keywords in the `description` field: "introspec
 
 ## Key References
 
-- **Error taxonomy (source of truth):** `memory/taxonomy.py:3-14` (`ERROR_TAXONOMY`), `memory/taxonomy.py:18-23` (`REVIEW_SEVERITY_TAXONOMY`), `memory/taxonomy.py:25-43` (`SELF_ASSESSMENT_FIELDS`).
-- **Review-specific questions:** `skills/critical-code-reviewer/SKILL.md:109-121` — Section 7 (Outside-View Review).
-- **Pre-PR introspection illusion check:** `skills/pre-pr-review/SKILL.md:97-100`.
+- **Error taxonomy (source of truth):** `llmem/taxonomy.py:3-15` (`ERROR_TAXONOMY`), `llmem/taxonomy.py:21-27` (`REVIEW_SEVERITY_TAXONOMY`), `llmem/taxonomy.py:29-38` (`SELF_ASSESSMENT_FIELDS`).
+- **Review-specific questions:** Apply the outside-view questions from your agent framework's adversarial code-review skill (Section 7, if available).
+- **Pre-PR introspection illusion check:** Apply the introspection illusion checks from your agent framework's pre-PR review skill (if available).
 - **Review outcome persistence:** `skills/introspection-review-tracker/SKILL.md` — Convert review findings to `self_assessment` memories.
 - **llmem introspect command:** `skills/llmem/SKILL.md:152-164` — CLI reference for structured self-assessment.

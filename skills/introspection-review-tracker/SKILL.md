@@ -2,21 +2,21 @@
 name: introspection-review-tracker
 description: >
   Reference documentation for the automated ReviewOutcomeTracker hook that persists
-  critical-code-reviewer findings as self_assessment memories. The hook fires
+  adversarial code review findings as self_assessment memories. The hook fires
   automatically after every review — no manual steps required. This skill documents
   the mapping from severity tiers to error categories and the content format.
   Triggers on: "review outcome", "track findings", "record review",
-  "critical-code-reviewer", "self_assessment".
+  "self_assessment".
 license: MIT
 ---
 
 # Introspection Review Tracker — Reference Documentation
 
-This skill is **reference documentation** for the automated review outcome persistence hook. The `llmem track-review` CLI command fires automatically after every `critical-code-reviewer` run, creating `self_assessment` memories without requiring manual agent intervention. The Python API (`ReviewOutcomeTracker` in `memory/review_tracker.py`) provides the same functionality for programmatic use. This skill documents how the hook works, the severity-to-category mapping, and the content format.
+This skill is **reference documentation** for the automated review outcome persistence hook. The `llmem track-review` CLI command fires automatically after every adversarial code review, creating `self_assessment` memories without requiring manual agent intervention. This skill documents how the hook works, the severity-to-category mapping, and the content format.
 
 ## How Persistence Works
 
-Persistence happens **mechanically** via `llmem track-review` (CLI) or `ReviewOutcomeTracker` (Python API). The agent must run this command after every `critical-code-reviewer` review — it is not optional.
+Persistence happens **mechanically** via `llmem track-review` (CLI). The agent must run this command after every adversarial code review — it is not optional.
 
 ### CLI: `llmem track-review`
 
@@ -38,45 +38,25 @@ llmem suggest-categories Required
 
 The `--finding-file` expects a JSON array of finding objects, each with `category`, `what_happened`, and optional `severity` keys.
 
-### Python API: `ReviewOutcomeTracker`
+### Python API
+
+The Python API for programmatic review outcome tracking is planned but not yet implemented. Use the `llmem track-review` CLI command as the primary interface. Once available, the API will follow this pattern:
 
 ```python
-from memory.review_tracker import ReviewOutcomeTracker
-from memory.store import MemoryStore
+from llmem.store import MemoryStore
 
 store = MemoryStore(db_path=db_path)
-tracker = ReviewOutcomeTracker(store=store)
 
-# For each finding:
-tracker.track_finding(
-    category="NULL_SAFETY",
-    what_happened="missing null check before .field access",
-    context="handler.py:42",
-    severity="Required",
-    caught_by="self-review",
-)
-
-# For an entire review (one memory per finding):
-tracker.track_review(
-    findings=[
-        {"category": "NULL_SAFETY", "what_happened": "missing null check"},
-        {"category": "ERROR_HANDLING", "what_happened": "swallowed exception"},
-    ],
-    context="handler.py",
-)
-
-# For a clean review (no findings):
-tracker.track_review(findings=[], context="handler.py")
-# → creates a single REVIEW_PASSED memory with "all clear"
-
-# Suggest categories for a severity tier:
-tracker.suggest_categories("Required")
-# → ["NULL_SAFETY", "ERROR_HANDLING", "MISSING_VERIFICATION", "EDGE_CASE"]
+# Programmatic tracking will mirror the CLI:
+# - Single finding → one self_assessment memory
+# - Batch findings → one memory per finding
+# - Clean review → REVIEW_PASSED memory
+# - Category suggestions → via llmem/taxonomy.py constants
 ```
 
 ## Verification
 
-After a `critical-code-reviewer` review completes, verify that the post-review command was run:
+After an adversarial code review completes, verify that the post-review command was run:
 
 1. Check that at least one `self_assessment` memory was created:
    ```bash
@@ -89,13 +69,13 @@ After a `critical-code-reviewer` review completes, verify that the post-review c
 
 ## When This Skill Is Used
 
-- **After every `critical-code-reviewer` completion** — the hook must be run mechanically.
+- **After every adversarial code review completion** — the hook must be run mechanically.
 - **To verify** that the hook ran correctly (see Verification above).
 - **As reference** for understanding the severity-to-category mapping and content format.
 
 ## Severity-to-Category Mapping
 
-The `REVIEW_SEVERITY_TAXONOMY` constant in `memory/taxonomy.py` maps each severity tier to applicable error taxonomy categories. The `ReviewOutcomeTracker.suggest_categories()` method and `llmem suggest-categories` CLI command use this mapping directly.
+The `REVIEW_SEVERITY_TAXONOMY` constant in `llmem/taxonomy.py` maps each severity tier to applicable error taxonomy categories. The `llmem suggest-categories` CLI command uses this mapping directly.
 
 | Severity Tier | Applicable Categories | Guidance |
 |---|---|---|
@@ -109,7 +89,7 @@ These mappings are advisory — the agent should pick the most meaningful catego
 
 ## Content Format
 
-Memories created by `ReviewOutcomeTracker` use the `SELF_ASSESSMENT_FIELDS` format from `memory/taxonomy.py`, ensuring format parity with the `llmem introspect` manual mode:
+Memories created by `llmem track-review` use the `SELF_ASSESSMENT_FIELDS` format from `llmem/taxonomy.py:29-38`, ensuring format parity with the `llmem introspect` manual mode:
 
 ```
 Category: <ERROR_TAXONOMY category>
@@ -127,9 +107,8 @@ Proposed_update: <optional>
 
 - **CLI command**: `llmem track-review` — the mechanical post-review hook
 - **CLI command**: `llmem suggest-categories` — list categories for a severity tier
-- **ReviewOutcomeTracker**: `memory/review_tracker.py` — the Python API implementation
-- **Error taxonomy categories**: `memory/taxonomy.py` → `ERROR_TAXONOMY`
-- **Severity mapping**: `memory/taxonomy.py` → `REVIEW_SEVERITY_TAXONOMY`
-- **Self-assessment fields**: `memory/taxonomy.py` → `SELF_ASSESSMENT_FIELDS`
-- **Reviewer severity tiers**: `skills/critical-code-reviewer/SKILL.md` (see Severity Tiers section)
+- **Error taxonomy categories**: `llmem/taxonomy.py:3-15` → `ERROR_TAXONOMY`
+- **Severity mapping**: `llmem/taxonomy.py:21-27` → `REVIEW_SEVERITY_TAXONOMY`
+- **Self-assessment fields**: `llmem/taxonomy.py:29-38` → `SELF_ASSESSMENT_FIELDS`
+- **Reviewer severity tiers**: Defined by the adversarial review skill (e.g., Blocking, Required, Strong Suggestions, Noted, Passed) — see your review skill's Severity Tiers section
 - **llmem introspect command**: `skills/llmem/SKILL.md:152-164`
