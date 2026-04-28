@@ -2222,3 +2222,296 @@ class TestResolveProvider_NoneDefaultKey:
             embed, gen = resolve_provider(config)
         assert isinstance(embed, OpenAIProvider)
         assert isinstance(gen, OpenAIProvider)
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-giz7h: openai_cfg.get(K, DEFAULT) returns None when YAML
+# has key with no value — .get(K) or DEFAULT fixes the None-value bypass
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProvider_NoneModelBaseUrl:
+    """When YAML has base_url: or embed_model: with no value (None),
+    openai_cfg.get('base_url', DEFAULT) returns None (not DEFAULT),
+    causing .rstrip('/') on None → AttributeError crash.
+
+    Fix: use openai_cfg.get(K) or DEFAULT instead, which coerces both
+    missing-key and None-value to DEFAULT.
+    """
+
+    def test_openai_embed_with_none_base_url_uses_default(self):
+        """When openai.base_url=None in config, resolve should use DEFAULT_OPENAI_BASE_URL."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False):
+            os.environ["OPENAI_API_KEY"] = "test-key"
+            config = {
+                "provider": {
+                    "default": "openai",
+                    "openai": {"api_key": "test-key", "base_url": None},
+                }
+            }
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, OpenAIProvider)
+        assert embed._base_url == DEFAULT_OPENAI_BASE_URL
+
+    def test_openai_embed_with_none_embed_model_uses_default(self):
+        """When openai.embed_model=None in config, resolve should use DEFAULT_OPENAI_EMBED_MODEL."""
+        from memory.providers import DEFAULT_OPENAI_EMBED_MODEL
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False):
+            os.environ["OPENAI_API_KEY"] = "test-key"
+            config = {
+                "provider": {
+                    "default": "openai",
+                    "openai": {"api_key": "test-key", "embed_model": None},
+                }
+            }
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, OpenAIProvider)
+        assert embed._embed_model == DEFAULT_OPENAI_EMBED_MODEL
+
+    def test_openai_generate_with_none_base_url_uses_default(self):
+        """When openai.base_url=None in config, generate provider should use DEFAULT_OPENAI_BASE_URL."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False):
+            os.environ["OPENAI_API_KEY"] = "test-key"
+            config = {
+                "provider": {
+                    "default": "openai",
+                    "openai": {"api_key": "test-key", "base_url": None},
+                }
+            }
+            embed, gen = resolve_provider(config)
+        assert isinstance(gen, OpenAIProvider)
+        assert gen._base_url == DEFAULT_OPENAI_BASE_URL
+
+    def test_openai_generate_with_none_generate_model_uses_default(self):
+        """When openai.generate_model=None, should use DEFAULT_OPENAI_GENERATE_MODEL."""
+        from memory.providers import DEFAULT_OPENAI_GENERATE_MODEL
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False):
+            os.environ["OPENAI_API_KEY"] = "test-key"
+            config = {
+                "provider": {
+                    "default": "openai",
+                    "openai": {"api_key": "test-key", "generate_model": None},
+                }
+            }
+            embed, gen = resolve_provider(config)
+        assert isinstance(gen, OpenAIProvider)
+        assert gen._generate_model == DEFAULT_OPENAI_GENERATE_MODEL
+
+    def test_anthropic_generate_with_none_base_url_uses_default(self):
+        """When anthropic.base_url=None, should use DEFAULT_ANTHROPIC_BASE_URL."""
+        from memory.providers import DEFAULT_ANTHROPIC_BASE_URL
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False):
+            os.environ["ANTHROPIC_API_KEY"] = "test-key"
+            config = {
+                "provider": {
+                    "default": "anthropic",
+                    "anthropic": {"api_key": "test-key", "base_url": None},
+                }
+            }
+            embed, gen = resolve_provider(config)
+        assert isinstance(gen, AnthropicProvider)
+        assert gen._base_url == DEFAULT_ANTHROPIC_BASE_URL
+
+    def test_anthropic_generate_with_none_generate_model_uses_default(self):
+        """When anthropic.generate_model=None, should use DEFAULT_ANTHROPIC_MODEL."""
+        from memory.providers import DEFAULT_ANTHROPIC_MODEL
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False):
+            os.environ["ANTHROPIC_API_KEY"] = "test-key"
+            config = {
+                "provider": {
+                    "default": "anthropic",
+                    "anthropic": {"api_key": "test-key", "generate_model": None},
+                }
+            }
+            embed, gen = resolve_provider(config)
+        assert isinstance(gen, AnthropicProvider)
+        assert gen._model == DEFAULT_ANTHROPIC_MODEL
+
+
+class TestFallbackProvider_NoneModelBaseUrl:
+    """Fallback functions must handle None base_url/model values from config.
+
+    Same bug class as ll-1ztcx-giz7h: openai_cfg.get('base_url', DEFAULT)
+    returns None when YAML has key with no value. The None passes to
+    Provider constructors that call .rstrip('/') → AttributeError crash.
+    """
+
+    def test_fallback_embed_with_none_base_url_uses_default(self):
+        """_fallback_embed_provider: openai base_url=None should not crash."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            config = {
+                "provider": {
+                    "openai": {"api_key": "test-key", "base_url": None},
+                },
+            }
+            from memory.providers import _fallback_embed_provider
+
+            provider = _fallback_embed_provider(config)
+        assert isinstance(provider, OpenAIProvider)
+        assert provider._base_url == DEFAULT_OPENAI_BASE_URL
+
+    def test_fallback_embed_with_none_embed_model_uses_default(self):
+        """_fallback_embed_provider: openai embed_model=None should not crash."""
+        from memory.providers import DEFAULT_OPENAI_EMBED_MODEL
+
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            config = {
+                "provider": {
+                    "openai": {"api_key": "test-key", "embed_model": None},
+                },
+            }
+            from memory.providers import _fallback_embed_provider
+
+            provider = _fallback_embed_provider(config)
+        assert isinstance(provider, OpenAIProvider)
+        assert provider._embed_model == DEFAULT_OPENAI_EMBED_MODEL
+
+    def test_fallback_generate_with_none_base_url_uses_default(self):
+        """_fallback_generate_provider: openai base_url=None should not crash."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            config = {
+                "provider": {
+                    "openai": {"api_key": "test-key", "base_url": None},
+                },
+            }
+            from memory.providers import _fallback_generate_provider
+
+            provider = _fallback_generate_provider(config)
+        assert isinstance(provider, OpenAIProvider)
+        assert provider._base_url == DEFAULT_OPENAI_BASE_URL
+
+    def test_fallback_generate_with_none_generate_model_uses_default(self):
+        """_fallback_generate_provider: openai generate_model=None should not crash."""
+        from memory.providers import DEFAULT_OPENAI_GENERATE_MODEL
+
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            config = {
+                "provider": {
+                    "openai": {"api_key": "test-key", "generate_model": None},
+                },
+            }
+            from memory.providers import _fallback_generate_provider
+
+            provider = _fallback_generate_provider(config)
+        assert isinstance(provider, OpenAIProvider)
+        assert provider._generate_model == DEFAULT_OPENAI_GENERATE_MODEL
+
+    def test_fallback_generate_anthropic_with_none_base_url(self):
+        """_fallback_generate_provider: anthropic base_url=None should not crash."""
+        from memory.providers import DEFAULT_ANTHROPIC_BASE_URL
+
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            config = {
+                "provider": {
+                    "anthropic": {"api_key": "test-key", "base_url": None},
+                },
+            }
+            from memory.providers import _fallback_generate_provider
+
+            provider = _fallback_generate_provider(config, skip_openai=True)
+        assert isinstance(provider, AnthropicProvider)
+        assert provider._base_url == DEFAULT_ANTHROPIC_BASE_URL
+
+    def test_fallback_generate_anthropic_with_none_generate_model(self):
+        """_fallback_generate_provider: anthropic generate_model=None should not crash."""
+        from memory.providers import DEFAULT_ANTHROPIC_MODEL
+
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            config = {
+                "provider": {
+                    "anthropic": {"api_key": "test-key", "generate_model": None},
+                },
+            }
+            from memory.providers import _fallback_generate_provider
+
+            provider = _fallback_generate_provider(config, skip_openai=True)
+        assert isinstance(provider, AnthropicProvider)
+        assert provider._model == DEFAULT_ANTHROPIC_MODEL
+
+
+class TestConfigGetNoneValueSafety:
+    """config.py .get(key, default_val) must handle None values from YAML.
+
+    When YAML has a key with no value (e.g., 'schedule:' with nothing after),
+    yaml.safe_load returns None for that value. dict.get(K, default_val)
+    only uses the default when the KEY is missing, not when VALUE is None.
+
+    Fix: use section.get(K) or default_val instead.
+    """
+
+    def test_get_dream_config_with_none_schedule(self):
+        """dream.schedule=None should fall back to default schedule."""
+        from memory.config import get_dream_config, DEFAULTS
+
+        config = {"dream": {"schedule": None}}
+        result = get_dream_config(config=config)
+        assert result["schedule"] == DEFAULTS["dream"]["schedule"]
+
+    def test_get_dream_config_with_none_similarity_threshold(self):
+        """dream.similarity_threshold=None should fall back to default."""
+        from memory.config import get_dream_config, DEFAULTS
+
+        config = {"dream": {"similarity_threshold": None}}
+        result = get_dream_config(config=config)
+        assert (
+            result["similarity_threshold"] == DEFAULTS["dream"]["similarity_threshold"]
+        )
+
+    def test_get_dream_config_with_none_enabled(self):
+        """dream.enabled=None should fall back to default (True).
+
+        Note: bool(None) is False, so 'or' correctly treats None as
+        falsy and returns the default True.
+        """
+        from memory.config import get_dream_config, DEFAULTS
+
+        config = {"dream": {"enabled": None}}
+        result = get_dream_config(config=config)
+        assert result["enabled"] is True
+
+    def test_get_resume_config_with_none_backend(self):
+        """resume.backend=None should fall back to default."""
+        from memory.config import get_resume_config, DEFAULTS
+
+        config = {"resume": {"backend": None}}
+        result = get_resume_config(config=config)
+        assert result["backend"] == DEFAULTS["resume"]["backend"]
+
+    def test_get_resume_config_with_none_model(self):
+        """resume.model=None should fall back to default."""
+        from memory.config import get_resume_config, DEFAULTS
+
+        config = {"resume": {"model": None}}
+        result = get_resume_config(config=config)
+        assert result["model"] == DEFAULTS["resume"]["model"]
+
+    def test_get_provider_config_with_none_default(self):
+        """provider.default=None should fall back to default ('ollama')."""
+        from memory.config import get_provider_config, DEFAULTS
+
+        config = {"provider": {"default": None}}
+        result = get_provider_config(config=config)
+        assert result["default"] == DEFAULTS["provider"]["default"]
+
+    def test_get_provider_config_with_none_embed(self):
+        """provider.embed=None should fall back to default empty dict."""
+        from memory.config import get_provider_config, DEFAULTS
+
+        config = {"provider": {"embed": None}}
+        result = get_provider_config(config=config)
+        # None embed should be treated as empty dict, not None
+        assert result["embed"] == {}

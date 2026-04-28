@@ -741,9 +741,9 @@ def _resolve_embed_provider(
         try:
             return OpenAIProvider(
                 embed_model=model_override
-                or openai_cfg.get("embed_model", DEFAULT_OPENAI_EMBED_MODEL),
+                or (openai_cfg.get("embed_model") or DEFAULT_OPENAI_EMBED_MODEL),
                 base_url=base_url_override
-                or openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
+                or (openai_cfg.get("base_url") or DEFAULT_OPENAI_BASE_URL),
                 api_key=api_key,
             )
         except ValueError:
@@ -808,9 +808,9 @@ def _resolve_generate_provider(
         try:
             return OpenAIProvider(
                 generate_model=model_override
-                or openai_cfg.get("generate_model", DEFAULT_OPENAI_GENERATE_MODEL),
+                or (openai_cfg.get("generate_model") or DEFAULT_OPENAI_GENERATE_MODEL),
                 base_url=base_url_override
-                or openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
+                or (openai_cfg.get("base_url") or DEFAULT_OPENAI_BASE_URL),
                 api_key=api_key,
             )
         except ValueError:
@@ -830,9 +830,9 @@ def _resolve_generate_provider(
         try:
             return AnthropicProvider(
                 model=model_override
-                or anthropic_cfg.get("generate_model", DEFAULT_ANTHROPIC_MODEL),
+                or (anthropic_cfg.get("generate_model") or DEFAULT_ANTHROPIC_MODEL),
                 base_url=base_url_override
-                or anthropic_cfg.get("base_url", DEFAULT_ANTHROPIC_BASE_URL),
+                or (anthropic_cfg.get("base_url") or DEFAULT_ANTHROPIC_BASE_URL),
                 api_key=api_key,
             )
         except ValueError:
@@ -867,10 +867,9 @@ def _fallback_embed_provider(
         if api_key:
             try:
                 return OpenAIProvider(
-                    embed_model=openai_cfg.get(
-                        "embed_model", DEFAULT_OPENAI_EMBED_MODEL
-                    ),
-                    base_url=openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
+                    embed_model=openai_cfg.get("embed_model")
+                    or DEFAULT_OPENAI_EMBED_MODEL,
+                    base_url=openai_cfg.get("base_url") or DEFAULT_OPENAI_BASE_URL,
                     api_key=api_key,
                 )
             except ValueError:
@@ -901,10 +900,9 @@ def _fallback_generate_provider(
         if openai_api_key:
             try:
                 return OpenAIProvider(
-                    generate_model=openai_cfg.get(
-                        "generate_model", DEFAULT_OPENAI_GENERATE_MODEL
-                    ),
-                    base_url=openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
+                    generate_model=openai_cfg.get("generate_model")
+                    or DEFAULT_OPENAI_GENERATE_MODEL,
+                    base_url=openai_cfg.get("base_url") or DEFAULT_OPENAI_BASE_URL,
                     api_key=openai_api_key,
                 )
             except ValueError:
@@ -917,8 +915,10 @@ def _fallback_generate_provider(
         if anthropic_api_key:
             try:
                 return AnthropicProvider(
-                    model=anthropic_cfg.get("generate_model", DEFAULT_ANTHROPIC_MODEL),
-                    base_url=anthropic_cfg.get("base_url", DEFAULT_ANTHROPIC_BASE_URL),
+                    model=anthropic_cfg.get("generate_model")
+                    or DEFAULT_ANTHROPIC_MODEL,
+                    base_url=anthropic_cfg.get("base_url")
+                    or DEFAULT_ANTHROPIC_BASE_URL,
                     api_key=anthropic_api_key,
                 )
             except ValueError:
