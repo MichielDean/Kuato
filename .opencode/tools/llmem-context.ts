@@ -7,7 +7,7 @@ import { runLlmem } from "./lib/_llmem";
  * Invokes `llmem search <query> --json --limit 20` and formats
  * results into a context block suitable for LLM injection,
  * truncated to the given character budget.
- * Returns empty string if no results. On error, returns error string.
+ * Returns 'No memories found.' sentinel if no results. On error, returns error string.
  */
 export default tool({
   name: "llmem-context",
@@ -45,7 +45,7 @@ export default tool({
     }
 
     if (!Array.isArray(memories) || memories.length === 0) {
-      return "";
+      return "No memories found.";
     }
 
     // Format each memory similar to Retriever.format_context()
@@ -62,6 +62,9 @@ export default tool({
     }
 
     const contextBlock = lines.join("\n");
-    return contextBlock.slice(0, budget);
+    // Use Array-style slice to avoid splitting surrogate pairs —
+    // String.slice operates on UTF-16 code units, but [...str] splits
+    // on Unicode code points, so [...str].slice(0,n).join('') is safe.
+    return [...contextBlock].slice(0, budget).join("");
   },
 });
