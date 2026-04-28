@@ -837,16 +837,21 @@ def _fallback_embed_provider(
     Returns:
         An EmbedProvider instance (at worst, NoneProvider).
     """
-    if not skip_openai and os.environ.get("OPENAI_API_KEY"):
+    if not skip_openai:
         provider_cfg = config.get("provider", {})
         openai_cfg = provider_cfg.get("openai", {})
-        try:
-            return OpenAIProvider(
-                embed_model=openai_cfg.get("embed_model", DEFAULT_OPENAI_EMBED_MODEL),
-                base_url=openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
-            )
-        except ValueError:
-            log.info("providers: openai embed fallback config invalid (bad URL)")
+        api_key = openai_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY")
+        if api_key:
+            try:
+                return OpenAIProvider(
+                    embed_model=openai_cfg.get(
+                        "embed_model", DEFAULT_OPENAI_EMBED_MODEL
+                    ),
+                    base_url=openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
+                    api_key=api_key,
+                )
+            except ValueError:
+                log.info("providers: openai embed fallback config invalid (bad URL)")
     log.info("providers: no embed provider available, using NoneProvider")
     return NoneProvider()
 
@@ -867,25 +872,35 @@ def _fallback_generate_provider(
         A GenerateProvider instance (at worst, NoneProvider).
     """
     provider_cfg = config.get("provider", {})
-    if not skip_openai and os.environ.get("OPENAI_API_KEY"):
+    if not skip_openai:
         openai_cfg = provider_cfg.get("openai", {})
-        try:
-            return OpenAIProvider(
-                generate_model=openai_cfg.get(
-                    "generate_model", DEFAULT_OPENAI_GENERATE_MODEL
-                ),
-                base_url=openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
-            )
-        except ValueError:
-            log.info("providers: openai generate fallback config invalid (bad URL)")
-    if not skip_anthropic and os.environ.get("ANTHROPIC_API_KEY"):
+        openai_api_key = openai_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY")
+        if openai_api_key:
+            try:
+                return OpenAIProvider(
+                    generate_model=openai_cfg.get(
+                        "generate_model", DEFAULT_OPENAI_GENERATE_MODEL
+                    ),
+                    base_url=openai_cfg.get("base_url", DEFAULT_OPENAI_BASE_URL),
+                    api_key=openai_api_key,
+                )
+            except ValueError:
+                log.info("providers: openai generate fallback config invalid (bad URL)")
+    if not skip_anthropic:
         anthropic_cfg = provider_cfg.get("anthropic", {})
-        try:
-            return AnthropicProvider(
-                model=anthropic_cfg.get("generate_model", DEFAULT_ANTHROPIC_MODEL),
-                base_url=anthropic_cfg.get("base_url", DEFAULT_ANTHROPIC_BASE_URL),
-            )
-        except ValueError:
-            log.info("providers: anthropic generate fallback config invalid (bad URL)")
+        anthropic_api_key = anthropic_cfg.get("api_key") or os.environ.get(
+            "ANTHROPIC_API_KEY"
+        )
+        if anthropic_api_key:
+            try:
+                return AnthropicProvider(
+                    model=anthropic_cfg.get("generate_model", DEFAULT_ANTHROPIC_MODEL),
+                    base_url=anthropic_cfg.get("base_url", DEFAULT_ANTHROPIC_BASE_URL),
+                    api_key=anthropic_api_key,
+                )
+            except ValueError:
+                log.info(
+                    "providers: anthropic generate fallback config invalid (bad URL)"
+                )
     log.info("providers: no generate provider available, using NoneProvider")
     return NoneProvider()

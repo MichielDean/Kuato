@@ -1194,3 +1194,236 @@ class TestFallbackFunctions_NoOllamaBaseBaseUrl:
             f"_fallback_generate_provider should not have ollama_base_url param, "
             f"got params: {list(sig.parameters.keys())}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-dw30i: Fallback functions must check config-based API keys
+# ---------------------------------------------------------------------------
+
+
+class TestFallbackEmbedProvider_ConfigApiKey:
+    """_fallback_embed_provider must check config-based API keys, not only env vars.
+
+    When Ollama is unavailable and the user has an API key in config.yaml
+    (not in env vars), the fallback should still try OpenAI — not silently
+    skip to NoneProvider.
+    """
+
+    def test_fallback_embed_uses_config_openai_api_key(self):
+        """OpenAI embed fallback should work with api_key from config, no env var."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            config = {
+                "provider": {
+                    "openai": {"api_key": "config-key-123"},
+                },
+            }
+            from memory.providers import _fallback_embed_provider
+
+            provider = _fallback_embed_provider(config)
+        assert isinstance(provider, OpenAIProvider)
+        assert provider._api_key == "config-key-123"
+
+    def test_fallback_embed_prefers_config_key_over_env(self):
+        """Config-based api_key should take precedence over env var."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "env-key"}, clear=False):
+            config = {
+                "provider": {
+                    "openai": {"api_key": "config-key-456"},
+                },
+            }
+            from memory.providers import _fallback_embed_provider
+
+            provider = _fallback_embed_provider(config)
+        assert isinstance(provider, OpenAIProvider)
+        assert provider._api_key == "config-key-456"
+
+    def test_fallback_embed_uses_env_key_when_no_config_key(self):
+        """If no config key, should still fall back to env var."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "env-key-789"}, clear=False):
+            config = {"provider": {"openai": {}}}
+            from memory.providers import _fallback_embed_provider
+
+            provider = _fallback_embed_provider(config)
+        assert isinstance(provider, OpenAIProvider)
+        assert provider._api_key == "env-key-789"
+
+    def test_fallback_embed_returns_none_when_no_key(self):
+        """When neither config key nor env key is available, return NoneProvider."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            config = {"provider": {"openai": {}}}
+            from memory.providers import _fallback_embed_provider
+
+            provider = _fallback_embed_provider(config)
+        assert isinstance(provider, NoneProvider)
+
+    def test_fallback_embed_skips_openai_when_flagged(self):
+        """skip_openai=True should force skip even if config has an API key."""
+        config = {
+            "provider": {
+                "openai": {"api_key": "config-key"},
+            },
+        }
+        from memory.providers import _fallback_embed_provider
+
+        provider = _fallback_embed_provider(config, skip_openai=True)
+        assert isinstance(provider, NoneProvider)
+
+
+class TestFallbackGenerateProvider_ConfigApiKey:
+    """_fallback_generate_provider must check config-based API keys, not only env vars.
+
+    When Ollama is unavailable and the user has API keys in config.yaml,
+    the fallback should try OpenAI then Anthropic — not silently skip to NoneProvider.
+    """
+
+    def test_fallback_generate_uses_config_openai_api_key(self):
+        """OpenAI generate fallback should work with api_key from config, no env var."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            config = {
+                "provider": {
+                    "openai": {"api_key": "openai-config-key"},
+                },
+            }
+            from memory.providers import _fallback_generate_provider
+
+            provider = _fallback_generate_provider(config)
+        assert isinstance(provider, OpenAIProvider)
+        assert provider._api_key == "openai-config-key"
+
+    def test_fallback_generate_uses_config_anthropic_api_key(self):
+        """Anthropic generate fallback should work with api_key from config, no env var,
+        when OpenAI is skipped."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            config = {
+                "provider": {
+                    "anthropic": {"api_key": "anthropic-config-key"},
+                },
+            }
+            from memory.providers import _fallback_generate_provider
+
+            provider = _fallback_generate_provider(config, skip_openai=True)
+        assert isinstance(provider, AnthropicProvider)
+        assert provider._api_key == "anthropic-config-key"
+
+    def test_fallback_generate_uses_config_anthropic_as_secondary(self):
+        """Anthropic fallback with config key works when OpenAI is not available."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            config = {
+                "provider": {
+                    "anthropic": {"api_key": "anthropic-config-key"},
+                },
+            }
+            from memory.providers import _fallback_generate_provider
+
+            provider = _fallback_generate_provider(config, skip_openai=True)
+        assert isinstance(provider, AnthropicProvider)
+        assert provider._api_key == "anthropic-config-key"
+
+    def test_fallback_generate_prefers_config_over_env_for_openai(self):
+        """Config-based openai api_key should take precedence over env var."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "env-key"}, clear=False):
+            config = {
+                "provider": {
+                    "openai": {"api_key": "config-key"},
+                },
+            }
+            from memory.providers import _fallback_generate_provider
+
+            provider = _fallback_generate_provider(config)
+        assert isinstance(provider, OpenAIProvider)
+        assert provider._api_key == "config-key"
+
+    def test_fallback_generate_prefers_config_over_env_for_anthropic(self):
+        """Config-based anthropic api_key should take precedence over env var."""
+        config = {
+            "provider": {
+                "anthropic": {"api_key": "config-key"},
+            },
+        }
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "env-key"}, clear=False):
+            from memory.providers import _fallback_generate_provider
+
+            provider = _fallback_generate_provider(config, skip_openai=True)
+        assert isinstance(provider, AnthropicProvider)
+        assert provider._api_key == "config-key"
+
+    def test_fallback_generate_returns_none_when_no_keys(self):
+        """When no config keys and no env keys, return NoneProvider."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            config = {"provider": {"openai": {}, "anthropic": {}}}
+            from memory.providers import _fallback_generate_provider
+
+            provider = _fallback_generate_provider(config)
+        assert isinstance(provider, NoneProvider)
+
+    def test_fallback_generate_uses_env_when_no_config_for_openai(self):
+        """If no config key but env var exists, fallback should use it."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "env-only-key"}, clear=False):
+            config = {"provider": {"openai": {}}}
+            from memory.providers import _fallback_generate_provider
+
+            provider = _fallback_generate_provider(config)
+        assert isinstance(provider, OpenAIProvider)
+        assert provider._api_key == "env-only-key"
+
+    def test_fallback_generate_uses_env_when_no_config_for_anthropic(self):
+        """If no config key but Anthropic env var exists, fallback should use it."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ["ANTHROPIC_API_KEY"] = "anthropic-env-key"
+            config = {"provider": {"anthropic": {}}}
+            from memory.providers import _fallback_generate_provider
+
+            provider = _fallback_generate_provider(config, skip_openai=True)
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        assert isinstance(provider, AnthropicProvider)
+        assert provider._api_key == "anthropic-env-key"
+
+    def test_resolve_provider_ollama_unavailable_uses_config_openai_key(self):
+        """Integration: when Ollama is unavailable but config has an OpenAI key,
+        resolve_provider should return OpenAIProvider, not NoneProvider."""
+        with (
+            patch("memory.providers.check_ollama_model", return_value=False),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            os.environ.pop("OPENAI_API_KEY", None)
+            config = {
+                "provider": {
+                    "default": "ollama",
+                    "openai": {"api_key": "from-config"},
+                },
+            }
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, OpenAIProvider)
+        assert embed._api_key == "from-config"
+        assert isinstance(gen, OpenAIProvider)
+        assert gen._api_key == "from-config"
+
+    def test_resolve_provider_ollama_unavailable_uses_config_anthropic_key(self):
+        """Integration: when Ollama and OpenAI are unavailable but config has an
+        Anthropic key, resolve_provider should return AnthropicProvider for generation."""
+        with (
+            patch("memory.providers.check_ollama_model", return_value=False),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            config = {
+                "provider": {
+                    "default": "ollama",
+                    "anthropic": {"api_key": "from-config"},
+                },
+            }
+            embed, gen = resolve_provider(config)
+        assert isinstance(embed, NoneProvider)
+        assert isinstance(gen, AnthropicProvider)
+        assert gen._api_key == "from-config"
