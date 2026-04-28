@@ -74,17 +74,11 @@ class TestConfig_ResolveDefaults_DeepCopy:
         # The module-level DEFAULTS must NOT be affected
         assert DEFAULTS["correction_detection"]["enabled"] is True
 
-    def test_session_dirs_not_shared_with_defaults(self):
-        """Mutating session_dirs in a copy of resolved defaults must not affect DEFAULTS."""
-        from llmem.config import DEFAULTS, _resolve_defaults
+    def test_no_session_dirs_in_defaults(self):
+        """session_dirs key must be removed from DEFAULTS — replaced by DB-based discovery."""
+        from llmem.config import DEFAULTS
 
-        original_dirs = list(DEFAULTS["memory"]["session_dirs"])
-        resolved = copy.deepcopy(_resolve_defaults())
-        resolved["memory"]["session_dirs"].append("/evil/appended/path")
-        assert DEFAULTS["memory"]["session_dirs"] == original_dirs, (
-            "session_dirs list is a shared reference — mutating resolved copy "
-            "corrupted module-level DEFAULTS"
-        )
+        assert "session_dirs" not in DEFAULTS.get("memory", {})
 
     def test_deep_copy_all_nested_dicts(self):
         """Every nested dict in _resolve_defaults() is an independent copy of DEFAULTS."""

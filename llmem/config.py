@@ -40,7 +40,6 @@ DEFAULTS = {
         "context_budget": 4000,
         "auto_extract": True,
         "max_file_size": 10 * 1024 * 1024,
-        "session_dirs": [str(Path("~/.local/share/opencode/sessions").expanduser())],
     },
     "dream": {
         "enabled": True,
@@ -105,7 +104,7 @@ def _resolve_defaults() -> dict:
     )
 
     # Deep copy to avoid shared mutable references with module-level DEFAULTS.
-    # dict(v) only copies one level — list values (e.g. session_dirs) would
+    # dict(v) only copies one level — nested dict/list values would
     # still alias the original. copy.deepcopy handles all nesting levels.
     # This is done once and cached — callers only read, never mutate.
     defaults = copy.deepcopy(DEFAULTS)
@@ -214,19 +213,6 @@ def is_auto_extract(
     if val is None:
         return defaults["memory"]["auto_extract"]
     return _as_bool(val)
-
-
-def get_session_dirs(
-    config_path: Path | None = None, config: dict | None = None
-) -> list[Path]:
-    config = _resolve_config(config_path, config)
-    defaults = _resolve_defaults()
-    dirs = config.get("memory", {}).get("session_dirs")
-    if dirs is None:
-        return [Path(d) for d in defaults["memory"]["session_dirs"]]
-    if isinstance(dirs, str):
-        dirs = [dirs]
-    return [Path(d).expanduser() for d in dirs]
 
 
 def get_max_file_size(

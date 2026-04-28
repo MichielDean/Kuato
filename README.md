@@ -248,8 +248,6 @@ memory:
   context_budget: 4000
   auto_extract: true
   max_file_size: 10485760     # 10MB
-  session_dirs:
-    - ~/.local/share/opencode/sessions
 
 dream:
   enabled: true

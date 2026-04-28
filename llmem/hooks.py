@@ -371,3 +371,38 @@ def create_session_hook(
         force=force,
         max_file_size=max_file_size,
     )
+
+
+def process_all_session_sources(
+    store: MemoryStore,
+    extractor: ExtractionEngine | None = None,
+    embedder: EmbeddingEngine | None = None,
+    force: bool = False,
+) -> dict[str, int]:
+    """Process all session sources and extract memories.
+
+    Orchestrates processing across all configured session adapters.
+    Currently processes only OpenCode sessions; additional adapters
+    can be added in the future following the session_hooks.py pattern.
+
+    Args:
+        store: The MemoryStore to save extracted memories into.
+        extractor: The ExtractionEngine. Created with defaults if None.
+        embedder: Optional EmbeddingEngine for generating embeddings.
+        force: If True, re-process sessions even if already extracted.
+
+    Returns:
+        A dict mapping result constants to their counts, aggregated
+        across all session sources.
+    """
+    from .session_hooks import process_opencode_sessions
+
+    if extractor is None:
+        extractor = ExtractionEngine()
+
+    return process_opencode_sessions(
+        store=store,
+        extractor=extractor,
+        embedder=embedder,
+        force=force,
+    )
