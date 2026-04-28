@@ -7,7 +7,6 @@ and SessionEventManager that dispatches events to registered hooks.
 
 import logging
 import time
-from pathlib import Path
 
 from .store import MemoryStore
 from .retrieve import Retriever
@@ -118,8 +117,6 @@ class SessionHookCoordinator:
     ):
         self._store = store
         self._retriever = retriever
-        self._extractor = extractor
-        self._embedder = embedder
         self._adapter = adapter
         self._session_hook = SessionHook(
             store=store,

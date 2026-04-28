@@ -463,6 +463,42 @@ class TestDeadCodeRemoval:
                 f"extract.py should not import _strip_credentials (unused after DRY extraction): {line}"
             )
 
+    def test_session_hooks_no_pathlib_import(self):
+        """session_hooks.py should not import pathlib.Path.
+
+        Path was imported but never used in the module body.
+        get_context_dir() already returns a Path object, so the
+        import was dead code.
+        """
+        import llmem.session_hooks as hooks_module
+
+        source = inspect.getsource(hooks_module)
+        import_lines = [
+            line
+            for line in source.split("\n")
+            if line.strip().startswith("from pathlib import")
+            or line.strip() == "import pathlib"
+        ]
+        assert len(import_lines) == 0, (
+            f"session_hooks.py should not import pathlib (unused): {import_lines}"
+        )
+
+    def test_coordinator_has_no_extractor_or_embedder_field(self, coordinator):
+        """SessionHookCoordinator should not store self._extractor or self._embedder.
+
+        These fields were stored but never read after being passed through
+        to SessionHook(). Only the parameters are needed; storing them as
+        instance attributes is dead code.
+        """
+        assert not hasattr(coordinator, "_extractor"), (
+            "SessionHookCoordinator should not have a _extractor field "
+            "(was dead code — stored but passed through to SessionHook, never read)"
+        )
+        assert not hasattr(coordinator, "_embedder"), (
+            "SessionHookCoordinator should not have a _embedder field "
+            "(was dead code — stored but passed through to SessionHook, never read)"
+        )
+
 
 # -- TestValidateSessionId --
 
