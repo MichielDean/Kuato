@@ -368,6 +368,65 @@ function testInstallFailsOnPermissionError() {
   }
 }
 
+function testShareShRejectsSecrets() {
+  var shareShPath = path.join(__dirname, 'skills', 'visual-explainer', 'scripts', 'share.sh');
+  if (!fs.existsSync(shareShPath)) {
+    console.log('  SKIP: share.sh secret detection (share.sh not found)');
+    return;
+  }
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kuato-share-test-'));
+  try {
+    // Test: HTML with AWS access key should be rejected
+    var awsKeyHtml = path.join(tmpDir, 'aws-key.html');
+    fs.writeFileSync(awsKeyHtml, '<!DOCTYPE html><html><body><p>AKIAIOSFODNN7EXAMPLE</p></body></html>');
+    try {
+      execSync('bash ' + shareShPath + ' ' + awsKeyHtml, { stdio: 'pipe' });
+      assert(false, 'share.sh rejects HTML with AWS access key');
+    } catch (err) {
+      var output = err.stderr ? err.stderr.toString() : '';
+      assert(err.status !== 0 && output.indexOf('secrets') !== -1,
+        'share.sh rejects HTML with AWS access key');
+    }
+    // Test: HTML with private key should be rejected
+    var privKeyHtml = path.join(tmpDir, 'privkey.html');
+    fs.writeFileSync(privKeyHtml, '<!DOCTYPE html><html><body><p>-----BEGIN RSA PRIVATE KEY-----\nMIIBog\n-----END RSA PRIVATE KEY-----</p></body></html>');
+    try {
+      execSync('bash ' + shareShPath + ' ' + privKeyHtml, { stdio: 'pipe' });
+      assert(false, 'share.sh rejects HTML with private key');
+    } catch (err) {
+      var output2 = err.stderr ? err.stderr.toString() : '';
+      assert(err.status !== 0 && output2.indexOf('secrets') !== -1,
+        'share.sh rejects HTML with private key');
+    }
+    // Test: HTML with GitHub token should be rejected
+    var ghTokenHtml = path.join(tmpDir, 'ghtoken.html');
+    fs.writeFileSync(ghTokenHtml, '<!DOCTYPE html><html><body><p>ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890AA</p></body></html>');
+    try {
+      execSync('bash ' + shareShPath + ' ' + ghTokenHtml, { stdio: 'pipe' });
+      assert(false, 'share.sh rejects HTML with GitHub token');
+    } catch (err) {
+      var output3 = err.stderr ? err.stderr.toString() : '';
+      assert(err.status !== 0 && output3.indexOf('secrets') !== -1,
+        'share.sh rejects HTML with GitHub token');
+    }
+    // Test: Clean HTML should pass secret scan (will fail at vercel-deploy step, not secrets step)
+    var cleanHtml = path.join(tmpDir, 'clean.html');
+    fs.writeFileSync(cleanHtml, '<!DOCTYPE html><html><head><title>Test</title></head><body><h1>Hello</h1></body></html>');
+    try {
+      execSync('bash ' + shareShPath + ' ' + cleanHtml, { stdio: 'pipe' });
+      // If vercel-deploy happens to be installed, deployment succeeds — that's fine
+      assert(true, 'share.sh allows clean HTML (no secrets detected)');
+    } catch (err) {
+      var cleanOutput = err.stderr ? err.stderr.toString() : '';
+      // Must NOT fail with "secrets" message — can fail with vercel-deploy not found
+      assert(cleanOutput.indexOf('secrets') === -1,
+        'share.sh allows clean HTML (no secrets detected)');
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────
 
 console.log('\n=== Validation Tests ===\n');
@@ -393,6 +452,7 @@ testInstallCreatesTargetDir();
 testInstallCopiesAllSkills();
 testInstallOverwritesExisting();
 testInstallFailsOnPermissionError();
+testShareShRejectsSecrets();
 
 console.log('\n=== Results ===\n');
 console.log('Passed: ' + passes);

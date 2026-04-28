@@ -42,6 +42,45 @@ if ! grep -qiE '<html|<!doctype html' "$HTML_FILE"; then
     exit 1
 fi
 
+# Scan for embedded secrets/credentials before deploying to a public URL.
+# This prevents accidental exposure of API keys, tokens, passwords, and
+# private keys in files published to the internet.
+SECRET_PATTERNS=(
+    # Private keys (PEM, OpenSSH, etc.)
+    '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+    # Generic API key patterns (<service>_API_KEY, <service>_TOKEN, etc.)
+    '[A-Za-z0-9_]*API_KEY[A-Za-z0-9_]*\s*[:=]\s*['\''"][A-Za-z0-9_\-]{16,}'
+    '[A-Za-z0-9_]*SECRET[A-Za-z0-9_]*\s*[:=]\s*['\''"][A-Za-z0-9_\-]{16,}'
+    '[A-Za-z0-9_]*TOKEN[A-Za-z0-9_]*\s*[:=]\s*['\''"][A-Za-z0-9_\-]{16,}'
+    '[A-Za-z0-9_]*PASSWORD[A-Za-z0-9_]*\s*[:=]\s*['\''"][A-Za-z0-9_\-]{8,}'
+    # Common cloud provider key prefixes
+    'AKIA[0-9A-Z]{16}'              # AWS access key IDs
+    'sk-[a-zA-Z0-9]{32,}'           # OpenAI-style API keys
+    'ghp_[A-Za-z0-9_]{36,}'        # GitHub personal access tokens
+    'gho_[A-Za-z0-9_]{36,}'        # GitHub OAuth tokens
+    # Hardcoded password in HTML attributes/inputs
+    'type\s*=\s*['\''"]password['\''"][^>]*value\s*=\s*['\''"][^'\''"]{8,}'
+)
+
+SECRETS_FOUND=()
+for pattern in "${SECRET_PATTERNS[@]}"; do
+    if grep -qE -- "$pattern" "$HTML_FILE"; then
+        SECRETS_FOUND+=("$pattern")
+    fi
+done
+
+if [ ${#SECRETS_FOUND[@]} -gt 0 ]; then
+    echo -e "${RED}Error: Potential secrets or credentials detected in HTML file${NC}" >&2
+    echo -e "${RED}This file would be deployed to a PUBLIC URL accessible by anyone.${NC}" >&2
+    echo -e "${RED}Refusing to deploy. Remove secrets before sharing.${NC}" >&2
+    echo "" >&2
+    echo -e "${RED}Matched patterns:${NC}" >&2
+    for p in "${SECRETS_FOUND[@]}"; do
+        echo -e "${RED}  - $p${NC}" >&2
+    done
+    exit 1
+fi
+
 # Find vercel-deploy skill
 VERCEL_SCRIPT=""
 for dir in ~/.agents/skills/vercel-deploy/scripts /mnt/skills/user/vercel-deploy/scripts; do
