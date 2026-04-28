@@ -35,6 +35,7 @@ SELF_ASSESSMENT_FIELDS: list[tuple[str, str]] = [
     ("Estimates_vs_actual", "How long did you think vs how long it took"),
     ("Recurring", "Is this a pattern? (yes/no, with reference to prior)"),
     ("Proposed_update", "What rule or procedure should change to prevent recurrence"),
+    ("Iteration_count", "How many attempts before success (integer). 1 = first try"),
 ]
 
 INTROSPECT_FIELD_LINES = "\n".join(

@@ -30,6 +30,7 @@ from llmem.url_validate import (
     _strip_credentials,
     _NoRedirectHandler,
     safe_urlopen,
+    _extract_url_string,
     DEFAULT_URLOPEN_TIMEOUT,
 )
 from llmem.paths import (
@@ -169,6 +170,284 @@ class TestUrlValidate_SafeUrlopen:
             safe_urlopen(blocked_with_creds)
         assert "s3cret" not in str(exc_info.value)
         assert "admin" not in str(exc_info.value)
+
+
+# ============================================================================
+# c5grc: safe_urlopen Request object handling
+# ============================================================================
+
+
+class TestUrlValidate_ExtractUrlString:
+    """Test _extract_url_string handles both str and Request inputs."""
+
+    def test_returns_string_unchanged(self):
+        """Plain strings pass through unchanged."""
+        url = "http://localhost:11434/api/tags"
+        assert _extract_url_string(url) == url
+
+    def test_extracts_full_url_from_get_request(self):
+        """GET Request objects yield their .full_url."""
+        import urllib.request
+
+        req = urllib.request.Request("http://localhost:11434/api/tags")
+        assert _extract_url_string(req) == "http://localhost:11434/api/tags"
+
+    def test_extracts_full_url_from_post_request(self):
+        """POST Request objects (with data) yield their .full_url."""
+        import urllib.request
+
+        payload = b'{"model":"test"}'
+        req = urllib.request.Request(
+            "http://localhost:11434/api/generate",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        assert _extract_url_string(req) == "http://localhost:11434/api/generate"
+
+
+class TestUrlValidate_SafeUrlopenRequestObjects:
+    """Test safe_urlopen properly handles urllib.request.Request objects (c5grc)."""
+
+    def test_rejects_request_with_unsafe_url(self):
+        """Request objects with unsafe URLs raise ValueError, not AttributeError."""
+        import urllib.request
+
+        req = urllib.request.Request("http://192.168.1.1:8080/api/tags")
+        # Before fix: this would crash with AttributeError from urlparse
+        # After fix: raises ValueError from is_safe_url
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen(req)
+
+    def test_rejects_request_with_file_scheme(self):
+        """Request objects with file:// URLs raise ValueError."""
+        import urllib.request
+
+        req = urllib.request.Request("file:///etc/passwd")
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen(req)
+
+    def test_rejects_post_request_with_private_ip(self):
+        """POST Request objects with private IP are rejected."""
+        import urllib.request
+
+        req = urllib.request.Request(
+            "http://10.0.0.1:11434/api/generate",
+            data=b'{"model":"test"}',
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen(req)
+
+
+# ============================================================================
+# hj0uy: safe_urlopen allow_remote parameter
+# ============================================================================
+
+
+class TestUrlValidate_SafeUrlopenAllowRemote:
+    """Test safe_urlopen allow_remote parameter (hj0uy)."""
+
+    def test_default_allow_remote_blocks_private_ip(self):
+        """By default (allow_remote=False), private IP URLs are rejected."""
+        # Use a private IP to avoid DNS/network access — private IPs are blocked
+        # by is_safe_url when allow_remote=False
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen("http://192.168.1.1:11434/api/tags")
+
+    def test_allow_remote_true_permits_remote_url(self):
+        """With allow_remote=True, remote URL validation passes (may still fail on connect)."""
+        from unittest.mock import patch, MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        # Patch both DNS resolution (which is_safe_url calls) and the opener
+        with (
+            patch(
+                "llmem.url_validate._resolve_hostname", return_value=["93.184.216.34"]
+            ),
+            patch("llmem.url_validate.urllib.request.build_opener") as mock_build,
+        ):
+            mock_opener = MagicMock()
+            mock_opener.open.return_value = mock_resp
+            mock_build.return_value = mock_opener
+
+            # This should NOT raise ValueError — validation passes with allow_remote=True
+            result = safe_urlopen(
+                "http://example.com:11434/api/tags", allow_remote=True
+            )
+            assert result is not None
+
+    def test_allow_remote_false_blocks_private_ip(self):
+        """allow_remote=False blocks private IPs."""
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen("http://10.0.0.1:11434/api/tags", allow_remote=False)
+
+    def test_request_with_allow_remote_true(self):
+        """Request objects work with allow_remote=True."""
+        import urllib.request
+        from unittest.mock import patch, MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        req = urllib.request.Request(
+            "http://example.com:11434/api/generate",
+            data=b'{"model":"test"}',
+            headers={"Content-Type": "application/json"},
+        )
+
+        with (
+            patch(
+                "llmem.url_validate._resolve_hostname", return_value=["93.184.216.34"]
+            ),
+            patch("llmem.url_validate.urllib.request.build_opener") as mock_build,
+        ):
+            mock_opener = MagicMock()
+            mock_opener.open.return_value = mock_resp
+            mock_build.return_value = mock_opener
+
+            # Before fix: this would crash with AttributeError
+            # After fix: validation passes with allow_remote=True
+            result = safe_urlopen(req, allow_remote=True)
+            assert result is not None
+
+    def test_loopback_url_passes_without_allow_remote(self):
+        """Loopback URLs on default port pass even without allow_remote."""
+        from unittest.mock import patch, MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("llmem.url_validate.urllib.request.build_opener") as mock_build:
+            mock_opener = MagicMock()
+            mock_opener.open.return_value = mock_resp
+            mock_build.return_value = mock_opener
+
+            result = safe_urlopen("http://localhost:11434/api/tags")
+            assert result is not None
+
+    def test_allow_remote_propagates_to_re_resolve_check(self):
+        """allow_remote=True must propagate to the re-resolve IP check.
+
+        Before the fix (hj0uy), safe_urlopen used _is_remote_allowed(url)
+        for the re-resolve check, which inferred allow_remote=True for
+        non-loopback URLs but used allow_remote=False for the initial
+        is_safe_url check. This made remote Ollama hosts fail at the
+        re-resolve stage after passing the initial check.
+        """
+        from unittest.mock import patch, MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch(
+                "llmem.url_validate._resolve_hostname", return_value=["93.184.216.34"]
+            ),
+            patch("llmem.url_validate.urllib.request.build_opener") as mock_build,
+        ):
+            mock_opener = MagicMock()
+            mock_opener.open.return_value = mock_resp
+            mock_build.return_value = mock_opener
+
+            # With allow_remote=True, both is_safe_url and the re-resolve check
+            # should pass for a remote IP
+            result = safe_urlopen(
+                "http://example.com:11434/api/tags", allow_remote=True
+            )
+            assert result is not None
+
+
+# ============================================================================
+# t9yif: DNS rebinding re-resolve ValueError must not be swallowed
+# ============================================================================
+
+
+class TestUrlValidate_DnsRebindResolve:
+    """Test that the re-resolve DNS rebinding check in safe_urlopen is effective.
+
+    The old code had 'except ValueError: pass' that caught the ValueError
+    raised by the blocked-address check alongside ipaddress parsing errors.
+    This made the DNS rebinding protection completely ineffective — an
+    attacker controlling DNS could validate with a safe IP, rebind to a
+    private IP, and the re-resolve ValueError would be silently swallowed.
+    """
+
+    def test_re_resolve_blocks_private_ip_after_safe_initial_resolve(self):
+        """DNS rebinding: is_safe_url passes (sees safe IP), but re-resolve
+        returns a private IP. The re-resolve ValueError must propagate."""
+        from unittest.mock import patch, MagicMock
+
+        mock_resp = MagicMock()
+
+        with (
+            patch("llmem.url_validate.is_safe_url", return_value=True),
+            patch(
+                "llmem.url_validate._resolve_hostname",
+                return_value=["192.168.1.1"],
+            ),
+        ):
+            with pytest.raises(ValueError, match="rejected after re-resolve"):
+                safe_urlopen("http://example.com:11434/api/tags", allow_remote=True)
+
+    def test_re_resolve_raises_for_blocked_address(self):
+        """Re-resolve that finds a blocked IP raises ValueError (not swallowed)."""
+        from unittest.mock import patch
+
+        with (
+            patch("llmem.url_validate.is_safe_url", return_value=True),
+            patch(
+                "llmem.url_validate._resolve_hostname",
+                return_value=["10.0.0.1"],
+            ),
+        ):
+            with pytest.raises(ValueError, match="blocked address"):
+                safe_urlopen("http://example.com:11434/api/tags", allow_remote=True)
+
+    def test_re_resolve_raises_for_unparseable_address(self):
+        """Re-resolve that finds an unparseable address raises ValueError."""
+        from unittest.mock import patch
+
+        with (
+            patch("llmem.url_validate.is_safe_url", return_value=True),
+            patch(
+                "llmem.url_validate._resolve_hostname",
+                return_value=["not-an-ip"],
+            ),
+        ):
+            with pytest.raises(ValueError, match="unparseable address"):
+                safe_urlopen("http://example.com:11434/api/tags", allow_remote=True)
+
+    def test_re_resolve_allows_safe_ip(self):
+        """Re-resolve that finds a safe IP does not raise."""
+        from unittest.mock import patch, MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch("llmem.url_validate.is_safe_url", return_value=True),
+            patch(
+                "llmem.url_validate._resolve_hostname",
+                return_value=["93.184.216.34"],
+            ),
+            patch("llmem.url_validate.urllib.request.build_opener") as mock_build,
+        ):
+            mock_opener = MagicMock()
+            mock_opener.open.return_value = mock_resp
+            mock_build.return_value = mock_opener
+
+            # Safe remote IP should not raise
+            result = safe_urlopen(
+                "http://example.com:11434/api/tags", allow_remote=True
+            )
+            assert result is not None
 
 
 # ============================================================================

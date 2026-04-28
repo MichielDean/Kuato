@@ -24,7 +24,10 @@ const EXPECTED_SKILLS = [
   'branch-strategy',
   'critical-code-reviewer',
   'pre-pr-review',
-  'visual-explainer'
+  'visual-explainer',
+  'llmem',
+  'introspection',
+  'introspection-review-tracker'
 ];
 const EXPECTED_TEMPLATES = [
   'rules.md',
@@ -338,9 +341,9 @@ function testInstallCopiesAllSkills() {
         missing.push(EXPECTED_SKILLS[i]);
       }
     }
-    assert(allPresent, 'install.js copies all 7 skills' + (missing.length > 0 ? ' (missing: ' + missing.join(', ') + ')' : ''));
+    assert(allPresent, 'install.js copies all ' + EXPECTED_SKILLS.length + ' skills' + (missing.length > 0 ? ' (missing: ' + missing.join(', ') + ')' : ''));
   } catch (err) {
-    assert(false, 'install.js copies all 7 skills: ' + err.message);
+    assert(false, 'install.js copies all ' + EXPECTED_SKILLS.length + ' skills: ' + err.message);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
