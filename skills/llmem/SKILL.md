@@ -235,7 +235,7 @@ from llmem.retrieve import Retriever
 store = MemoryStore()
 retriever = Retriever(store)
 
-# Hybrid search (default: fuses FTS5 + semantic via RRF, alpha=0.7)
+# Hybrid search (default: fuses FTS5 + semantic via RRF, alpha=0.7, blend=0.3)
 results = retriever.hybrid_search("python", limit=10)
 
 # FTS5-only or semantic-only
@@ -244,6 +244,10 @@ results = retriever.hybrid_search("python", search_mode="semantic")
 
 # Control semantic/keyword weight (0.0 = pure FTS, 1.0 = pure semantic)
 results = retriever.hybrid_search("python", alpha=0.5)
+
+# Control reranking blend (0.0 = pure RRF, 1.0 = pure signal-based)
+retriever = Retriever(store, blend=0.5)
+results = retriever.hybrid_search("python", limit=10)
 
 # Search with traversal (default 1-hop)
 results = retriever.search("python", traverse_relations=True)
@@ -262,6 +266,55 @@ Results with traversal include these extra fields:
 - `supersedes` (list[str]) — IDs this memory supersedes (only present when applicable)
 - `contradicted_by` (list[str]) — IDs that contradict this memory (only present when applicable)
 
+### Multi-Signal Reranking
+
+After RRF fusion, search results are automatically reranked using a blend of the RRF score and four weighted signals:
+
+```
+final_score = rrf_score * (1 - blend) + weighted_signal * blend
+```
+
+**Default blend factor: 0.3** (70% RRF, 30% signals). Configure via `Retriever(store, embedder, blend=0.5)`. Range: 0.0 (pure RRF) to 1.0 (pure signals). Out-of-range values raise `ValueError`.
+
+**Signals and weights:**
+
+| Signal | Weight | Formula |
+|--------|--------|---------|
+| Confidence | 0.4 | Direct use of `confidence` field (0.0–1.0, default 0.0) |
+| Recency | 0.3 | `exp(-0.01 * days_since_access)` (0.0 if never accessed) |
+| Access frequency | 0.2 | `log(1 + access_count / max(age_days, 1))` (0.0 if never accessed) |
+| Type priority | 0.1 | Lookup in `TYPE_PRIORITY` dict (default 1.0 for unknown types) |
+
+**Type priority weights:**
+
+| Type | Priority |
+|------|----------|
+| decision | 1.2 |
+| preference | 1.1 |
+| procedure | 1.1 |
+| fact | 1.0 |
+| project_state | 1.0 |
+| self_assessment | 1.0 |
+| event | 0.9 |
+| conversation | 0.7 |
+
+Search results include both `_rrf_score` (raw RRF fusion score) and `_rerank_score` (blended final score). Results are sorted by `_rerank_score` descending, with ties broken by ascending memory ID.
+
+**Python API:**
+
+```python
+from llmem.retrieve import Retriever
+
+# Default blend (0.3): 70% RRF + 30% signals
+retriever = Retriever(store, embedder=embedder)
+
+# Pure RRF (disable reranking)
+retriever = Retriever(store, embedder=embedder, blend=0.0)
+
+# Equal weight RRF and signals
+retriever = Retriever(store, embedder=embedder, blend=0.5)
+```
+
 ## Important Notes
 
 - **Invalidate, don't delete** unless the memory was wrong. Invalidated memories stay for reference but aren't returned in searches.
@@ -275,7 +328,7 @@ Results with traversal include these extra fields:
 - **Auto-extraction** uses `llmem hook` to automatically extract memories from session transcripts. By default, only **direct** (user) sessions are processed — pipeline agent sessions (those in sandbox directories) are excluded because their self-assessments would be context-dependent. Use `--source all` for unfiltered behavior, or set `hook.source_filter` in config. Introspection runs by default on every invocation — use `--no-introspect` to skip it for trivial sessions. It uses the existing `extraction_log` table with `source_type='session'` to prevent re-extraction. The `auto_extract` flag in `~/.config/llmem/config.yaml` controls whether `llmem hook` runs extraction (defaults to true).
 - **Auto-introspection** runs by default with `llmem hook`, producing `self_assessment` memories from each session transcript. Use `--no-introspect` to skip introspection for trivial sessions. The `--introspect` flag is still accepted for backward compatibility but is a no-op (introspection is always on). For standalone introspection, use `llmem introspect --auto` or `--interactive` to analyze a single file. Both use `qwen2.5:1.5b` via Ollama and the `extraction_log` table with `source_type='introspection'` for deduplication. Use `--force` to re-analyze an already-processed file. Interactive mode presents the LLM analysis for user confirmation before storing.
 - **Session hook** can be called from an agent's instructions or cron to make memory collection ambient — no need to remember `llmem extract` after every session.
-- **Access tracking** — `llmem get` is read-only and does not update `access_count` or `accessed_at`. Use the Python API `MemoryStore.get(id, track_access=True)` or `MemoryStore.touch(id)` to record access. Search and list operations also avoid triggering writes.
+- **Access tracking** — `llmem get` is read-only and does not update `access_count` or `accessed_at`. Use the Python API `MemoryStore.get(id, track_access=True)` or `MemoryStore.touch(id)` to record access. **Search operations (`Retriever.search()` and `Retriever.hybrid_search()`) now automatically track access** — each returned result's `access_count` and `accessed_at` are updated (best-effort, errors are logged not raised). This ensures the recency and access frequency reranking signals stay current.
 - **Iteration count** — use `llmem introspect --iteration-count N` to record how many attempts before success. This feeds calibration tracking: if average iteration counts for a category decrease after a behavioral adaptation, the adaptation is marked effective.
 - **Calibration status metadata** — procedure memories created by behavioral insights receive `calibration_status` (trend: `decreasing`, `stable`, or `increasing`) and `calibrated_at` metadata when calibration runs. Stale procedures get `stale_procedure: true` and `stale_at` metadata. These are visible via `llmem get <id>`.
 - **Review outcome tracking** — `llmem track-review` persists review findings as `self_assessment` memories automatically. It is the mechanical post-review hook for adversarial code reviews. Three modes: single finding (`--category` + `--what-happened`), batch (`--finding-file` with JSON array), and clean review (no flags → `REVIEW_PASSED`). `--category` and `--finding-file` are mutually exclusive. Every review invocation MUST produce at least one memory — clean reviews create a `REVIEW_PASSED` memory automatically. Use `llmem suggest-categories <TIER>` to see valid categories for a severity tier (Blocking, Required, Strong Suggestions, Noted, Passed).

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 from datetime import datetime, timezone
 
 from .store import MemoryStore
@@ -74,12 +75,118 @@ def _rrf_score(
     return scored
 
 
+def _compute_rerank_signals(
+    memory: dict, type_priority: dict[str, float], now: datetime
+) -> dict[str, float]:
+    """Compute per-memory reranking signals from memory dict fields.
+
+    Takes a memory dict (with keys confidence, accessed_at, access_count,
+    created_at, type), a type priority mapping, and the current UTC time.
+    Returns a dict with keys "confidence", "recency", "access", "type"
+    containing individual normalized signal scores. Returns 0.0 for missing
+    fields. Never raises — uses .get() with defaults.
+
+    Args:
+        memory: A memory dict with optional keys confidence, accessed_at,
+            access_count, created_at, type.
+        type_priority: Mapping of memory type name to priority weight.
+        now: Current UTC datetime for time-based calculations.
+
+    Returns:
+        Dict with confidence, recency, access, and type signal floats.
+    """
+    # Confidence signal: direct use of confidence field, default 0.0
+    confidence = float(memory.get("confidence", 0.0) or 0.0)
+
+    # Recency signal: exp(-0.01 * days_since_access), default 0.0
+    accessed_at_raw = memory.get("accessed_at")
+    recency = 0.0
+    if accessed_at_raw:
+        try:
+            accessed_at = datetime.fromisoformat(accessed_at_raw)
+            if accessed_at.tzinfo is None:
+                accessed_at = accessed_at.replace(tzinfo=timezone.utc)
+            days_since = (now - accessed_at).days
+            recency = math.exp(-0.01 * days_since)
+        except (ValueError, TypeError):
+            log.debug("llmem: retrieve: unparseable accessed_at: %r", accessed_at_raw)
+            recency = 0.0
+
+    # Access frequency signal: log(1 + access_count / max(age_days, 1))
+    access_count = int(memory.get("access_count", 0) or 0)
+    created_at_raw = memory.get("created_at")
+    age_days = 1
+    if created_at_raw:
+        try:
+            created_at = datetime.fromisoformat(created_at_raw)
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            age_days = max((now - created_at).days, 1)
+        except (ValueError, TypeError):
+            log.debug("llmem: retrieve: unparseable created_at: %r", created_at_raw)
+            age_days = 1
+    access = math.log(1 + access_count / age_days) if access_count > 0 else 0.0
+
+    # Type priority signal: lookup in type_priority, default 1.0
+    mem_type = memory.get("type", "")
+    type_signal = float(type_priority.get(mem_type, 1.0))
+
+    return {
+        "confidence": confidence,
+        "recency": recency,
+        "access": access,
+        "type": type_signal,
+    }
+
+
+def _compute_weighted_signal(signals: dict[str, float]) -> float:
+    """Combine confidence, recency, access, and type signals using weights.
+
+    Takes the signal dict from _compute_rerank_signals and returns the
+    weighted sum: CONFIDENCE_WEIGHT * confidence + RECENCY_WEIGHT * recency
+    + ACCESS_WEIGHT * access + TYPE_WEIGHT * type.
+
+    Args:
+        signals: Dict with confidence, recency, access, and type floats.
+
+    Returns:
+        Weighted signal float in [0.0, max_weight_sum] range.
+    """
+    return (
+        CONFIDENCE_WEIGHT * signals["confidence"]
+        + RECENCY_WEIGHT * signals["recency"]
+        + ACCESS_WEIGHT * signals["access"]
+        + TYPE_WEIGHT * signals["type"]
+    )
+
+
 class Retriever:
     """Retrieve and rank memories by relevance."""
 
-    def __init__(self, store: MemoryStore, embedder: EmbeddingEngine | None = None):
+    def __init__(
+        self,
+        store: MemoryStore,
+        embedder: EmbeddingEngine | None = None,
+        blend: float = 0.3,
+    ):
+        """Initialize the Retriever.
+
+        Args:
+            store: The memory store to search against.
+            embedder: Optional embedding engine for semantic search.
+            blend: Blend factor for reranking (0.0 = pure RRF, 1.0 = pure
+                signals). Defaults to 0.3.
+
+        Raises:
+            ValueError: If blend is not in [0.0, 1.0].
+        """
+        if not 0.0 <= blend <= 1.0:
+            raise ValueError(
+                f"llmem: retrieve: blend factor {blend!r} out of range [0.0, 1.0]"
+            )
         self._store = store
         self._embedder = embedder
+        self._blend = blend
 
     def search(
         self,
@@ -104,6 +211,9 @@ class Retriever:
         results = self._store.search(
             query=query, type=type_filter, limit=limit, _include_rank=True
         )
+
+        # Track access for each result (best-effort, never raises)
+        self._track_access(results)
 
         if traverse_relations and results:
             mem_ids = [r["id"] for r in results]
@@ -175,6 +285,14 @@ class Retriever:
                 mem = {k: v for k, v in r.items() if k != "_fts_rank"}
                 mem["_rrf_score"] = score_by_id.get(r["id"], 0.0)
                 results.append(mem)
+
+            # Apply reranking
+            now = datetime.now(timezone.utc)
+            results = self._apply_reranking(results, now)
+
+            # Track access for each result (best-effort, never raises)
+            self._track_access(results)
+
             return results[:limit]
 
         if search_mode == "semantic":
@@ -198,6 +316,14 @@ class Retriever:
             # Apply type_filter (same post-filter pattern as hybrid path)
             if type_filter:
                 results = [r for r in results if r.get("type") == type_filter]
+
+            # Apply reranking
+            now = datetime.now(timezone.utc)
+            results = self._apply_reranking(results, now)
+
+            # Track access for each result (best-effort, never raises)
+            self._track_access(results)
+
             return results[:limit]
 
         # search_mode == "hybrid"
@@ -265,7 +391,59 @@ class Retriever:
                 mem["_rrf_score"] = rrf_score
                 results.append(mem)
 
+        # Apply reranking
+        now = datetime.now(timezone.utc)
+        results = self._apply_reranking(results, now)
+
+        # Track access for each result (best-effort, never raises)
+        self._track_access(results)
+
         return results[:limit]
+
+    def _apply_reranking(self, results: list[dict], now: datetime) -> list[dict]:
+        """Apply multi-signal reranking to search results.
+
+        Modifies each result dict to add a _rerank_score key and re-sorts
+        the results by _rerank_score descending (ties broken by ascending ID).
+
+        Args:
+            results: List of result dicts, each with _rrf_score key.
+            now: Current UTC datetime for time-based calculations.
+
+        Returns:
+            Results re-sorted by _rerank_score descending.
+        """
+        if not results or self._blend == 0.0:
+            # blend=0.0 means pure RRF — rerank_score equals rrf_score
+            for r in results:
+                r["_rerank_score"] = r.get("_rrf_score", 0.0)
+            return results
+
+        for r in results:
+            signals = _compute_rerank_signals(r, TYPE_PRIORITY, now)
+            weighted = _compute_weighted_signal(signals)
+            rrf_score = r.get("_rrf_score", 0.0)
+            r["_rerank_score"] = rrf_score * (1 - self._blend) + weighted * self._blend
+
+        results.sort(key=lambda x: (-x.get("_rerank_score", 0.0), x.get("id", "")))
+        return results
+
+    def _track_access(self, results: list[dict]) -> None:
+        """Track access for each result by calling store.touch().
+
+        Best-effort: errors are caught and logged, never propagated.
+
+        Args:
+            results: List of result dicts, each with an 'id' key.
+        """
+        for r in results:
+            try:
+                self._store.touch(r["id"])
+            except Exception:
+                log.debug(
+                    "llmem: retrieve: failed to track access for %s",
+                    r.get("id", "unknown"),
+                )
 
     def format_context(
         self, query: str, budget: int = 4000, type_filter: str | None = None
