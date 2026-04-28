@@ -294,7 +294,7 @@ Options:
 Commands:
   add             Add a memory
   get             Get a memory by ID
-  search          Search memories (FTS + optional vector)
+  search          Search memories (hybrid RRF fusion of FTS5 + semantic)
   list            List memories
   stats           Show memory statistics
   update          Update a memory
@@ -326,10 +326,16 @@ llmem add --type TYPE --content TEXT [--summary TEXT] [--source SOURCE] \
 ### `llmem search`
 
 ```bash
-llmem search QUERY [--type TYPE] [--limit N] [--json]
+llmem search QUERY [--type TYPE] [--limit N] [--json] [--fts-only | --semantic-only]
 ```
 
-Full-text search across content, summary, and hints. With `--json`, outputs raw JSON; otherwise, a human-readable table.
+Hybrid search combining FTS5 keyword search and vector semantic search via Reciprocal Rank Fusion (RRF). By default, both search modes are merged with `alpha=0.7` (favoring semantic results while keeping keyword relevance).
+
+- `--fts-only`: Use FTS5 keyword search only (no embedder needed).
+- `--semantic-only`: Use semantic (embedding) search only (requires an embedder). Raises an error if no embedder is available.
+- Without either flag: hybrid mode — runs both FTS5 and semantic search, fuses results via RRF. Falls back to FTS5-only if no embedder is configured.
+
+With `--json`, outputs raw JSON (each result includes an `_rrf_score` key); otherwise, a human-readable table with an `rrf=` score column.
 
 ### `llmem list`
 
@@ -420,6 +426,7 @@ from llmem import (
     register_dream_hook,
     register_cli_plugin,
 )
+from llmem.retrieve import Retriever, _rrf_score, DEFAULT_ALPHA, DEFAULT_RRF_K
 from llmem.config import write_config_yaml
 from llmem.ollama import ProviderDetector, is_ollama_running
 
@@ -429,8 +436,29 @@ store = MemoryStore()  # uses default path ~/.config/llmem/memory.db
 # Add a memory
 mid = store.add(type="fact", content="Project uses SQLite with WAL mode")
 
-# Search
+# FTS5 search (classic)
 results = store.search("SQLite", limit=10)
+
+# Hybrid search (FTS5 + semantic, RRF fusion)
+from llmem.retrieve import Retriever
+from llmem.embed import EmbeddingEngine
+
+embedder = EmbeddingEngine()
+retriever = Retriever(store=store, embedder=embedder)
+
+# Default: hybrid mode (alpha=0.7, favors semantic)
+results = retriever.hybrid_search("Python async patterns", limit=10)
+
+# FTS5-only (no embedder needed)
+results = retriever.hybrid_search("Python async patterns", search_mode="fts")
+
+# Semantic-only (requires embedder)
+results = retriever.hybrid_search("Python async patterns", search_mode="semantic")
+
+# Control semantic vs. keyword weight (0.0 = pure FTS, 1.0 = pure semantic)
+results = retriever.hybrid_search("query", alpha=0.5)
+
+# Each result dict includes an "_rrf_score" key with the RRF score
 
 # Get by ID
 mem = store.get(mid)

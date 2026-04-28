@@ -81,10 +81,17 @@ llmem add "prefer dark theme" --type preference --confidence 0.9
 # Add a memory with a relation
 llmem add --type fact "python 3.12 is the latest version" --relation supersedes --relation-to <old-memory-id>
 
-# Search memories
+# Search memories (hybrid RRF fusion by default)
 llmem search "query"
 llmem search "query" --type decision --limit 5
 llmem search "query" --context --budget 4000
+
+# Search mode flags (mutually exclusive)
+llmem search "query" --fts-only        # FTS5 keyword search only (no embedder needed)
+llmem search "query" --semantic-only    # Semantic (embedding) search only (requires embedder)
+
+# Search with relation traversal
+llmem search "query" --traverse-relations
 
 # List all
 llmem list
@@ -227,6 +234,16 @@ from llmem.retrieve import Retriever
 
 store = MemoryStore()
 retriever = Retriever(store)
+
+# Hybrid search (default: fuses FTS5 + semantic via RRF, alpha=0.7)
+results = retriever.hybrid_search("python", limit=10)
+
+# FTS5-only or semantic-only
+results = retriever.hybrid_search("python", search_mode="fts")
+results = retriever.hybrid_search("python", search_mode="semantic")
+
+# Control semantic/keyword weight (0.0 = pure FTS, 1.0 = pure semantic)
+results = retriever.hybrid_search("python", alpha=0.5)
 
 # Search with traversal (default 1-hop)
 results = retriever.search("python", traverse_relations=True)
