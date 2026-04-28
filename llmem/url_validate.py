@@ -2,10 +2,13 @@
 
 import http.client
 import ipaddress
+import logging
 import socket
 import urllib.request
 import urllib.error
 from urllib.parse import urlparse, urlunparse, unquote
+
+log = logging.getLogger(__name__)
 
 OLLAMA_DEFAULT_PORT = 11434
 
@@ -51,18 +54,20 @@ def _check_ip_access(
     reserved, multicast) is permitted.
 
     Returns True if allowed, False if blocked.
+
+    Loopback addresses are only permitted on the Ollama default port,
+    regardless of allow_remote. The allow_remote flag controls whether
+    non-loopback public addresses are allowed — it does NOT open up
+    all loopback ports.
     """
     if _ip_is_blocked(ip):
         return False
-    if not allow_remote:
-        # Only loopback on the Ollama default port is allowed.
-        # Public IPs must be explicitly rejected here: _ip_is_blocked
-        # returns False for public IPs, so without this check they would
-        # pass through and violate the allow_remote=False contract.
-        if not ip.is_loopback:
-            return False
+    if ip.is_loopback:
         if port != OLLAMA_DEFAULT_PORT:
             return False
+    elif not allow_remote:
+        # Non-loopback addresses require allow_remote=True
+        return False
     return True
 
 
@@ -81,17 +86,6 @@ def _strip_credentials(url: str) -> str:
     Turns 'http://user:pass@host/path' into 'http://host/path'.
     """
     parsed = urlparse(url)
-    # Rebuild URL without userinfo
-    safe = urlunparse(
-        (
-            parsed.scheme,
-            parsed.hostname or "",
-            parsed.path,
-            parsed.params,
-            parsed.query,
-            parsed.fragment,
-        )
-    )
     port_str = f":{parsed.port}" if parsed.port else ""
     # Reconstruct with hostname + port but no credentials
     netloc = f"{parsed.hostname or ''}{port_str}"
@@ -174,6 +168,11 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        log.warning(
+            "url_validate: blocked SSRF redirect from %s to %s",
+            _strip_credentials(req.full_url),
+            _strip_credentials(newurl),
+        )
         return None  # Block all redirects
 
 

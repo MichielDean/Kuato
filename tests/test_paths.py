@@ -15,6 +15,9 @@ from llmem.paths import (
     get_proposed_changes_path,
     get_context_dir,
     migrate_from_lobsterdog,
+    _validate_home_path,
+    _validate_write_path,
+    BLOCKED_SYSTEM_PREFIXES,
 )
 
 
@@ -177,3 +180,126 @@ class TestPaths_ContextDir:
         with patch("llmem.paths.get_llmem_home", return_value=Path("/tmp/llmem")):
             result = get_context_dir()
             assert result == Path("/tmp/llmem/context")
+
+
+class TestPaths_ValidateHomePath_SymlinkCheck:
+    """Test that _validate_home_path rejects symlinks."""
+
+    def test_rejects_symlink(self, tmp_path):
+        """_validate_home_path must reject paths that are symlinks."""
+        target = tmp_path / "real_dir"
+        target.mkdir()
+        link = tmp_path / "link_dir"
+        link.symlink_to(target)
+        with pytest.raises(ValueError, match="symlink"):
+            _validate_home_path(link, "test")
+
+    def test_accepts_real_directory(self, tmp_path):
+        """_validate_home_path accepts actual directories (not symlinks)."""
+        real_dir = tmp_path / "real_dir"
+        real_dir.mkdir()
+        result = _validate_home_path(real_dir, "test")
+        assert result == real_dir.resolve()
+
+    def test_accepts_nonexistent_path(self, tmp_path):
+        """_validate_home_path accepts paths that don't exist yet (no symlink check)."""
+        new_path = tmp_path / "new_dir"
+        # Path doesn't exist, so is_symlink() returns False
+        result = _validate_home_path(new_path, "test")
+        assert result == new_path.resolve()
+
+    def test_rejects_traversal(self):
+        """_validate_home_path rejects '..' traversal."""
+        with pytest.raises(ValueError, match="traversal"):
+            _validate_home_path(Path("/home/user/../etc"), "test")
+
+    def test_rejects_system_directory(self):
+        """_validate_home_path rejects paths targeting system directories."""
+        with pytest.raises(ValueError, match="system directory"):
+            _validate_home_path(Path("/etc/something"), "test")
+
+
+class TestPaths_BlockedSystemPrefixesShared:
+    """Test that BLOCKED_SYSTEM_PREFIXES is used consistently (DRY)."""
+
+    def test_blocked_prefixes_is_tuple(self):
+        """BLOCKED_SYSTEM_PREFIXES must be an immutable tuple."""
+        from llmem.paths import BLOCKED_SYSTEM_PREFIXES
+
+        assert isinstance(BLOCKED_SYSTEM_PREFIXES, tuple)
+
+    def test_blocked_prefixes_contains_essential_dirs(self):
+        """BLOCKED_SYSTEM_PREFIXES must include essential system directories."""
+        from llmem.paths import BLOCKED_SYSTEM_PREFIXES
+
+        essential = {"/etc", "/var", "/proc", "/dev", "/root"}
+        assert essential.issubset(set(BLOCKED_SYSTEM_PREFIXES))
+
+    def test_opencode_adapter_uses_shared_constant(self):
+        """OpenCodeAdapter must use BLOCKED_SYSTEM_PREFIXES, not a local copy."""
+        from llmem.adapters.opencode import OpenCodeAdapter
+        from llmem.paths import BLOCKED_SYSTEM_PREFIXES
+
+        # OpenCodeAdapter must not have its own _BLOCKED_PREFIXES
+        assert not hasattr(OpenCodeAdapter, "_BLOCKED_PREFIXES")
+
+    def test_validate_home_path_uses_shared_constant(self):
+        """_validate_home_path must reject all BLOCKED_SYSTEM_PREFIXES."""
+        for prefix in BLOCKED_SYSTEM_PREFIXES:
+            test_path = Path(prefix + "/llmem_test")
+            try:
+                if test_path.is_symlink():
+                    continue
+            except (PermissionError, OSError):
+                # Cannot stat the path — but _validate_home_path should
+                # still reject it via the blocked-prefix check (which
+                # runs on the resolved path, not on is_symlink).
+                pass
+            with pytest.raises(ValueError, match="system directory"):
+                _validate_home_path(test_path, "test")
+
+    def test_validate_write_path_uses_shared_constant(self):
+        """_validate_write_path must reject all BLOCKED_SYSTEM_PREFIXES."""
+        from llmem.paths import _validate_write_path, BLOCKED_SYSTEM_PREFIXES
+
+        for prefix in BLOCKED_SYSTEM_PREFIXES:
+            test_path = Path(prefix + "/llmem_test.html")
+            try:
+                if test_path.is_symlink():
+                    continue
+            except (PermissionError, OSError):
+                pass
+            with pytest.raises(ValueError, match="protected directory"):
+                _validate_write_path(test_path, "test")
+
+
+class TestPaths_ValidateWritePath_SymlinkOSError:
+    """Test that _validate_write_path wraps is_symlink() in try/except OSError."""
+
+    def test_symlink_oserror_yields_value_error(self):
+        """If is_symlink() raises OSError, _validate_write_path must raise
+        a clear ValueError instead of letting OSError propagate."""
+        from llmem.paths import _validate_write_path
+
+        # Use a path that is NOT under any blocked prefix, so the blocked-prefix
+        # check passes and we reach the is_symlink() call.
+        inaccessible = Path("/home/someone_protected/file.html")
+        with patch.object(Path, "is_symlink", side_effect=OSError("Permission denied")):
+            with pytest.raises(ValueError, match="cannot be accessed"):
+                _validate_write_path(inaccessible, "test_write")
+
+    def test_symlink_rejection_works(self, tmp_path):
+        """_validate_write_path must reject paths that are symlinks."""
+        target = tmp_path / "real_file.html"
+        target.write_text("content")
+        link = tmp_path / "link_file.html"
+        link.symlink_to(target)
+        with pytest.raises(ValueError, match="symlink"):
+            _validate_write_path(link, "test_write")
+
+    def test_accepts_regular_file(self, tmp_path):
+        """_validate_write_path accepts regular (non-symlink) files."""
+        regular = tmp_path / "output.html"
+        regular.write_text("content")
+        result = _validate_write_path(regular, "test_write")
+        assert result == regular.resolve()

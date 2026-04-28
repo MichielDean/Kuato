@@ -3,21 +3,28 @@
 Verifies is_safe_url and validate_url logic directly, not via mocks.
 Covers: scheme blocking, private IP blocking, link-local blocking,
 loopback+port logic, allow_remote=True/False behavior, DNS resolution,
+credential rejection, default timeout, safe_urlopen validation,
 and validate_url raising ValueError.
 """
 
 import ipaddress
-from unittest.mock import patch
+import urllib.error
+import urllib.request
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from memory.url_validate import (
+    DEFAULT_URLOPEN_TIMEOUT,
     OLLAMA_DEFAULT_PORT,
+    _check_ip_access,
     _ip_is_blocked,
     _get_effective_port,
+    _strip_credentials,
     is_safe_url,
     validate_url,
     sanitize_url_for_log,
+    safe_urlopen,
     SafeRedirectHandler,
 )
 
@@ -92,6 +99,45 @@ class TestGetEffectivePort:
 
 
 # ---------------------------------------------------------------------------
+# _check_ip_access tests (loopback port restriction)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckIpAccess:
+    """Verify _check_ip_access restricts loopback to Ollama port only."""
+
+    def test_loopback_on_ollama_port_allowed(self):
+        """Loopback on the Ollama default port is always allowed."""
+        ip = ipaddress.ip_address("127.0.0.1")
+        assert (
+            _check_ip_access(ip, allow_remote=False, port=OLLAMA_DEFAULT_PORT) is True
+        )
+        assert _check_ip_access(ip, allow_remote=True, port=OLLAMA_DEFAULT_PORT) is True
+
+    def test_loopback_on_non_ollama_port_blocked_even_with_allow_remote(self):
+        """Loopback on a non-Ollama port is blocked even when allow_remote=True."""
+        ip = ipaddress.ip_address("127.0.0.1")
+        assert _check_ip_access(ip, allow_remote=True, port=8080) is False
+        assert _check_ip_access(ip, allow_remote=False, port=8080) is False
+
+    def test_public_ip_blocked_when_allow_remote_false(self):
+        """Public IPs are blocked when allow_remote=False."""
+        ip = ipaddress.ip_address("1.2.3.4")
+        assert _check_ip_access(ip, allow_remote=False, port=443) is False
+
+    def test_public_ip_allowed_when_allow_remote_true(self):
+        """Public IPs are allowed when allow_remote=True."""
+        ip = ipaddress.ip_address("1.2.3.4")
+        assert _check_ip_access(ip, allow_remote=True, port=443) is True
+
+    def test_private_ip_always_blocked(self):
+        """Private IPs are blocked regardless of allow_remote."""
+        ip = ipaddress.ip_address("10.0.0.1")
+        assert _check_ip_access(ip, allow_remote=False, port=11434) is False
+        assert _check_ip_access(ip, allow_remote=True, port=11434) is False
+
+
+# ---------------------------------------------------------------------------
 # is_safe_url scheme tests
 # ---------------------------------------------------------------------------
 
@@ -145,18 +191,55 @@ class TestIsSafeURL_Hostname:
 
 
 # ---------------------------------------------------------------------------
+# is_safe_url credential rejection
+# ---------------------------------------------------------------------------
+
+
+class TestIsSafeURL_CredentialRejection:
+    """URLs with embedded credentials (user:password@) must be rejected."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://user:pass@127.0.0.1:11434/api",
+            "http://admin@127.0.0.1:11434/api",
+            "http://user:pass@10.0.0.1:11434/api",
+            "https://key:secret@api.openai.com/v1/models",
+        ],
+    )
+    def test_rejects_urls_with_credentials(self, url):
+        """URLs containing user:password@ or user@ must be rejected."""
+        assert is_safe_url(url) is False
+        assert is_safe_url(url, allow_remote=True) is False
+
+    def test_rejects_credential_url_even_on_safe_host(self):
+        """Even a safe loopback URL is rejected if it contains credentials."""
+        assert (
+            is_safe_url(f"http://user:pass@127.0.0.1:{OLLAMA_DEFAULT_PORT}/api")
+            is False
+        )
+
+
+# ---------------------------------------------------------------------------
 # is_safe_url with allow_remote=False (default) — loopback + port
 # ---------------------------------------------------------------------------
 
 
 class TestIsSafeURL_LoopbackPortLogic:
-    """When allow_remote=False, only loopback on the Ollama default port is allowed."""
+    """Loopback addresses are only permitted on the Ollama default port,
+    regardless of allow_remote setting. This prevents SSRF attacks that
+    would access other loopback services (Redis on 6379, etc.).
+    """
 
     def test_loopback_on_default_port_allowed(self):
         assert is_safe_url(f"http://127.0.0.1:{OLLAMA_DEFAULT_PORT}") is True
 
     def test_loopback_on_non_default_port_blocked(self):
         assert is_safe_url("http://127.0.0.1:8080") is False
+
+    def test_loopback_on_non_default_port_blocked_even_with_allow_remote(self):
+        """allow_remote=True does NOT open up arbitrary loopback ports."""
+        assert is_safe_url("http://127.0.0.1:8080", allow_remote=True) is False
 
     def test_localhost_on_default_port_allowed(self):
         """'localhost' resolves to 127.0.0.1 — should be allowed on default port."""
@@ -230,14 +313,16 @@ class TestIsSafeURL_DNSRebinding:
                 is_safe_url("http://evil.example.com:11434", allow_remote=True) is False
             )
 
-    def test_dns_resolving_to_loopback_blocked_when_not_allow_remote_and_non_default_port(
-        self,
-    ):
+    def test_dns_resolving_to_loopback_blocked_on_non_default_port(self):
+        """DNS resolving to loopback on non-Ollama port is blocked even with allow_remote=True."""
         with patch(
             "memory.url_validate._resolve_hostname",
             return_value=["127.0.0.1"],
         ):
             assert is_safe_url("http://evil.example.com:8080") is False
+            assert (
+                is_safe_url("http://evil.example.com:8080", allow_remote=True) is False
+            )
 
     def test_dns_resolving_to_loopback_allowed_when_default_port(self):
         with patch(
@@ -292,7 +377,9 @@ class TestIsSafeURL_DNSRebinding:
 
 
 class TestIsSafeURL_AllowRemote:
-    """allow_remote=True allows any reachable hostname (still blocks blocked IPs)."""
+    """allow_remote=True allows any reachable hostname (still blocks blocked IPs).
+    Loopback is still restricted to the Ollama port only.
+    """
 
     def test_public_ip_allowed_when_allow_remote(self):
         assert is_safe_url("http://1.2.3.4:443", allow_remote=True) is True
@@ -306,6 +393,10 @@ class TestIsSafeURL_AllowRemote:
 
     def test_private_ip_still_blocked_with_allow_remote(self):
         assert is_safe_url("http://10.0.0.1:443", allow_remote=True) is False
+
+    def test_loopback_on_arbitrary_port_blocked_with_allow_remote(self):
+        """allow_remote=True does NOT permit loopback on arbitrary ports."""
+        assert is_safe_url("http://127.0.0.1:6379", allow_remote=True) is False
 
 
 class TestIsSafeURL_PublicIPBlockedByDefault:
@@ -374,6 +465,11 @@ class TestValidateURL:
         with pytest.raises(ValueError, match="URL rejected"):
             validate_url("http://10.0.0.1:443", allow_remote=True)
 
+    def test_validate_url_rejects_credentials(self):
+        """validate_url raises ValueError for URLs with embedded credentials."""
+        with pytest.raises(ValueError, match="URL rejected"):
+            validate_url(f"http://user:pass@127.0.0.1:{OLLAMA_DEFAULT_PORT}/api")
+
 
 # ---------------------------------------------------------------------------
 # sanitize_url_for_log tests
@@ -420,6 +516,128 @@ class TestSanitizeUrlForLog:
 
 
 # ---------------------------------------------------------------------------
+# _strip_credentials tests
+# ---------------------------------------------------------------------------
+
+
+class TestStripCredentials:
+    """Verify _strip_credentials removes userinfo from URLs."""
+
+    def test_strips_user_password(self):
+        result = _strip_credentials("http://user:pass@host/path")
+        assert "user" not in result
+        assert "pass" not in result
+        assert "host/path" in result
+
+    def test_preserves_port(self):
+        result = _strip_credentials("http://user:pass@host:8080/path")
+        assert ":8080" in result
+        assert "pass" not in result
+
+    def test_no_credentials_unchanged(self):
+        url = "http://host:8080/path"
+        assert _strip_credentials(url) == url
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT_URLOPEN_TIMEOUT tests
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultUrlopenTimeout:
+    """Verify that DEFAULT_URLOPEN_TIMEOUT is a positive integer."""
+
+    def test_default_timeout_is_positive(self):
+        assert DEFAULT_URLOPEN_TIMEOUT > 0
+        assert isinstance(DEFAULT_URLOPEN_TIMEOUT, int)
+
+    def test_default_timeout_is_30(self):
+        """The default timeout is 30 seconds."""
+        assert DEFAULT_URLOPEN_TIMEOUT == 30
+
+
+# ---------------------------------------------------------------------------
+# safe_urlopen tests
+# ---------------------------------------------------------------------------
+
+
+class TestSafeUrlopen:
+    """Verify safe_urlopen validates URLs, sets timeout, and blocks redirects."""
+
+    def test_safe_urlopen_return_type_annotation(self):
+        """safe_urlopen return type must be http.client.HTTPResponse, not OpenerDirector.
+
+        The return type annotation must match the actual return type —
+        OpenerDirector.open() returns an HTTPResponse. An incorrect
+        annotation breaks static type checking for all call sites.
+        """
+        import http.client
+        import inspect
+
+        sig = inspect.signature(safe_urlopen)
+        assert sig.return_annotation is http.client.HTTPResponse
+
+    def test_rejects_unsafe_url(self):
+        """safe_urlopen raises ValueError for URLs that fail is_safe_url."""
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen("http://10.0.0.1:11434/api")
+
+    def test_rejects_url_with_credentials(self):
+        """safe_urlopen raises ValueError for URLs with credentials."""
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen(f"http://user:pass@127.0.0.1:{OLLAMA_DEFAULT_PORT}/api")
+
+    def test_validates_url_internally(self):
+        """safe_urlopen calls is_safe_url internally — no need for external validation."""
+        # A URL that would pass is_safe_url but safe_urlopen adds extra
+        # re-resolution protection. Test that a private IP is rejected.
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen("http://10.0.0.1:11434/api", allow_remote=True)
+
+    def test_has_default_timeout(self):
+        """safe_urlopen has a default timeout parameter (not None)."""
+        import inspect
+
+        sig = inspect.signature(safe_urlopen)
+        timeout_param = sig.parameters["timeout"]
+        assert timeout_param.default == DEFAULT_URLOPEN_TIMEOUT
+
+    def test_rejects_file_scheme(self):
+        """safe_urlopen rejects file:// scheme URLs."""
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen("file:///etc/passwd")
+
+    def test_re_dns_rebinding_on_open(self):
+        """safe_urlopen re-resolves DNS before opening and blocks changed IPs.
+
+        If DNS rebinding occurs between is_safe_url check and the actual request,
+        the re-resolve catches it. We simulate this by having _resolve_hostname
+        return a safe IP first (for is_safe_url) then a blocked IP (for re-resolve).
+        """
+        call_count = 0
+
+        def mock_resolve(hostname):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                # First call from is_safe_url: return safe loopback
+                return ["127.0.0.1"]
+            else:
+                # Second call from safe_urlopen re-resolve: return blocked IP
+                return ["10.0.0.1"]
+
+        with patch(
+            "memory.url_validate._resolve_hostname",
+            side_effect=mock_resolve,
+        ):
+            with pytest.raises(ValueError, match="re-resolve"):
+                safe_urlopen(
+                    f"http://localhost:{OLLAMA_DEFAULT_PORT}/api",
+                    allow_remote=True,
+                )
+
+
+# ---------------------------------------------------------------------------
 # SafeRedirectHandler tests
 # ---------------------------------------------------------------------------
 
@@ -432,160 +650,62 @@ class TestSafeRedirectHandler:
     URLs to private/internal IP addresses.
     """
 
-    def test_allows_redirect_to_safe_url(self):
-        """Redirects to safe public URLs should be followed (is_safe_url returns True)."""
-        from http.server import HTTPServer, BaseHTTPRequestHandler
-        from threading import Thread
-        import socket
-        import time
-
-        # Find two available ports
-        sock1 = socket.socket()
-        sock1.bind(("127.0.0.1", 0))
-        port1 = sock1.getsockname()[1]
-        sock1.close()
-
-        sock2 = socket.socket()
-        sock2.bind(("127.0.0.1", 0))
-        port2 = sock2.getsockname()[1]
-        sock2.close()
-
-        class RedirectHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                self.send_response(302)
-                self.send_header("Location", f"http://127.0.0.1:{port2}/target")
-                self.end_headers()
-
-            def log_message(self, format, *args):
-                pass
-
-        class TargetHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b'{"status":"ok"}')
-
-            def log_message(self, format, *args):
-                pass
-
-        server1 = HTTPServer(("127.0.0.1", port1), RedirectHandler)
-        server2 = HTTPServer(("127.0.0.1", port2), TargetHandler)
-
-        thread1 = Thread(target=server1.handle_request, daemon=True)
-        thread2 = Thread(target=server2.handle_request, daemon=True)
-        thread1.start()
-        thread2.start()
-
-        # Ollama provider allows localhost on port 11434, but our test
-        # ports are different. Since allow_remote=True, any safe URL
-        # including localhost on any port should be followed.
-        # However, is_safe_url("http://127.0.0.1:port2") with
-        # allow_remote=False blocks non-11434 ports.
-        # SafeRedirectHandler(allow_remote=True) passes allow_remote=True
-        # to is_safe_url, but loopback IPs are not blocked by _ip_is_blocked,
-        # and allow_remote=True won't check port.
-        # Actually: with allow_remote=True, _ip_is_blocked returns False for
-        # loopback, so the redirect should be allowed.
-        time.sleep(0.1)
-        try:
-            req = urllib.request.Request(f"http://127.0.0.1:{port1}/start")
-            opener = urllib.request.build_opener(SafeRedirectHandler(allow_remote=True))
-            with opener.open(req, timeout=5) as resp:
-                data = resp.read().decode()
-            assert data == '{"status":"ok"}'
-        finally:
-            server1.server_close()
-            server2.server_close()
+    def test_allows_redirect_to_public_url(self):
+        """Redirects to safe public URLs should be followed."""
+        handler = SafeRedirectHandler(allow_remote=True)
+        req = MagicMock()
+        req.full_url = "https://safe.example.com/start"
+        req.get_method.return_value = "GET"
+        # Redirect to a public URL should be allowed
+        result = handler.redirect_request(
+            req,
+            MagicMock(),
+            302,
+            "Found",
+            MagicMock(),
+            "https://api.openai.com/v1/models",
+        )
+        assert result is not None
 
     def test_blocks_redirect_to_private_ip(self):
         """Redirects to private IPs must be blocked even if the initial URL is safe."""
-        from http.server import HTTPServer, BaseHTTPRequestHandler
-        from threading import Thread
-        import socket
+        handler = SafeRedirectHandler(allow_remote=True)
+        req = MagicMock()
+        req.full_url = "https://safe.example.com/start"
+        result = handler.redirect_request(
+            req, MagicMock(), 302, "Found", MagicMock(), "http://10.0.0.1/"
+        )
+        assert result is None
 
-        sock = socket.socket()
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-        sock.close()
-
-        class RedirectToPrivateHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                self.send_response(302)
-                # Redirect to a private IP — this is the SSRF attack
-                self.send_header("Location", "http://10.0.0.1/")
-                self.end_headers()
-
-            def log_message(self, format, *args):
-                pass
-
-        server = HTTPServer(("127.0.0.1", port), RedirectToPrivateHandler)
-        thread = Thread(target=server.handle_request, daemon=True)
-        thread.start()
-
-        import time
-
-        time.sleep(0.1)
-        try:
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/start")
-            opener = urllib.request.build_opener(SafeRedirectHandler(allow_remote=True))
-            # The opener should refuse to follow the redirect to a private IP
-            try:
-                with opener.open(req, timeout=5) as resp:
-                    pytest.fail("Expected redirect to private IP to be blocked")
-            except urllib.error.HTTPError:
-                # This is fine — the redirect was blocked
-                pass
-            except urllib.error.URLError:
-                # Connection refused to 10.0.0.1 or blocked — also fine
-                pass
-        finally:
-            server.server_close()
+    def test_blocks_redirect_to_non_ollama_loopback_port(self):
+        """Redirects to loopback on non-Ollama port are blocked even with allow_remote=True."""
+        handler = SafeRedirectHandler(allow_remote=True)
+        req = MagicMock()
+        req.full_url = f"http://127.0.0.1:{OLLAMA_DEFAULT_PORT}/start"
+        result = handler.redirect_request(
+            req, MagicMock(), 302, "Found", MagicMock(), "http://127.0.0.1:6379/"
+        )
+        assert result is None  # Should be blocked — Redis port
 
     def test_blocks_redirect_to_metadata_endpoint(self):
         """SSRF via redirect to cloud metadata (169.254.169.254) must be blocked."""
-        from http.server import HTTPServer, BaseHTTPRequestHandler
-        from threading import Thread
-        import socket
-
-        sock = socket.socket()
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-        sock.close()
-
-        class RedirectToMetadataHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                self.send_response(302)
-                self.send_header("Location", "http://169.254.169.254/latest/meta-data/")
-                self.end_headers()
-
-            def log_message(self, format, *args):
-                pass
-
-        server = HTTPServer(("127.0.0.1", port), RedirectToMetadataHandler)
-        thread = Thread(target=server.handle_request, daemon=True)
-        thread.start()
-
-        import time
-
-        time.sleep(0.1)
-        try:
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/start")
-            opener = urllib.request.build_opener(SafeRedirectHandler(allow_remote=True))
-            try:
-                with opener.open(req, timeout=5) as resp:
-                    pytest.fail("Expected redirect to 169.254.169.254 to be blocked")
-            except (urllib.error.HTTPError, urllib.error.URLError):
-                pass
-        finally:
-            server.server_close()
+        handler = SafeRedirectHandler(allow_remote=True)
+        req = MagicMock()
+        req.full_url = f"http://127.0.0.1:{OLLAMA_DEFAULT_PORT}/start"
+        result = handler.redirect_request(
+            req,
+            MagicMock(),
+            302,
+            "Found",
+            MagicMock(),
+            "http://169.254.169.254/latest/meta-data/",
+        )
+        assert result is None  # Should be blocked
 
     def test_redirect_handler_returns_none_for_blocked_url(self):
         """redirect_request should return None when is_safe_url returns False
         for the redirect target, preventing the redirect from being followed."""
         handler = SafeRedirectHandler(allow_remote=True)
-        from unittest.mock import MagicMock
-
         req = MagicMock()
         req.full_url = "https://safe.example.com/start"
         # A redirect to a private IP should be blocked
@@ -598,8 +718,6 @@ class TestSafeRedirectHandler:
         """redirect_request should delegate to the parent for safe redirect targets.
         The parent class should handle GET redirects to safe URLs."""
         handler = SafeRedirectHandler(allow_remote=True)
-        from unittest.mock import MagicMock
-
         req = MagicMock()
         req.full_url = "https://safe.example.com/start"
         req.get_method.return_value = "GET"
@@ -618,36 +736,25 @@ class TestSafeRedirectHandler:
     def test_allow_remote_false_blocks_redirect_to_public(self):
         """When allow_remote=False, redirects to public hosts should be blocked."""
         handler = SafeRedirectHandler(allow_remote=False)
-        from unittest.mock import MagicMock
-
         req = MagicMock()
-        req.full_url = "http://127.0.0.1:11434/start"
+        req.full_url = f"http://127.0.0.1:{OLLAMA_DEFAULT_PORT}/start"
         # is_safe_url("https://api.openai.com", allow_remote=False) would
-        # block non-loopback-on-default-port — but allow_remote=False blocks
-        # most things. Let's test with a URL that is_safe_url blocks.
+        # block non-loopback-on-default-port
         result = handler.redirect_request(
             req, MagicMock(), 302, "Found", MagicMock(), "http://192.168.1.1:11434/"
         )
         assert result is None  # Should be blocked
 
 
-import urllib.error
-import urllib.request
-
-
-# ---------------------------------------------------------------------------
-# Percent-encoded hostname SSRF bypass tests
-# ---------------------------------------------------------------------------
-
-
 class TestIsSafeURL_PercentEncodedSSRF:
-    """Percent-encoded IP hostnames must be blocked to prevent SSRF bypass.
+    """Percent-encoded IP hostnames must be decoded and checked to prevent SSRF bypass.
 
     An attacker can encode a private IP address (e.g. 127.0.0.1) as
-    percent-encoded octets (%31%32%37%2e%30%2e%30%2e%31). python-given
-    urlparse preserves the encoding in .hostname, so ip_address() fails,
-    DNS resolution fails, and allow_remote=True returned True — but urllib
-    normalizes the hostname and connects to the decoded private IP.
+    percent-encoded octets (%31%32%37%2e%30%2e%30%2e%31). urlparse
+    preserves the encoding in .hostname, so ip_address() on the
+    raw hostname would fail, DNS resolution would fail, and
+    allow_remote=True would return True — but urllib normalizes the
+    hostname and connects to the decoded private IP.
     """
 
     def test_percent_encoded_loopback_ollama_port_allowed_allow_remote(self):

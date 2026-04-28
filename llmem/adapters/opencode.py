@@ -15,6 +15,7 @@ import sqlite3
 from pathlib import Path
 
 from .base import SessionAdapter
+from ..paths import BLOCKED_SYSTEM_PREFIXES
 
 log = logging.getLogger(__name__)
 
@@ -145,16 +146,51 @@ class OpenCodeAdapter(SessionAdapter):
     Args:
         db_path: Path to the opencode SQLite database file.
             Must point to an existing file — raises FileNotFoundError
-            if the file doesn't exist.
+            if the file doesn't exist. Must not target system directories
+            — raises ValueError if the path resolves to a blocked prefix.
+            Symlink paths are also rejected.
 
     Raises:
         FileNotFoundError: If db_path doesn't point to an existing file.
+        ValueError: If db_path targets a system directory, is a symlink,
+            or contains '..' traversal.
         sqlite3.Error: If the database connection cannot be established.
     """
 
     def __init__(self, db_path: Path) -> None:
+        # Check for path traversal before resolve
+        if ".." in str(db_path):
+            raise ValueError(
+                f"llmem: opencode adapter: db_path contains '..' traversal: {db_path}"
+            )
+
+        resolved = Path(db_path).resolve()
+
+        # Must not target a system directory — checked before symlink
+        # check because is_symlink() requires stat access which may
+        # OSError on inaccessible paths under blocked prefixes (e.g. /root).
+        for prefix in BLOCKED_SYSTEM_PREFIXES:
+            if str(resolved).startswith(prefix):
+                raise ValueError(
+                    f"llmem: opencode adapter: db_path targets a system directory: {resolved}"
+                )
+
+        # Must not be a symlink — OSError on inaccessible paths is treated
+        # as unsafe (matching _validate_home_path's handling in paths.py).
+        try:
+            if Path(db_path).is_symlink():
+                raise ValueError(
+                    f"llmem: opencode adapter: db_path is a symlink (not allowed): {db_path}"
+                )
+        except OSError:
+            raise ValueError(
+                f"llmem: opencode adapter: db_path cannot be accessed (permission denied): {db_path}"
+            )
+
         if not Path(db_path).exists():
-            raise FileNotFoundError(f"opencode: database not found: {db_path}")
+            raise FileNotFoundError(
+                f"llmem: opencode adapter: database not found: {db_path}"
+            )
         self._db_path = Path(db_path)
         self._conn: sqlite3.Connection | None = None
         self._has_role_column: bool | None = None

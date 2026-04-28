@@ -240,16 +240,9 @@ LLMem looks for configuration at `~/.config/llmem/config.yaml`. If this file doe
 
 ```yaml
 memory:
-  db: null                    # Auto-resolved from get_db_path()
-  ollama_url: http://localhost:11434
-  embed_model: nomic-embed-text
-  extract_model: qwen2.5:1.5b
-  prospective_model: qwen2.5:1.5b
   context_budget: 4000
   auto_extract: true
   max_file_size: 10485760     # 10MB
-  session_dirs:
-    - ~/.local/share/opencode/sessions
 
 dream:
   enabled: true
@@ -525,9 +518,9 @@ relations = store.get_relations(mem_id_a)
 related = store.traverse_relations(mem_id_a, relation_type="supersedes", max_depth=3)
 
 # Export / Import
-data = store.export_all()                    # default cap: 50,000 rows
-data = store.export_all(limit=1000)          # custom limit
-count = store.import_memories(data)          # validates id, embedding, confidence
+data = store.export_all()          # default limit: 10,000 memories
+data = store.export_all(limit=None)  # export all memories without limit
+count = store.import_memories(data)
 
 # Type registry
 register_memory_type("custom_type")
@@ -573,12 +566,49 @@ if is_ollama_running("http://localhost:11434"):
 ```python
 from llmem.adapters import OpenCodeAdapter
 
-adapter = OpenCodeAdapter()
+adapter = OpenCodeAdapter(db_path=Path("~/.local/share/opencode/opencode.db"))
 sessions = adapter.list_sessions(limit=10)
 transcript = adapter.get_session_transcript(session_id)
 chunks = adapter.get_session_chunks(session_id)
 exists = adapter.session_exists(session_id)
 adapter.close()
+```
+
+`OpenCodeAdapter.__init__` validates `db_path` for security: it rejects paths containing `..` traversal, paths targeting system directories (`/etc`, `/var`, etc.), and symlink paths. Paths that cannot be accessed (e.g. permission denied) also raise `ValueError`.
+
+### Session Extraction Pipeline
+
+The `session_hooks` module provides `process_opencode_sessions()` — a complete pipeline that discovers OpenCode sessions from the SQLite database, chunks them, and feeds each chunk through the extraction engine:
+
+```python
+from llmem.session_hooks import process_opencode_sessions, OPENCODE_RESULT_SUCCESS
+from llmem.store import MemoryStore
+from llmem.extract import ExtractionEngine
+from llmem.embed import EmbeddingEngine
+
+store = MemoryStore()
+extractor = ExtractionEngine()
+results = process_opencode_sessions(
+    store=store,
+    extractor=extractor,
+    embedder=EmbeddingEngine(),
+    force=False,       # skip already-processed sessions
+    limit=50,          # max sessions to process
+)
+# results = {"opencode_success": 3, "opencode_already_processed": 2, ...}
+```
+
+Result constants: `OPENCODE_RESULT_SUCCESS`, `OPENCODE_RESULT_DB_NOT_FOUND`, `OPENCODE_RESULT_ALREADY_PROCESSED`, `OPENCODE_RESULT_NO_MEMORIES`, `OPENCODE_RESULT_EMPTY_TRANSCRIPT`, `OPENCODE_RESULT_ADAPTER_ERROR`, `OPENCODE_RESULT_EXTRACTION_FAILED`.
+
+The `process_all_session_sources()` function in `llmem/hooks` orchestrates all session sources, currently delegating to `process_opencode_sessions`:
+
+```python
+from llmem.hooks import process_all_session_sources
+from llmem.store import MemoryStore
+
+store = MemoryStore()
+results = process_all_session_sources(store=store, force=False)
+# Returns aggregated result counts from all session sources
 ```
 
 To implement a custom adapter, subclass `SessionAdapter`:
@@ -764,8 +794,11 @@ The `hooks` module provides automatic extraction from session transcripts:
 
 - `process_file()`: Extract memories from a transcript file.
 - `process_session()`: Extract from an OpenCode session ID.
+- `process_all_session_sources()`: Process all session sources (delegates to `session_hooks.process_opencode_sessions`).
 - Self-assessment extraction with structured error taxonomy.
 - Correction detection for identifying mistakes.
+
+The `session_hooks` module provides `process_opencode_sessions()` — the full pipeline that reads OpenCode sessions from the SQLite database, chunks them by message boundaries, and runs extraction and embedding.
 
 The `extract` module uses Ollama (default: `qwen2.5:1.5b`) to extract structured memories from text. The `embed` module generates embeddings using Ollama (default: `nomic-embed-text`).
 
@@ -905,19 +938,23 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 ## Security
 
 - `LMEM_HOME` is validated against path traversal, system directories, and symlink attacks.
-- Write paths are validated against system directories and symbolic links.
+- Write paths are validated against system directories and symbolic links. `is_symlink()` checks are wrapped in `try/except OSError` to handle inaccessible paths gracefully.
+- System directory blocking uses a shared `BLOCKED_SYSTEM_PREFIXES` tuple across `_validate_home_path`, `_validate_write_path`, and `OpenCodeAdapter.__init__` to prevent DRY violations.
 - `validate_session_id()` rejects session IDs containing `/`, `\`, or `..` to prevent path traversal when constructing context file paths.
-- URL validation (`is_safe_url`) blocks private/reserved IPs and SSRF vectors, including percent-encoded IP hostnames (e.g. `%31%32%37%2e%30%2e%30%2e%31` is decoded before IP checks). When `allow_remote=False` (the default), only loopback addresses on the Ollama default port are permitted — all other IPs including public addresses are rejected. `safe_urlopen` enforces URL validation, blocks redirects, mitigates DNS rebinding, and strips credentials from error messages. It accepts both string URLs and `urllib.request.Request` objects, and requires an explicit `allow_remote` parameter (defaults to `False`) for non-loopback addresses.
+- URL validation (`is_safe_url`) blocks private/reserved IPs, rejects URLs with embedded credentials (`user:password@`), and blocks SSRF vectors including percent-encoded IP hostnames (e.g. `%31%32%37%2e%30%2e%30%2e%31` is decoded before IP checks). `safe_urlopen` enforces URL validation, blocks redirects, mitigates DNS rebinding (re-resolves hostname immediately before the request), sets a 30-second default timeout, and strips credentials from error messages. It accepts both string URLs and `urllib.request.Request` objects, and requires an explicit `allow_remote` parameter (defaults to `False`) for non-loopback addresses. Loopback addresses are only permitted on the Ollama default port (11434), regardless of `allow_remote`.
+- OpenCode session extraction validates the database path: rejects path traversal (`..`), system directories, and symlinks. `get_opencode_db_path()` validates via `_validate_home_path` before returning.
 - API keys are masked in `__repr__` on provider instances (`***masked***`).
 - API keys are refused over plain HTTP to non-loopback hosts. `OpenAIProvider` and `AnthropicProvider` raise `ValueError` if `base_url` is `http://` and the hostname is not an exact loopback address (`localhost`, `127.0.0.1`, or `::1`). Substring matches like `localhost.evil.com` are blocked.
 - A warning is logged when API keys are sent to a non-default base URL to alert the user of potential credential exfiltration risk.
 - Validation error messages use generic strings (never embed user-supplied URLs).
 - All SQL queries use parameterized statements (no injection risk).
 - Database files are created with `umask(0o177)` before creation, then `chmod(0o600)` applied to the DB file and its WAL/SHM sidecars (prevents a race window where sensitive memory content is world-readable on multi-user systems). Parent directories use `0o700`.
+- `config.yaml` is written with `0o600` file permissions (owner-only read/write).
 - `import_memories()` validates entry IDs (string, max 256 chars), embeddings (bytes, max 1 MB), and confidence (numeric) before insertion. Invalid entries are skipped with warnings rather than crashing.
-- `export_all()` caps results at 50,000 rows by default to prevent OOM on large databases.
+- `export_all()` defaults to a limit of 10,000 memories to prevent unbounded memory consumption; pass `limit=None` to export all.
 - `_search_by_embedding_brute()` uses a `LIMIT` clause (10,000 rows max) to prevent OOM on large databases.
 - `process_transcript()` enforces the same size limit as `process_file()` to prevent OOM from large session transcripts.
+- OpenCode tool invocations (`_llmem.ts`) prepend `--` before user arguments to prevent argparse flag injection.
 - JavaScript hooks use `execFileSync` (not shell-based `execSync`) and `validateSessionId()` for path traversal protection, with `canSpawnProcess()` rate limiting.
 - Migration from `~/.lobsterdog/` skips symlinks (using `follow_symlinks=False`).
 
@@ -929,9 +966,9 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 | `memory.ollama` | `check_ollama_model()`, `_call_ollama_generate()` |
 | `memory.url_validate` | `is_safe_url()`, `safe_urlopen()`, `sanitize_url_for_log()`, `validate_base_url()` |
 | `memory.config` | Configuration loading, defaults, typed accessors (e.g. `get_provider_config()`) |
-| `llmem.session_hooks` | `SessionHookCoordinator`, `SessionEventManager`, `create_session_hook_coordinator()`, result constants |
-| `llmem.url_validate` | `is_safe_url()`, `safe_urlopen()`, `validate_base_url()`, `_extract_url_string()` (mirrors `memory.url_validate`) |
-| `llmem.paths` | `validate_session_id()`, `get_context_dir()`, `_validate_write_path()` |
+| `llmem.session_hooks` | `SessionHookCoordinator`, `SessionEventManager`, `create_session_hook_coordinator()`, `process_opencode_sessions()`, result constants |
+| `llmem.url_validate` | `is_safe_url()`, `safe_urlopen()`, `validate_base_url()`, `_extract_url_string()` (mirrors `memory.url_validate`), DNS rebinding protection |
+| `llmem.paths` | `validate_session_id()`, `get_context_dir()`, `_validate_write_path()`, `BLOCKED_SYSTEM_PREFIXES`, home/write path checks |
 | `llmem.registry` | `register_session_hook()`, `get_registered_session_hooks()`, `VALID_SESSION_EVENT_TYPES` |
 | `llmem.store` | `MemoryStore` with `export_all(limit=)`, `import_memories()` validation, brute-force/embedding caps |
 
@@ -941,7 +978,7 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 python -m pytest
 ```
 
-660 Python tests and 53 JavaScript tests covering all providers, URL validation, configuration, security, session hooks, and edge cases.
+660 Python tests and 53 JavaScript tests covering all providers, URL validation, configuration, session extraction, security, and edge cases.
 
 ## License
 

@@ -177,8 +177,10 @@ class TestUrlValidate_RedirectBlocking:
     def test_no_redirect_handler_blocks_redirects(self):
         """_NoRedirectHandler.redirect_request returns None, blocking all redirects."""
         handler = _NoRedirectHandler()
+        req = MagicMock()
+        req.full_url = "http://localhost:11434/api/tags"
         result = handler.redirect_request(
-            MagicMock(),  # req
+            req,  # req
             MagicMock(),  # fp
             301,  # code
             "Moved",  # msg
@@ -187,9 +189,41 @@ class TestUrlValidate_RedirectBlocking:
         )
         assert result is None
 
+    def test_no_redirect_handler_logs_redirect(self, caplog):
+        """_NoRedirectHandler.redirect_request logs the blocked redirect (not silent)."""
+        import logging
+
+        handler = _NoRedirectHandler()
+        req = MagicMock()
+        req.full_url = "http://localhost:11434/api/tags"
+        with caplog.at_level(logging.WARNING, logger="llmem.url_validate"):
+            handler.redirect_request(
+                req,
+                MagicMock(),  # fp
+                301,  # code
+                "Moved",  # msg
+                MagicMock(),  # headers
+                "http://evil.internal/",  # newurl
+            )
+        assert len(caplog.records) >= 1
+        assert "blocked SSRF redirect" in caplog.text
+
 
 class TestUrlValidate_SafeUrlopen:
     """Test safe_urlopen URL validation and error handling."""
+
+    def test_safe_urlopen_return_type_annotation(self):
+        """safe_urlopen return type must be http.client.HTTPResponse, not OpenerDirector.
+
+        The return type annotation must match the actual return type —
+        OpenerDirector.open() returns an HTTPResponse. An incorrect
+        annotation breaks static type checking for all call sites.
+        """
+        import http.client
+        import inspect
+
+        sig = inspect.signature(safe_urlopen)
+        assert sig.return_annotation is http.client.HTTPResponse
 
     def test_safe_urlopen_rejects_unsafe_url(self):
         """safe_urlopen raises ValueError for blocked URLs."""

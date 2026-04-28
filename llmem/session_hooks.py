@@ -2,17 +2,19 @@
 
 Provides SessionHookCoordinator that orchestrates memory operations
 when OpenCode session lifecycle events occur (created, idle, compacting),
-and SessionEventManager that dispatches events to registered hooks.
+SessionEventManager that dispatches events to registered hooks, and the
+process_opencode_sessions batch extraction pipeline.
 """
 
 import logging
 import time
+from pathlib import Path
 
 from .store import MemoryStore
 from .retrieve import Retriever
 from .extract import ExtractionEngine
 from .embed import EmbeddingEngine
-from .adapters.opencode import OpenCodeAdapter
+from .adapters.opencode import OpenCodeAdapter, OPENCODE_SESSION_SOURCE_TYPE
 from .hooks import SessionHook
 from .config import load_config
 from .paths import get_context_dir, validate_session_id, _validate_write_path
@@ -29,6 +31,16 @@ SESSION_IDLE_NO_TRANSCRIPT = "no_transcript"
 SESSION_COMPACTING_SUCCESS = "success"
 SESSION_COMPACTING_NO_MEMORIES = "no_memories"
 SESSION_COMPACTING_ERROR = "error"
+
+# Result constants for process_opencode_sessions
+# Following the pattern of PROCESS_RESULT_* in llmem/hooks.py
+OPENCODE_RESULT_SUCCESS = "opencode_success"
+OPENCODE_RESULT_DB_NOT_FOUND = "opencode_db_not_found"
+OPENCODE_RESULT_ALREADY_PROCESSED = "opencode_already_processed"
+OPENCODE_RESULT_NO_MEMORIES = "opencode_no_memories"
+OPENCODE_RESULT_EMPTY_TRANSCRIPT = "opencode_empty_transcript"
+OPENCODE_RESULT_ADAPTER_ERROR = "opencode_adapter_error"
+OPENCODE_RESULT_EXTRACTION_FAILED = "opencode_extraction_failed"
 
 # Idle debounce window in seconds
 _IDLE_DEBOUNCE_SECONDS = 30
@@ -386,3 +398,201 @@ def create_session_hook_coordinator(
         embedder=None,
         adapter=adapter,
     )
+
+
+def _generate_opencode_source_id(session_id: str, chunk_index: int) -> str:
+    """Generate a deterministic source_id for an opencode session chunk.
+
+    Uses the session ID and chunk index directly — no hashing needed
+    since OpenCode session IDs are already unique strings.
+
+    Args:
+        session_id: The opencode session ID (e.g., ses_abc123).
+        chunk_index: Zero-based chunk index within the session.
+
+    Returns:
+        A source_id string in the form "session_id:chunk_index".
+    """
+    return f"{session_id}:{chunk_index}"
+
+
+def process_opencode_sessions(
+    store: MemoryStore,
+    extractor: ExtractionEngine,
+    embedder: EmbeddingEngine | None = None,
+    db_path: Path | None = None,
+    force: bool = False,
+    limit: int = 50,
+) -> dict[str, int]:
+    """Process OpenCode sessions from the SQLite database and extract memories.
+
+    Opens the opencode SQLite database, discovers sessions, chunks them
+    by user-message boundaries, and feeds each chunk through the
+    extraction pipeline.
+
+    This function is stateless — each call opens a fresh adapter,
+    processes sessions, and closes the adapter. No prior initialization
+    is required; all dependencies are passed as parameters.
+
+    Args:
+        store: The MemoryStore to save extracted memories into.
+        extractor: The ExtractionEngine for extracting memories from text.
+        embedder: Optional EmbeddingEngine for generating embeddings.
+        db_path: Path to the opencode SQLite database. If None, uses
+            get_opencode_db_path() from config.
+        force: If True, re-process sessions even if already extracted.
+        limit: Maximum number of sessions to process.
+
+    Returns:
+        A dict mapping result constants to their counts. For example:
+        {"opencode_success": 3, "opencode_already_processed": 2}
+        Returns {"opencode_db_not_found": 1} if the database file
+        doesn't exist (logs warning, never raises).
+    """
+    if db_path is None:
+        from .config import get_opencode_db_path
+
+        db_path = get_opencode_db_path()
+
+    if not db_path.exists():
+        log.warning("llmem: session_hooks: opencode database not found: %s", db_path)
+        return {OPENCODE_RESULT_DB_NOT_FOUND: 1}
+
+    results: dict[str, int] = {}
+    adapter: OpenCodeAdapter | None = None
+
+    try:
+        adapter = OpenCodeAdapter(db_path=db_path)
+        sessions = adapter.list_sessions(limit=limit)
+
+        for session in sessions:
+            session_id = session["id"]
+
+            try:
+                chunks = adapter.get_session_chunks(session_id)
+            except Exception as e:
+                log.warning(
+                    "llmem: session_hooks: adapter error for session %s: %s",
+                    session_id,
+                    e,
+                )
+                _increment_result(results, OPENCODE_RESULT_ADAPTER_ERROR)
+                continue
+
+            if chunks is None:
+                # Session not found or adapter closed
+                log.info(
+                    "llmem: session_hooks: no chunks for session %s (skipped)",
+                    session_id,
+                )
+                _increment_result(results, OPENCODE_RESULT_ADAPTER_ERROR)
+                continue
+
+            if not chunks:
+                # Session exists but has no messages
+                log.info(
+                    "llmem: session_hooks: empty transcript for session %s",
+                    session_id,
+                )
+                # Log extraction attempt so we don't retry endlessly
+                store.log_extraction(
+                    OPENCODE_SESSION_SOURCE_TYPE,
+                    _generate_opencode_source_id(session_id, 0),
+                    raw_text="",
+                    extracted_count=0,
+                )
+                _increment_result(results, OPENCODE_RESULT_EMPTY_TRANSCRIPT)
+                continue
+
+            for chunk_index, chunk_text in enumerate(chunks):
+                source_id = _generate_opencode_source_id(session_id, chunk_index)
+
+                if not force and store.is_extracted(
+                    OPENCODE_SESSION_SOURCE_TYPE, source_id
+                ):
+                    _increment_result(results, OPENCODE_RESULT_ALREADY_PROCESSED)
+                    continue
+
+                if not chunk_text.strip():
+                    log.info(
+                        "llmem: session_hooks: empty chunk %d for session %s",
+                        chunk_index,
+                        session_id,
+                    )
+                    store.log_extraction(
+                        OPENCODE_SESSION_SOURCE_TYPE,
+                        source_id,
+                        raw_text="",
+                        extracted_count=0,
+                    )
+                    _increment_result(results, OPENCODE_RESULT_EMPTY_TRANSCRIPT)
+                    continue
+
+                try:
+                    memories = extractor.extract(chunk_text)
+                except Exception as e:
+                    log.warning(
+                        "llmem: session_hooks: extraction failed for %s chunk %d: %s",
+                        session_id,
+                        chunk_index,
+                        e,
+                    )
+                    _increment_result(results, OPENCODE_RESULT_EXTRACTION_FAILED)
+                    continue
+
+                if not memories:
+                    store.log_extraction(
+                        OPENCODE_SESSION_SOURCE_TYPE,
+                        source_id,
+                        raw_text=chunk_text[:500],
+                        extracted_count=0,
+                    )
+                    _increment_result(results, OPENCODE_RESULT_NO_MEMORIES)
+                    continue
+
+                count = 0
+                for m in memories:
+                    embedding = None
+                    if embedder:
+                        try:
+                            vec = embedder.embed(m["content"])
+                            embedding = embedder.vec_to_bytes(vec)
+                        except Exception:
+                            log.debug(
+                                "llmem: session_hooks: embedding failed for %s chunk %d, storing without embedding",
+                                session_id,
+                                chunk_index,
+                            )
+                    store.add(
+                        type=m["type"],
+                        content=m["content"],
+                        confidence=m.get("confidence", 0.8),
+                        source=OPENCODE_SESSION_SOURCE_TYPE,
+                        embedding=embedding,
+                    )
+                    count += 1
+
+                store.log_extraction(
+                    OPENCODE_SESSION_SOURCE_TYPE,
+                    source_id,
+                    raw_text=chunk_text[:500],
+                    extracted_count=count,
+                )
+                _increment_result(results, OPENCODE_RESULT_SUCCESS)
+
+    except FileNotFoundError:
+        log.warning("llmem: session_hooks: opencode database not found: %s", db_path)
+        return {OPENCODE_RESULT_DB_NOT_FOUND: 1}
+    except Exception as e:
+        log.warning("llmem: session_hooks: unexpected error: %s", e)
+        _increment_result(results, OPENCODE_RESULT_ADAPTER_ERROR)
+    finally:
+        if adapter is not None:
+            adapter.close()
+
+    return results
+
+
+def _increment_result(results: dict[str, int], key: str) -> None:
+    """Increment a result counter in the results dict."""
+    results[key] = results.get(key, 0) + 1

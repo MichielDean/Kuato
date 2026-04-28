@@ -53,6 +53,56 @@ class TestOpenCodeAdapter_Ctor:
         with pytest.raises(FileNotFoundError):
             OpenCodeAdapter(db_path=db_path)
 
+    def test_ctor_rejects_system_directory(self, tmp_path):
+        """db_path targeting /etc should be rejected."""
+        with pytest.raises(ValueError, match="system directory"):
+            OpenCodeAdapter(db_path=Path("/etc/opencode/opencode.db"))
+
+    def test_ctor_rejects_traversal(self, tmp_path):
+        """db_path with '..' should be rejected."""
+        with pytest.raises(ValueError, match="traversal"):
+            OpenCodeAdapter(db_path=Path(tmp_path / ".." / "etc" / "opencode.db"))
+
+    def test_ctor_rejects_symlink(self, tmp_path):
+        """db_path that is a symlink should be rejected."""
+        db_path = tmp_path / "opencode.db"
+        conn = sqlite3.connect(str(db_path))
+        _create_opencode_schema(conn)
+        conn.close()
+
+        link_path = tmp_path / "link_opencode.db"
+        link_path.symlink_to(db_path)
+        with pytest.raises(ValueError, match="symlink"):
+            OpenCodeAdapter(db_path=link_path)
+
+    def test_ctor_checks_blocked_prefix_before_symlink(self):
+        """Blocked-prefix check must happen before symlink check.
+
+        If blocked-prefix were checked after symlink, an OSError on
+        inaccessible paths like /root would occur (is_symlink() fails
+        on PermissionError). The system-directory check catches this
+        first, producing a clear ValueError instead.
+        """
+        with pytest.raises(ValueError, match="system directory"):
+            OpenCodeAdapter(db_path=Path("/root/opencode/opencode.db"))
+
+    def test_ctor_symlink_oserror_yields_value_error(self, tmp_path):
+        """is_symlink() OSError on non-blocked path yields clear ValueError.
+
+        If is_symlink() raises OSError (e.g. permission denied) on a path
+        that is NOT under a blocked prefix, the adapter must raise a
+        descriptive ValueError rather than letting the OSError propagate.
+        """
+        from unittest.mock import patch
+
+        db_path = tmp_path / "inaccessible.db"
+        # Create the file so the blocked-prefix and traversal checks pass,
+        # but mock is_symlink to raise OSError (simulating permission denied).
+        db_path.touch()
+        with patch.object(Path, "is_symlink", side_effect=OSError("Permission denied")):
+            with pytest.raises(ValueError, match="cannot be accessed"):
+                OpenCodeAdapter(db_path=db_path)
+
 
 class TestOpenCodeAdapter_NoPipelineDetection:
     """Test that OpenCodeAdapter does not contain pipeline detection logic."""

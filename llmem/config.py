@@ -7,7 +7,11 @@ from pathlib import Path
 
 import yaml
 
-from .paths import get_llmem_home, get_config_path as _get_config_path
+from .paths import (
+    get_llmem_home,
+    get_config_path as _get_config_path,
+    _validate_home_path,
+)
 from .url_validate import is_safe_url
 
 log = logging.getLogger(__name__)
@@ -40,7 +44,6 @@ DEFAULTS = {
         "context_budget": 4000,
         "auto_extract": True,
         "max_file_size": 10 * 1024 * 1024,
-        "session_dirs": [str(Path("~/.local/share/opencode/sessions").expanduser())],
     },
     "dream": {
         "enabled": True,
@@ -105,7 +108,7 @@ def _resolve_defaults() -> dict:
     )
 
     # Deep copy to avoid shared mutable references with module-level DEFAULTS.
-    # dict(v) only copies one level — list values (e.g. session_dirs) would
+    # dict(v) only copies one level — nested dict/list values would
     # still alias the original. copy.deepcopy handles all nesting levels.
     # This is done once and cached — callers only read, never mutate.
     defaults = copy.deepcopy(DEFAULTS)
@@ -216,19 +219,6 @@ def is_auto_extract(
     return _as_bool(val)
 
 
-def get_session_dirs(
-    config_path: Path | None = None, config: dict | None = None
-) -> list[Path]:
-    config = _resolve_config(config_path, config)
-    defaults = _resolve_defaults()
-    dirs = config.get("memory", {}).get("session_dirs")
-    if dirs is None:
-        return [Path(d) for d in defaults["memory"]["session_dirs"]]
-    if isinstance(dirs, str):
-        dirs = [dirs]
-    return [Path(d).expanduser() for d in dirs]
-
-
 def get_max_file_size(
     config_path: Path | None = None, config: dict | None = None
 ) -> int:
@@ -320,17 +310,27 @@ def get_opencode_db_path(
 ) -> Path:
     """Return the path to the opencode SQLite database.
 
+    Validates that the path does not target system directories or contain
+    path traversal. The path is resolved and checked against blocked prefixes.
+
     Args:
         config_path: Optional path to config.yaml.
         config: Optional pre-loaded config dict.
 
     Returns:
-        Resolved Path to the opencode database file.
+        Resolved and validated Path to the opencode database file.
+
+    Raises:
+        ValueError: If the configured path targets a system directory or
+            contains '..' traversal.
     """
     config = _resolve_config(config_path, config)
     defaults = _resolve_defaults()
     path = config.get("opencode", {}).get("db_path") or defaults["opencode"]["db_path"]
-    return Path(path).expanduser().resolve()
+    candidate = Path(path).expanduser()
+    # Validate the path before resolving — _validate_home_path checks for
+    # '..' traversal, symlinks, and system directory targeting.
+    return _validate_home_path(candidate, "opencode.db_path")
 
 
 def is_correction_detection_enabled(
@@ -388,4 +388,6 @@ def write_config_yaml(path: Path, config: dict, force: bool = False) -> bool:
 
     content = yaml.dump(config, default_flow_style=False, sort_keys=False)
     path.write_text(content)
+    # Set file permissions to owner-only (matching the directory permission model)
+    os.chmod(str(path), 0o600)
     return True

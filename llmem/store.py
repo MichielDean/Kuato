@@ -747,6 +747,9 @@ class MemoryStore:
     ) -> list[tuple[dict, float]]:
         import struct
 
+        # Cap the number of rows loaded to prevent unbounded memory usage
+        # on very large stores. 10000 is generous for brute-force search.
+        _BRUTE_FORCE_ROW_LIMIT = 10000
         conn = self._connect()
         where = 'WHERE "embedding" IS NOT NULL'
         if valid_only:
@@ -1003,23 +1006,26 @@ class MemoryStore:
                     seen.add(r2["id"])
         return pairs
 
-    _EXPORT_MAX_ROWS = 50000
-
-    def export_all(self, limit: int = 0) -> list[dict]:
-        """Export all memories as a list of dicts.
+    def export_all(self, limit: int | None = 10000) -> list[dict]:
+        """Export all memories, optionally capped by a limit.
 
         Args:
-            limit: Maximum number of memories to export. If 0 (default),
-                uses _EXPORT_MAX_ROWS to prevent OOM on large databases.
+            limit: Maximum number of memories to export. Defaults to 10000
+                to prevent unbounded memory consumption on very large stores.
+                Pass None to export all memories without a limit.
 
         Returns:
-            List of memory dicts ordered by created_at.
+            A list of memory dicts ordered by created_at.
         """
-        cap = limit if limit > 0 else self._EXPORT_MAX_ROWS
         conn = self._connect()
-        rows = conn.execute(
-            'SELECT * FROM "memories" ORDER BY "created_at" LIMIT ?', (cap,)
-        ).fetchall()
+        if limit is None:
+            rows = conn.execute(
+                'SELECT * FROM "memories" ORDER BY "created_at"'
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                'SELECT * FROM "memories" ORDER BY "created_at" LIMIT ?', (limit,)
+            ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
     # Maximum embedding byte length accepted by import_memories.
