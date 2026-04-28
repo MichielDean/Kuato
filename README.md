@@ -141,7 +141,6 @@ dream:
   report_path: ~/.agent/diagrams/dream-report.html
   behavioral_threshold: 3
   behavioral_lookback_days: 30
-  skill_patch_threshold: 3
   proposed_changes_path: null # Auto-resolved from get_proposed_changes_path()
   calibration_enabled: true
   stale_procedure_days: 30
@@ -177,6 +176,8 @@ Commands:
   register-type   Register a new memory type
   types           List registered memory types
 ```
+
+Plugins registered via [`register_cli_plugin`](#cli-plugin-registry) add additional subcommands at runtime.
 
 ### `llmem add`
 
@@ -266,6 +267,9 @@ from llmem import (
     load_config,
     SessionAdapter,
     OpenCodeAdapter,
+    register_session_adapter,
+    register_dream_hook,
+    register_cli_plugin,
 )
 
 # Open a store
@@ -355,6 +359,73 @@ class MyAdapter(SessionAdapter):
         ...
 ```
 
+## Extension Points
+
+LLMem provides a registry system that allows harnesses and external tools to plug in domain-specific behavior without modifying core code. All registry functions validate their inputs and raise `ValueError` or `TypeError` on invalid arguments.
+
+### Session Adapter Registry
+
+Register a custom session adapter so that other parts of the system can discover it by name:
+
+```python
+from llmem import register_session_adapter
+from llmem.adapters.base import SessionAdapter
+
+class MyAdapter(SessionAdapter):
+    # ... implement abstract methods ...
+    pass
+
+register_session_adapter("my_adapter", MyAdapter)
+```
+
+List or look up registered adapters:
+
+```python
+from llmem.registry import get_registered_adapters, get_adapter_class
+
+names = get_registered_adapters()        # frozenset of adapter names
+cls = get_adapter_class("my_adapter")     # the adapter class, or None
+```
+
+### Dream Hook Registry
+
+Register a function to run after a dream phase completes. Hooks are called with `(Dreamer instance, DreamResult, apply: bool)` and errors are logged without crashing the dream cycle.
+
+```python
+from llmem import register_dream_hook
+
+def my_light_hook(dreamer, result, apply):
+    # Post-light-phase logic here
+    pass
+
+register_dream_hook("light", my_light_hook)
+```
+
+Valid phases: `"light"`, `"deep"`, `"rem"`. Only one hook per phase is allowed; registering a duplicate raises `ValueError`.
+
+### CLI Plugin Registry
+
+Register a setup function that adds subcommands to the `llmem` CLI. The setup function receives an `argparse._SubParserGroup` and can add its own subparsers. Errors in plugin setup are logged but do not crash the CLI.
+
+```python
+from llmem import register_cli_plugin
+
+def my_plugin_setup(subparsers):
+    p = subparsers.add_parser("my-cmd", help="My custom command")
+    p.add_argument("--flag", help="A flag")
+    p.set_defaults(func=my_cmd_handler)
+
+register_cli_plugin("my_plugin", my_plugin_setup)
+```
+
+After registration, `llmem my-cmd --flag value` becomes available. List registered plugins:
+
+```python
+from llmem.registry import get_registered_cli_plugins
+
+names = get_registered_cli_plugins()  # frozenset of plugin names
+```
+
 ## Database
 
 LLMem uses SQLite with WAL mode and numbered SQL migrations (stored in the `llmem_migrations` package). Migrations are tracked in a `_schema_migrations` table and run automatically when the database is opened.
@@ -374,6 +445,8 @@ The dream cycle performs automated memory maintenance during idle periods:
 - **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection).
 
 Configuration is under the `dream:` key in `config.yaml`. Set `dream.enabled: false` to disable.
+
+Extension hooks can be registered to run custom logic after each dream phase. See [Extension Points — Dream Hook Registry](#dream-hook-registry) for details.
 
 ## Extraction and Hooks
 
