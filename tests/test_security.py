@@ -364,6 +364,93 @@ class TestUrlValidate_SafeUrlopenAllowRemote:
 
 
 # ============================================================================
+# t9yif: DNS rebinding re-resolve ValueError must not be swallowed
+# ============================================================================
+
+
+class TestUrlValidate_DnsRebindResolve:
+    """Test that the re-resolve DNS rebinding check in safe_urlopen is effective.
+
+    The old code had 'except ValueError: pass' that caught the ValueError
+    raised by the blocked-address check alongside ipaddress parsing errors.
+    This made the DNS rebinding protection completely ineffective — an
+    attacker controlling DNS could validate with a safe IP, rebind to a
+    private IP, and the re-resolve ValueError would be silently swallowed.
+    """
+
+    def test_re_resolve_blocks_private_ip_after_safe_initial_resolve(self):
+        """DNS rebinding: is_safe_url passes (sees safe IP), but re-resolve
+        returns a private IP. The re-resolve ValueError must propagate."""
+        from unittest.mock import patch, MagicMock
+
+        mock_resp = MagicMock()
+
+        with (
+            patch("llmem.url_validate.is_safe_url", return_value=True),
+            patch(
+                "llmem.url_validate._resolve_hostname",
+                return_value=["192.168.1.1"],
+            ),
+        ):
+            with pytest.raises(ValueError, match="rejected after re-resolve"):
+                safe_urlopen("http://example.com:11434/api/tags", allow_remote=True)
+
+    def test_re_resolve_raises_for_blocked_address(self):
+        """Re-resolve that finds a blocked IP raises ValueError (not swallowed)."""
+        from unittest.mock import patch
+
+        with (
+            patch("llmem.url_validate.is_safe_url", return_value=True),
+            patch(
+                "llmem.url_validate._resolve_hostname",
+                return_value=["10.0.0.1"],
+            ),
+        ):
+            with pytest.raises(ValueError, match="blocked address"):
+                safe_urlopen("http://example.com:11434/api/tags", allow_remote=True)
+
+    def test_re_resolve_raises_for_unparseable_address(self):
+        """Re-resolve that finds an unparseable address raises ValueError."""
+        from unittest.mock import patch
+
+        with (
+            patch("llmem.url_validate.is_safe_url", return_value=True),
+            patch(
+                "llmem.url_validate._resolve_hostname",
+                return_value=["not-an-ip"],
+            ),
+        ):
+            with pytest.raises(ValueError, match="unparseable address"):
+                safe_urlopen("http://example.com:11434/api/tags", allow_remote=True)
+
+    def test_re_resolve_allows_safe_ip(self):
+        """Re-resolve that finds a safe IP does not raise."""
+        from unittest.mock import patch, MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch("llmem.url_validate.is_safe_url", return_value=True),
+            patch(
+                "llmem.url_validate._resolve_hostname",
+                return_value=["93.184.216.34"],
+            ),
+            patch("llmem.url_validate.urllib.request.build_opener") as mock_build,
+        ):
+            mock_opener = MagicMock()
+            mock_opener.open.return_value = mock_resp
+            mock_build.return_value = mock_opener
+
+            # Safe remote IP should not raise
+            result = safe_urlopen(
+                "http://example.com:11434/api/tags", allow_remote=True
+            )
+            assert result is not None
+
+
+# ============================================================================
 # c9nf0: LMEM_HOME validation
 # ============================================================================
 

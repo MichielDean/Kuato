@@ -202,6 +202,9 @@ def safe_urlopen(
 
     # Re-resolve the hostname immediately before the request to mitigate
     # DNS rebinding TOCTOU: an attacker might change DNS after validation.
+    # Structured to match is_safe_url()'s pattern: ValueError from
+    # ipaddress.ip_address() is caught separately so it does not swallow
+    # the deliberate ValueError raised for blocked re-resolved addresses.
     parsed = urlparse(url_str)
     hostname = parsed.hostname
     if hostname:
@@ -211,14 +214,19 @@ def safe_urlopen(
             for addr in resolved:
                 try:
                     ip = ipaddress.ip_address(addr)
-                    if not _check_ip_access(ip, allow_remote, port):
-                        raise ValueError(
-                            f"llmem: url_validate: URL rejected after re-resolve: "
-                            f"hostname {hostname!r} resolved to blocked address {addr} "
-                            f"— got {_strip_credentials(url_str)!r}"
-                        )
                 except ValueError:
-                    pass
+                    # Unparseable address — treat as blocked.
+                    raise ValueError(
+                        f"llmem: url_validate: URL rejected after re-resolve: "
+                        f"hostname {hostname!r} resolved to unparseable address "
+                        f"{addr!r} — got {_strip_credentials(url_str)!r}"
+                    )
+                if not _check_ip_access(ip, allow_remote, port):
+                    raise ValueError(
+                        f"llmem: url_validate: URL rejected after re-resolve: "
+                        f"hostname {hostname!r} resolved to blocked address {addr} "
+                        f"— got {_strip_credentials(url_str)!r}"
+                    )
 
     no_redirect_opener = urllib.request.build_opener(_NoRedirectHandler)
 
