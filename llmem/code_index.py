@@ -302,23 +302,32 @@ class CodeIndex:
 
         chunk_id = f"{file_path}:{start_line}:{end_line}"
         conn = self._connect()
-        conn.execute(
-            """INSERT INTO "code_chunks"
-               ("id", "file_path", "start_line", "end_line", "content",
-                "embedding", "language", "chunk_type")
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                chunk_id,
-                file_path,
-                start_line,
-                end_line,
-                content,
-                embedding,
-                language,
-                chunk_type,
-            ),
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                """INSERT INTO "code_chunks"
+                   ("id", "file_path", "start_line", "end_line", "content",
+                    "embedding", "language", "chunk_type")
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    chunk_id,
+                    file_path,
+                    start_line,
+                    end_line,
+                    content,
+                    embedding,
+                    language,
+                    chunk_type,
+                ),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as e:
+            if str(e).startswith("UNIQUE constraint failed"):
+                log.debug(
+                    "llmem: code_index: add_chunk: skipping duplicate chunk %s",
+                    chunk_id,
+                )
+            else:
+                raise
         return chunk_id
 
     def add_chunks(self, chunks: list[CodeChunk]) -> list[str]:

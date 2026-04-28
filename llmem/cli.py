@@ -407,6 +407,10 @@ def cmd_learn(args):
             if not chunks:
                 continue
 
+            # Remove stale chunks for this file before re-inserting,
+            # making cmd_learn idempotent for re-indexing.
+            code_index.remove_by_path(rel_path)
+
             # Add chunks to the index (without embeddings first)
             chunk_ids = code_index.add_chunks(chunks)
 

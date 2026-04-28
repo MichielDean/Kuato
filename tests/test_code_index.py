@@ -602,3 +602,111 @@ class TestCodeIndex_LikeEscapesWildcards:
         # Special FTS chars are stripped, words joined with OR
         assert "&" not in result
         assert "|" not in result
+
+
+class TestCodeIndex_DuplicateChunkHandling:
+    """Issue ll-67q3p-a113f: Running 'llmem learn' twice must not crash.
+
+    add_chunk() uses INSERT on a TEXT PRIMARY KEY (chunk_id). Re-indexing
+    the same file with the same chunk boundaries produces duplicate IDs,
+    causing uncaught sqlite3.IntegrityError. The fix must handle duplicates
+    gracefully so that cmd_learn is idempotent.
+    """
+
+    def test_add_chunk_duplicate_id_skips_gracefully(self, tmp_path):
+        """add_chunk skips duplicate chunks instead of crashing.
+
+        When a chunk with the same ID already exists, add_chunk should
+        skip it (like import_memories) rather than raising IntegrityError.
+        """
+        db = tmp_path / "test.db"
+        idx = CodeIndex(db_path=db, disable_vec=True)
+        chunk_id = idx.add_chunk(
+            file_path="app.py",
+            start_line=1,
+            end_line=10,
+            content="def hello(): pass",
+            language="python",
+        )
+        assert chunk_id == "app.py:1:10"
+
+        # Adding the same chunk again should not crash
+        chunk_id2 = idx.add_chunk(
+            file_path="app.py",
+            start_line=1,
+            end_line=10,
+            content="def hello(): pass",
+            language="python",
+        )
+        assert chunk_id2 == "app.py:1:10"
+        idx.close()
+
+    def test_add_chunks_batch_with_duplicates_succeeds(self, tmp_path):
+        """add_chunks handles duplicate IDs gracefully in batch."""
+        db = tmp_path / "test.db"
+        idx = CodeIndex(db_path=db, disable_vec=True)
+
+        chunks = [
+            CodeChunk(
+                id="app.py:1:5",
+                file_path="app.py",
+                start_line=1,
+                end_line=5,
+                content="def hello(): pass",
+                language="python",
+                chunk_type="paragraph",
+            ),
+        ]
+        # Insert once
+        idx.add_chunks(chunks)
+        # Insert same chunks again — must not crash
+        idx.add_chunks(chunks)
+        idx.close()
+
+    def test_cmd_learn_twice_on_same_codebase_succeeds(self, tmp_path):
+        """Running cmd_learn twice on the same directory is idempotent.
+
+        The second run should remove stale chunks per file before
+        re-inserting, ensuring a clean re-index without IntegrityError.
+        """
+        from llmem.cli import cmd_learn
+        import argparse
+        import io
+        import sys
+
+        code_dir = tmp_path / "code"
+        code_dir.mkdir()
+        (code_dir / "hello.py").write_text("def hello():\n    print('hello')\n")
+
+        db = tmp_path / "learn_test.db"
+
+        args = argparse.Namespace(
+            path=str(code_dir),
+            db=db,
+            strategy="paragraph",
+            window_size=50,
+            overlap=10,
+            no_embed=True,
+            ollama_url=None,
+        )
+
+        # First learn
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            cmd_learn(args)
+        finally:
+            output1 = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+
+        assert "Ingested" in output1
+
+        # Second learn — must not crash with IntegrityError
+        sys.stdout = io.StringIO()
+        try:
+            cmd_learn(args)
+        finally:
+            output2 = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+
+        assert "Ingested" in output2
