@@ -15,13 +15,31 @@ log = logging.getLogger(__name__)
 # Maximum allowed components in LMEM_HOME path (prevents /../../../etc tricks)
 _MAX_PATH_DEPTH = 10
 
+# System directories that should never be used as llmem data locations.
+# Shared between _validate_home_path, _validate_write_path, and
+# OpenCodeAdapter.__init__ to prevent DRY violations.
+BLOCKED_SYSTEM_PREFIXES = (
+    "/etc",
+    "/var",
+    "/sys",
+    "/proc",
+    "/dev",
+    "/boot",
+    "/root",
+    "/sbin",
+    "/bin",
+    "/usr/sbin",
+    "/usr/bin",
+)
+
 
 def _validate_home_path(path: Path, source: str) -> Path:
     """Validate that a home path is safe to use.
 
-    Checks:
+    Checks (in order):
     - Must not contain '..' traversal components (checked before resolve)
-    - Must not target sensitive system directories
+    - Must not target sensitive system directories (checked before symlink
+      check since is_symlink() requires stat access which may fail)
     - Must not be a symlink itself (prevents symlink escalation)
     - Must not exceed a reasonable path depth
 
@@ -41,25 +59,26 @@ def _validate_home_path(path: Path, source: str) -> Path:
 
     resolved = path.resolve()
 
-    # Block obvious system directories
-    blocked_prefixes = (
-        "/etc",
-        "/var",
-        "/sys",
-        "/proc",
-        "/dev",
-        "/boot",
-        "/root",
-        "/sbin",
-        "/bin",
-        "/usr/sbin",
-        "/usr/bin",
-    )
-    for prefix in blocked_prefixes:
+    # Block obvious system directories — checked before symlink check
+    # because is_symlink() requires stat access which may fail for
+    # inaccessible paths like /root
+    for prefix in BLOCKED_SYSTEM_PREFIXES:
         if str(resolved).startswith(prefix):
             raise ValueError(
                 f"llmem: paths: {source} targets a system directory: {resolved}"
             )
+
+    # Must not be a symlink itself (prevents symlink escalation)
+    # If we can't stat the path (permission denied), treat it as unsafe
+    try:
+        if path.is_symlink():
+            raise ValueError(
+                f"llmem: paths: {source} is a symlink (not allowed): {path}"
+            )
+    except OSError:
+        raise ValueError(
+            f"llmem: paths: {source} cannot be accessed (permission denied): {path}"
+        )
 
     # Must not exceed a reasonable path depth
     parts = resolved.parts
@@ -135,16 +154,22 @@ def _validate_write_path(path: Path, label: str) -> Path:
     resolved = path.resolve()
 
     # Block system directories
-    for prefix in ("/etc", "/var", "/sys", "/proc", "/dev", "/boot", "/root"):
+    for prefix in BLOCKED_SYSTEM_PREFIXES:
         if str(resolved).startswith(prefix):
             raise ValueError(
                 f"llmem: paths: {label} path targets a protected directory: {resolved}"
             )
 
     # Must not be a symlink itself
-    if path.is_symlink():
+    # If we can't stat the path (permission denied), treat it as unsafe
+    try:
+        if path.is_symlink():
+            raise ValueError(
+                f"llmem: paths: {label} path is a symlink (not allowed for write targets): {path}"
+            )
+    except OSError:
         raise ValueError(
-            f"llmem: paths: {label} path is a symlink (not allowed for write targets): {path}"
+            f"llmem: paths: {label} path cannot be accessed (permission denied): {path}"
         )
 
     return resolved

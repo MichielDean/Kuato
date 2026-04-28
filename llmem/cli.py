@@ -197,7 +197,7 @@ def cmd_delete(args):
 
 def cmd_export(args):
     store = MemoryStore(args.db)
-    data = store.export_all()
+    data = store.export_all(limit=None)
     out = json.dumps(data, indent=2, default=str)
     if args.output:
         Path(args.output).write_text(out)

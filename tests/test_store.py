@@ -353,3 +353,61 @@ class TestStore_TouchBatch:
         # Touching the same IDs again still counts as 3 rows affected
         result = store.touch_batch([id1, id2, id3])
         assert result == 3
+
+
+class TestStore_ExportAll_Limit:
+    """Test that export_all respects the limit parameter."""
+
+    def test_export_all_default_limit(self, tmp_path):
+        """export_all has a default limit of 10000 to prevent unbounded memory usage."""
+        from llmem.store import MemoryStore
+
+        store = MemoryStore(db_path=tmp_path / "test.db", disable_vec=True)
+        # Add 5 memories
+        for i in range(5):
+            store.add(type="fact", content=f"Memory {i}", source="test")
+        # Default limit should return all 5
+        result = store.export_all()
+        assert len(result) == 5
+        store.close()
+
+    def test_export_all_respects_limit(self, tmp_path):
+        """export_all respects the explicit limit parameter."""
+        from llmem.store import MemoryStore
+
+        store = MemoryStore(db_path=tmp_path / "test.db", disable_vec=True)
+        # Add 10 memories
+        for i in range(10):
+            store.add(type="fact", content=f"Memory {i}", source="test")
+        # Limit to 3
+        result = store.export_all(limit=3)
+        assert len(result) == 3
+        store.close()
+
+    def test_export_all_limit_none(self, tmp_path):
+        """export_all with limit=None returns all memories without limit."""
+        from llmem.store import MemoryStore
+
+        store = MemoryStore(db_path=tmp_path / "test.db", disable_vec=True)
+        store.add(type="fact", content="Memory", source="test")
+        result = store.export_all(limit=None)
+        assert len(result) == 1
+        store.close()
+
+    def test_export_all_limit_none_returns_all(self, tmp_path):
+        """export_all(limit=None) returns all memories without a cap.
+
+        The default limit of 10000 prevents unbounded memory usage, but
+        passing limit=None explicitly removes the cap for true export-all
+        use cases (e.g. the CLI export command).
+        """
+        from llmem.store import MemoryStore
+
+        store = MemoryStore(db_path=tmp_path / "test.db", disable_vec=True)
+        # Add 5 memories
+        for i in range(5):
+            store.add(type="fact", content=f"Memory {i}", source="test")
+        # limit=None should return all memories without capping
+        result = store.export_all(limit=None)
+        assert len(result) == 5
+        store.close()
