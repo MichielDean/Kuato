@@ -290,3 +290,48 @@ class TestOpenCodeAdapter_GetSessionChunks:
         assert len(chunks) == 1
         assert "Just one message" in chunks[0]
         adapter.close()
+
+
+class TestRegistry_SessionAdapterRegistration:
+    """Tests for session adapter registration via the extension registry."""
+
+    def test_opencode_adapter_not_in_empty_registry(self):
+        """The extension registry starts empty — OpenCodeAdapter is not auto-registered."""
+        from llmem.registry import get_registered_adapters, _reset_registries
+
+        _reset_registries()
+        adapters = get_registered_adapters()
+        # OpenCodeAdapter is imported in adapters/__init__.py but not
+        # registered via register_session_adapter()
+        assert "opencode" not in adapters
+
+    def test_custom_adapter_registered_via_registry(self):
+        """A custom adapter can be registered and looked up."""
+        from llmem.registry import (
+            register_session_adapter,
+            get_adapter_class,
+            get_registered_adapters,
+            _reset_registries,
+        )
+
+        _reset_registries()
+
+        class CustomAdapter(SessionAdapter):
+            def list_sessions(self, limit=50):
+                return []
+
+            def get_session_transcript(self, session_id):
+                return None
+
+            def get_session_chunks(self, session_id):
+                return []
+
+            def session_exists(self, session_id):
+                return False
+
+            def close(self):
+                pass
+
+        register_session_adapter("custom", CustomAdapter)
+        assert "custom" in get_registered_adapters()
+        assert get_adapter_class("custom") is CustomAdapter

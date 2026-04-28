@@ -20,6 +20,7 @@ from .store import MemoryStore
 from .taxonomy import ERROR_TAXONOMY, ERROR_TAXONOMY_KEYS, _parse_self_assessment
 from .url_validate import is_safe_url
 from .paths import get_dream_diary_path, get_proposed_changes_path
+from .registry import get_registered_dream_hooks
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +39,6 @@ DEFAULT_MERGE_MODEL = "qwen2.5:1.5b"
 DEFAULT_OLLAMA_BASE = "http://localhost:11434"
 DEFAULT_BEHAVIORAL_THRESHOLD = 3
 DEFAULT_BEHAVIORAL_LOOKBACK_DAYS = 30
-DEFAULT_SKILL_PATCH_THRESHOLD = 3
 DEFAULT_CALIBRATION_ENABLED = True
 DEFAULT_STALE_PROCEDURE_DAYS = 30
 DEFAULT_CALIBRATION_LOOKBACK_DAYS = 90
@@ -148,7 +148,6 @@ class Dreamer:
         embedder=None,
         behavioral_threshold: int = DEFAULT_BEHAVIORAL_THRESHOLD,
         behavioral_lookback_days: int = DEFAULT_BEHAVIORAL_LOOKBACK_DAYS,
-        skill_patch_threshold: int = DEFAULT_SKILL_PATCH_THRESHOLD,
         proposed_changes_path: Path | None = None,
         calibration_enabled: bool = DEFAULT_CALIBRATION_ENABLED,
         stale_procedure_days: int = DEFAULT_STALE_PROCEDURE_DAYS,
@@ -172,7 +171,6 @@ class Dreamer:
         self._embedder = embedder
         self._behavioral_threshold = behavioral_threshold
         self._behavioral_lookback_days = behavioral_lookback_days
-        self._skill_patch_threshold = skill_patch_threshold
         self._proposed_changes_path = (
             proposed_changes_path or get_proposed_changes_path()
         )
@@ -194,16 +192,35 @@ class Dreamer:
 
         if phase is None or phase == "light":
             result.light = self._light_phase(apply=apply)
+            self._run_hooks("light", result, apply)
+
         if phase is None or phase == "deep":
             result.deep = self._deep_phase(apply=apply)
+            self._run_hooks("deep", result, apply)
+
         if phase is None or phase == "rem":
             result.rem = self._rem_phase(apply=apply)
+            self._run_hooks("rem", result, apply)
 
         # Write diary
         if apply and result.deep:
             self._write_diary(result)
 
         return result
+
+    def _run_hooks(self, phase: str, result: DreamResult, apply: bool) -> None:
+        """Run any registered dream hooks for the given phase.
+
+        Hook errors are logged but never propagated — a faulty hook
+        must not crash the dream cycle.
+        """
+        hooks = get_registered_dream_hooks()
+        hook_fn = hooks.get(phase)
+        if hook_fn is not None:
+            try:
+                hook_fn(self, result, apply)
+            except Exception as exc:
+                log.error("llmem: dream: %s hook failed: %s", phase, exc)
 
     def _light_phase(self, apply: bool = False) -> LightPhaseResult:
         """Find near-duplicate pairs."""

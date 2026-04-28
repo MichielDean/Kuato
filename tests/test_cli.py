@@ -170,3 +170,132 @@ class TestCli_TypeValidation:
         after = get_registered_types()
         assert "dynamic_type_test" not in before
         assert "dynamic_type_test" in after
+
+
+class TestCli_PluginsLoadedViaRegistry:
+    """Test that core CLI has no session-start/track-review/track-test
+    subcommands and that plugins are loaded via registry."""
+
+    def test_core_cli_has_no_session_start_subcommand(self):
+        """Core CLI must not have a 'session-start' subcommand."""
+        from llmem.cli import main
+        from llmem.registry import _reset_registries
+
+        _reset_registries()
+        import io
+
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        try:
+            sys.argv = ["llmem", "session-start"]
+            main()
+        except SystemExit:
+            pass
+        finally:
+            stderr = sys.stderr.getvalue()
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+        # argparse should not recognize session-start
+        assert "invalid choice" in stderr.lower() or "unknown" in stderr.lower()
+
+    def test_core_cli_has_no_track_review_subcommand(self):
+        """Core CLI must not have a 'track-review' subcommand."""
+        from llmem.cli import main
+        from llmem.registry import _reset_registries
+
+        _reset_registries()
+        import io
+
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        try:
+            sys.argv = ["llmem", "track-review"]
+            main()
+        except SystemExit:
+            pass
+        finally:
+            stderr = sys.stderr.getvalue()
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+        assert "invalid choice" in stderr.lower() or "unknown" in stderr.lower()
+
+    def test_core_cli_has_no_track_test_subcommand(self):
+        """Core CLI must not have a 'track-test' subcommand."""
+        from llmem.cli import main
+        from llmem.registry import _reset_registries
+
+        _reset_registries()
+        import io
+
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        try:
+            sys.argv = ["llmem", "track-test"]
+            main()
+        except SystemExit:
+            pass
+        finally:
+            stderr = sys.stderr.getvalue()
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+        assert "invalid choice" in stderr.lower() or "unknown" in stderr.lower()
+
+    def test_cli_plugin_registered_subcommand_appears(self):
+        """A registered CLI plugin can add a subcommand."""
+        from llmem.cli import main
+        from llmem.registry import (
+            register_cli_plugin,
+            get_cli_plugin_setup_fn,
+            _reset_registries,
+        )
+        import io
+
+        _reset_registries()
+
+        def setup_test_plugin(subparsers):
+            subparsers.add_parser("test-plugin-cmd", help="A test plugin command")
+
+        register_cli_plugin("test_plugin", setup_test_plugin)
+
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            sys.argv = ["llmem", "--help"]
+            main()
+        except SystemExit:
+            pass
+        finally:
+            output = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+
+        assert "test-plugin-cmd" in output
+
+    def test_cli_plugin_bad_setup_does_not_crash_main(self):
+        """A faulty plugin setup function does not crash main()."""
+        from llmem.cli import main
+        from llmem.registry import register_cli_plugin, _reset_registries
+        import io
+
+        _reset_registries()
+
+        def bad_setup(subparsers):
+            raise RuntimeError("plugin setup crashed")
+
+        register_cli_plugin("bad_plugin", bad_setup)
+
+        # Should not crash — just log the error and continue
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            sys.argv = ["llmem", "--help"]
+            main()
+        except SystemExit:
+            pass
+        finally:
+            sys.stdout = old_stdout
