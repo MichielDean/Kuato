@@ -30,7 +30,11 @@ const FORBIDDEN_PATTERNS = [
   /\blobsterdog\b/,
   /\bcistern\b/,
   /\bMichiel\b/,
+  /\bnicobailon\b/,
   /\.pi\//,
+  /\bpi\.on\b/,
+  /\bBOOMERANG/i,
+  /\bboomerang\b/i,
 ];
 const NAME_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 

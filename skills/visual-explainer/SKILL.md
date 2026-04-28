@@ -4,7 +4,6 @@ description: Generate beautiful, self-contained HTML pages that visually explain
 license: MIT
 compatibility: Requires a browser to view generated HTML files. Optional surf-cli for AI image generation.
 metadata:
-  author: nicobailon
   version: "0.5.1"
 ---
 
@@ -109,7 +108,7 @@ Vary the choice each time. If the last diagram was dark and technical, make the 
 
 **Mermaid CSS class collision constraint:** Never define `.node` as a page-level CSS class. Mermaid.js uses `.node` internally on SVG `<g>` elements with `transform: translate(x, y)` for positioning. Page-level `.node` styles (hover transforms, box-shadows) leak into diagrams and break layout. Use the namespaced `.ve-card` class for card components instead. The only safe way to style Mermaid's `.node` is scoped under `.mermaid` (e.g., `.mermaid .node rect`).
 
-**AI-generated illustrations (optional).** If [surf-cli](https://github.com/nicobailon/surf-cli) is available, you can generate images via Gemini and embed them in the page for creative, illustrative, explanatory, educational, or decorative purposes. Check availability with `which surf`. If available:
+**AI-generated illustrations (optional).** If surf-cli is available, you can generate images via Gemini and embed them in the page for creative, illustratory, explanatory, educational, or decorative purposes. Check availability with `which surf`. If available:
 
 ```bash
 # Generate to a temp file (use --aspect-ratio for control)

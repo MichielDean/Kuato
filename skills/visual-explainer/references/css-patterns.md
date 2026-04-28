@@ -253,13 +253,13 @@ For implementation plans and architecture docs, **don't display entire source fi
    <div class="file-structure">
      <div class="file-structure__path">src/extension.ts</div>
      <ul class="file-structure__outline">
-       <li><code>BOOMERANG_INSTRUCTIONS</code> — System prompt for autonomous mode</li>
+       <li><code>SYSTEM_PROMPT</code> — System prompt for autonomous mode</li>
        <li><code>clearState()</code> — Reset extension state</li>
        <li><code>updateStatus()</code> — Update UI status indicator</li>
-       <li><code>/boomerang</code> command — Start autonomous task</li>
-       <li><code>/boomerang-cancel</code> command — Cancel active task</li>
-       <li><code>before_agent_start</code> hook — Inject instructions</li>
-       <li><code>agent_end</code> hook — Generate summary</li>
+       <li><code>/run</code> command — Start autonomous task</li>
+       <li><code>/cancel</code> command — Cancel active task</li>
+       <li><code>before_session_start</code> hook — Inject instructions</li>
+       <li><code>session_end</code> hook — Generate summary</li>
      </ul>
    </div>
    ```
@@ -275,9 +275,9 @@ For implementation plans and architecture docs, **don't display entire source fi
 3. **Show key snippets only:**
    ```html
    <p>The core logic intercepts task completion:</p>
-   <pre class="code-block"><code>pi.on("agent_end", async () => {
+   <pre class="code-block"><code>session.on("task_end", async () => {
      const summary = generateSummary(workEntries);
-     boomerangComplete = true;
+     taskComplete = true;
    });</code></pre>
    ```
 

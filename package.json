@@ -9,7 +9,8 @@
   },
   "files": [
     "skills/",
-    "install.js"
+    "install.js",
+    "test.js"
   ],
   "keywords": [
     "opencode",
