@@ -31,8 +31,8 @@ def check_ollama_model(model: str, base_url: str) -> bool:
         return False
     try:
         req = urllib.request.Request(f"{base_url}/api/tags", method="GET")
-        resp = urllib.request.urlopen(req, timeout=5)
-        data = json.loads(resp.read())
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
         models = [m["name"] for m in data.get("models", [])]
         model_base = model.split(":")[0]
         return any(m == model or m.split(":")[0] == model_base for m in models)
