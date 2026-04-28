@@ -7,6 +7,7 @@
  */
 
 var child_process = require('child_process');
+var utils = require('./utils');
 
 var DEBOUNCE_MS = 30000; // 30 seconds
 
@@ -42,6 +43,9 @@ function handle(sessionId, config) {
   if (!sessionId) {
     return;
   }
+
+  // Validate session_id to prevent path traversal attacks
+  utils.validateSessionId(sessionId);
 
   var now = Date.now();
   var lastTime = _lastIdleTime[sessionId] || 0;

@@ -25,6 +25,7 @@ from llmem.session_hooks import (
     SESSION_COMPACTING_ERROR,
 )
 from llmem.url_validate import validate_base_url
+from llmem.paths import validate_session_id
 
 
 @pytest.fixture(autouse=True)
@@ -461,3 +462,77 @@ class TestDeadCodeRemoval:
             assert "_strip_credentials" not in line, (
                 f"extract.py should not import _strip_credentials (unused after DRY extraction): {line}"
             )
+
+
+# -- TestValidateSessionId --
+
+
+class TestValidateSessionId:
+    """Tests for validate_session_id path traversal protection."""
+
+    def test_valid_session_id_passes(self):
+        """Normal session IDs pass validation unchanged."""
+        assert validate_session_id("ses_123") == "ses_123"
+
+    def test_valid_session_id_with_hyphens(self):
+        """Session IDs with hyphens and underscores pass."""
+        assert validate_session_id("ses-abc_def-456") == "ses-abc_def-456"
+
+    def test_rejects_forward_slash(self):
+        """Session IDs containing '/' are rejected."""
+        with pytest.raises(ValueError, match="path traversal"):
+            validate_session_id("ses/../../etc/passwd")
+
+    def test_rejects_backslash(self):
+        """Session IDs containing '\\' are rejected."""
+        with pytest.raises(ValueError, match="path traversal"):
+            validate_session_id("ses\\..\\..\\etc")
+
+    def test_rejects_dot_dot(self):
+        """Session IDs containing '..' are rejected."""
+        with pytest.raises(ValueError, match="path traversal"):
+            validate_session_id("ses../../etc/passwd")
+
+    def test_rejects_empty_string(self):
+        """Empty session IDs are rejected."""
+        with pytest.raises(ValueError, match="must not be empty"):
+            validate_session_id("")
+
+    def test_rejects_dot_dot_in_middle(self):
+        """Session IDs with '..' anywhere are rejected."""
+        with pytest.raises(ValueError, match="path traversal"):
+            validate_session_id("ses_123..hidden")
+
+
+class TestSessionHookPathTraversal:
+    """Tests verifying session hooks reject path-traversal session IDs."""
+
+    def test_created_rejects_slash_in_session_id(self, coordinator):
+        """on_created rejects session IDs containing '/'."""
+        with pytest.raises(ValueError, match="path traversal"):
+            coordinator.on_created("ses/../../etc/passwd")
+
+    def test_created_rejects_dot_dot_in_session_id(self, coordinator):
+        """on_created rejects session IDs containing '..'."""
+        with pytest.raises(ValueError, match="path traversal"):
+            coordinator.on_created("ses..hidden")
+
+    def test_idle_rejects_slash_in_session_id(self, coordinator):
+        """on_idle rejects session IDs containing '/'."""
+        with pytest.raises(ValueError, match="path traversal"):
+            coordinator.on_idle("ses/../../etc/passwd")
+
+    def test_idle_rejects_dot_dot_in_session_id(self, coordinator):
+        """on_idle rejects session IDs containing '..'."""
+        with pytest.raises(ValueError, match="path traversal"):
+            coordinator.on_idle("ses..hidden")
+
+    def test_compacting_rejects_slash_in_session_id(self, coordinator):
+        """on_compacting rejects session IDs containing '/'."""
+        with pytest.raises(ValueError, match="path traversal"):
+            coordinator.on_compacting("ses/../../etc/passwd")
+
+    def test_compacting_rejects_dot_dot_in_session_id(self, coordinator):
+        """on_compacting rejects session IDs containing '..'."""
+        with pytest.raises(ValueError, match="path traversal"):
+            coordinator.on_compacting("ses..hidden")

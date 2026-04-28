@@ -16,7 +16,7 @@ from .embed import EmbeddingEngine
 from .adapters.opencode import OpenCodeAdapter
 from .hooks import SessionHook
 from .config import load_config
-from .paths import get_context_dir
+from .paths import get_context_dir, validate_session_id
 from .registry import get_registered_session_hooks
 
 log = logging.getLogger(__name__)
@@ -142,7 +142,11 @@ class SessionHookCoordinator:
             - ("success", file_path) on success.
             - ("already_processed", None) if session was already processed.
             - ("error", None) if writing the context file fails.
+
+        Raises:
+            ValueError: If session_id contains path traversal characters.
         """
+        validate_session_id(session_id)
         if self._store.is_extracted("session_created", session_id):
             log.debug(
                 "llmem: session_hooks: on_created: session %s already processed",
@@ -202,7 +206,11 @@ class SessionHookCoordinator:
             - ("no_transcript", 0) if the adapter returns no transcript.
             - (result_type, count) from process_transcript on success,
               where result_type is typically "success" or "already_processed".
+
+        Raises:
+            ValueError: If session_id contains path traversal characters.
         """
+        validate_session_id(session_id)
         now = time.monotonic()
         last_time = self._last_idle_time.get(session_id, 0.0)
         if now - last_time < _IDLE_DEBOUNCE_SECONDS:
@@ -262,7 +270,11 @@ class SessionHookCoordinator:
             - ("success", file_path) on success.
             - ("no_memories", None) if no key memories found.
             - ("error", None) if writing the context file fails.
+
+        Raises:
+            ValueError: If session_id contains path traversal characters.
         """
+        validate_session_id(session_id)
         all_key_memories: list[dict] = []
         for mem_type in _COMPACTING_KEY_TYPES:
             results = self._store.search(type=mem_type, valid_only=True, limit=10)

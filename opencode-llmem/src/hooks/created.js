@@ -23,6 +23,9 @@ function handle(sessionId, config) {
     return;
   }
 
+  // Validate session_id to prevent path traversal attacks
+  utils.validateSessionId(sessionId);
+
   try {
     // Use execFileSync to prevent command injection via sessionId
     var result = child_process.execFileSync(

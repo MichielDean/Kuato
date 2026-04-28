@@ -9,6 +9,32 @@ var path = require('path');
 var os = require('os');
 
 /**
+ * Validate that a session ID is safe to use in filesystem paths.
+ *
+ * Rejects session IDs that contain path separators or traversal
+ * sequences, which could allow writing files outside the intended
+ * context directory.
+ *
+ * @param {string} sessionId - The session ID to validate.
+ * @throws {Error} If sessionId is empty, contains '/', '\', or '..'.
+ */
+function validateSessionId(sessionId) {
+  if (!sessionId) {
+    throw new Error('opencode-llmem: session_id must not be empty');
+  }
+  if (sessionId.indexOf('/') !== -1) {
+    throw new Error('opencode-llmem: session_id contains "/" (path traversal risk): ' + sessionId);
+  }
+  if (sessionId.indexOf('\\') !== -1) {
+    throw new Error('opencode-llmem: session_id contains "\\" (path traversal risk): ' + sessionId);
+  }
+  if (sessionId.indexOf('..') !== -1) {
+    throw new Error('opencode-llmem: session_id contains ".." (path traversal risk): ' + sessionId);
+  }
+  return sessionId;
+}
+
+/**
  * Resolve the context directory path from config.
  *
  * @param {object} config - The llmem configuration object.
@@ -24,4 +50,4 @@ function getContextDir(config) {
   );
 }
 
-module.exports = { getContextDir };
+module.exports = { getContextDir, validateSessionId };

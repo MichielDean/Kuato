@@ -150,6 +150,38 @@ def _validate_write_path(path: Path, label: str) -> Path:
     return resolved
 
 
+def validate_session_id(session_id: str) -> str:
+    """Validate that a session ID is safe to use in filesystem paths.
+
+    Rejects session IDs that contain path separators or traversal sequences,
+    which could allow writing files outside the intended context directory.
+
+    Args:
+        session_id: The session ID to validate.
+
+    Returns:
+        The validated session ID string (unchanged if valid).
+
+    Raises:
+        ValueError: If the session ID contains '/', '\\', or '..' sequences.
+    """
+    if not session_id:
+        raise ValueError("llmem: paths: session_id must not be empty")
+    if "/" in session_id:
+        raise ValueError(
+            f"llmem: paths: session_id contains '/' (path traversal risk): {session_id!r}"
+        )
+    if "\\" in session_id:
+        raise ValueError(
+            f"llmem: paths: session_id contains '\\' (path traversal risk): {session_id!r}"
+        )
+    if ".." in session_id:
+        raise ValueError(
+            f"llmem: paths: session_id contains '..' (path traversal risk): {session_id!r}"
+        )
+    return session_id
+
+
 def get_config_path() -> Path:
     """Return the path to config.yaml.
 

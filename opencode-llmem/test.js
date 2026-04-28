@@ -287,6 +287,71 @@ function testNoConfigPathMarkerInIndexJs() {
 
 // ── Main ─────────────────────────────────────────────────────────────────
 
+// ── Session ID Validation Tests ──────────────────────────────────────────
+
+function testValidateSessionIdRejectsSlash() {
+  var utilsPath = path.join(HOOKS_DIR, 'utils.js');
+  if (!fs.existsSync(utilsPath)) {
+    assert(false, 'src/hooks/utils.js: file missing');
+    return;
+  }
+  var mod = require(utilsPath);
+  assert(typeof mod.validateSessionId === 'function',
+    'src/hooks/utils.js exports validateSessionId function');
+
+  var threwSlash = false;
+  try {
+    mod.validateSessionId('ses/../../etc/passwd');
+  } catch (e) {
+    threwSlash = e.message.indexOf('path traversal') !== -1;
+  }
+  assert(threwSlash, 'validateSessionId rejects session IDs containing "/"');
+
+  var threwBackslash = false;
+  try {
+    mod.validateSessionId('ses\\..\\..\\etc');
+  } catch (e) {
+    threwBackslash = e.message.indexOf('path traversal') !== -1;
+  }
+  assert(threwBackslash, 'validateSessionId rejects session IDs containing "\\"');
+
+  var threwDotDot = false;
+  try {
+    mod.validateSessionId('ses..hidden');
+  } catch (e) {
+    threwDotDot = e.message.indexOf('path traversal') !== -1;
+  }
+  assert(threwDotDot, 'validateSessionId rejects session IDs containing ".."');
+
+  var threwEmpty = false;
+  try {
+    mod.validateSessionId('');
+  } catch (e) {
+    threwEmpty = e.message.indexOf('must not be empty') !== -1;
+  }
+  assert(threwEmpty, 'validateSessionId rejects empty session IDs');
+
+  // Valid session IDs should pass
+  var validResult = mod.validateSessionId('ses_abc-123');
+  assert(validResult === 'ses_abc-123', 'validateSessionId allows valid session IDs');
+}
+
+function testHookFilesCallValidateSessionId() {
+  // All hook files must call validateSessionId before using session_id in paths
+  var hookFiles = ['created', 'idle', 'compacting'];
+  for (var i = 0; i < hookFiles.length; i++) {
+    var hookName = hookFiles[i];
+    var hookPath = path.join(HOOKS_DIR, hookName + '.js');
+    if (!fs.existsSync(hookPath)) {
+      assert(false, 'src/hooks/' + hookName + '.js: file missing');
+      continue;
+    }
+    var content = fs.readFileSync(hookPath, 'utf8');
+    assert(content.indexOf('validateSessionId') !== -1,
+      'src/hooks/' + hookName + '.js: calls validateSessionId to prevent path traversal');
+  }
+}
+
 console.log('\n=== opencode-llmem Validation Tests ===\n');
 
 testPackageJsonExists();
@@ -314,6 +379,13 @@ console.log('\n=== opencode-llmem Results ===\n');
 
 testLoadConfigParsesYamlNotPathMarker();
 testNoConfigPathMarkerInIndexJs();
+
+console.log('\n=== opencode-llmem Session ID Validation Tests ===\n');
+
+testValidateSessionIdRejectsSlash();
+testHookFilesCallValidateSessionId();
+
+console.log('\n=== opencode-llmem Results ===\n');
 
 console.log('Passed: ' + passes);
 console.log('Failed: ' + failures);

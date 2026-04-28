@@ -9,6 +9,7 @@ from .paths import (
     get_proposed_changes_path,
     get_context_dir,
     migrate_from_lobsterdog,
+    validate_session_id,
 )
 from .config import load_config
 from .adapters.base import SessionAdapter
@@ -31,6 +32,7 @@ __all__ = [
     "get_proposed_changes_path",
     "get_context_dir",
     "migrate_from_lobsterdog",
+    "validate_session_id",
     "load_config",
     "SessionAdapter",
     "OpenCodeAdapter",
