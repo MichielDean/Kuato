@@ -950,3 +950,145 @@ class TestResolveProvider_OllamaValueErrorFallback:
             embed, gen = resolve_provider(config)
         assert isinstance(embed, NoneProvider)
         assert isinstance(gen, NoneProvider)
+
+
+# ---------------------------------------------------------------------------
+# Issue ll-1ztcx-kpm9t: Missing edge case tests
+# ---------------------------------------------------------------------------
+
+
+class TestEmbedBatch_EmptyList:
+    """embed_batch([]) should return an empty list, not crash or error."""
+
+    def test_ollama_embed_batch_empty_list(self):
+        provider = OllamaProvider()
+        result = provider.embed_batch([])
+        assert result == []
+
+    def test_openai_embed_batch_empty_list(self):
+        provider = OpenAIProvider(api_key="test-key")
+        with patch.object(
+            provider,
+            "_make_request",
+            return_value={"data": []},
+        ) as mock_req:
+            result = provider.embed_batch([])
+        assert result == []
+        # Verify _make_request was still called (OpenAI batch API handles empty input)
+        mock_req.assert_called_once()
+
+    def test_none_embed_batch_empty_list(self):
+        provider = NoneProvider()
+        result = provider.embed_batch([])
+        assert result == []
+
+
+class TestAnthropicProvider_TimeoutPassthrough:
+    """AnthropicProvider.generate() must pass the timeout parameter to urlopen."""
+
+    def test_generate_passes_custom_timeout(self):
+        provider = AnthropicProvider(api_key="test-key")
+        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(
+                {"content": [{"text": "ok"}]}
+            ).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+            provider.generate("test", timeout=120)
+        call_kwargs = mock_urlopen.call_args[1]
+        assert call_kwargs.get("timeout") == 120, (
+            f"Expected timeout=120 passed to urlopen, got kwargs={call_kwargs}"
+        )
+
+    def test_generate_passes_default_timeout(self):
+        provider = AnthropicProvider(api_key="test-key")
+        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(
+                {"content": [{"text": "ok"}]}
+            ).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+            provider.generate("test")
+        call_kwargs = mock_urlopen.call_args[1]
+        assert call_kwargs.get("timeout") == 60, (
+            f"Expected default timeout=60, got kwargs={call_kwargs}"
+        )
+
+    def test_generate_with_custom_constructor_timeout(self):
+        """generate() default timeout param is 60, overriding constructor timeout."""
+        provider = AnthropicProvider(api_key="test-key", timeout=45)
+        with patch("memory.providers.urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(
+                {"content": [{"text": "ok"}]}
+            ).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+            provider.generate("test")
+        call_kwargs = mock_urlopen.call_args[1]
+        assert call_kwargs.get("timeout") == 60, (
+            "generate() default timeout param is 60, not constructor timeout. "
+            f"Got kwargs={call_kwargs}"
+        )
+
+
+class TestOllamaProvider_CheckAvailable_PartialModel:
+    """OllamaProvider.check_available() checks both embed and generate models.
+    If only one is available, it should return False.
+    """
+
+    def test_check_available_false_when_only_embed_available(self):
+        provider = OllamaProvider()
+        with patch("memory.providers.check_ollama_model") as mock_check:
+            # embed model available, generate model NOT available
+            mock_check.side_effect = [True, False]
+            assert provider.check_available() is False
+            assert mock_check.call_count == 2
+
+    def test_check_available_false_when_only_generate_available(self):
+        provider = OllamaProvider()
+        with patch("memory.providers.check_ollama_model") as mock_check:
+            # embed model NOT available, generate model available
+            mock_check.side_effect = [False, True]
+            # check_available ANDs both results, so first False short-circuits
+            # but actually Python `and` short-circuits, so only 1 call
+            assert provider.check_available() is False
+
+    def test_check_available_false_when_neither_available(self):
+        provider = OllamaProvider()
+        with patch("memory.providers.check_ollama_model", return_value=False):
+            assert provider.check_available() is False
+
+
+class TestNoneProvider_IgnoresGenerateParams:
+    """NoneProvider.generate() should ignore all parameters and return ''."""
+
+    def test_generate_ignores_prompt(self):
+        provider = NoneProvider()
+        assert provider.generate("") == ""
+        assert provider.generate("complex prompt") == ""
+
+    def test_generate_ignores_temperature(self):
+        provider = NoneProvider()
+        assert provider.generate("test", temperature=0.0) == ""
+        assert provider.generate("test", temperature=1.0) == ""
+
+    def test_generate_ignores_max_tokens(self):
+        provider = NoneProvider()
+        assert provider.generate("test", max_tokens=1) == ""
+        assert provider.generate("test", max_tokens=10000) == ""
+
+    def test_generate_ignores_timeout(self):
+        provider = NoneProvider()
+        assert provider.generate("test", timeout=1) == ""
+        assert provider.generate("test", timeout=3600) == ""
+
+    def test_embed_ignores_input_text(self):
+        provider = NoneProvider()
+        assert provider.embed("") == [0.0] * 768
+        assert provider.embed("some text") == [0.0] * 768
