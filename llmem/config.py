@@ -197,6 +197,10 @@ def get_ollama_url(config_path: Path | None = None, config: dict | None = None) 
         raise ValueError(
             f"llmem: config: unsafe Ollama URL (must be http/https): {url!r}"
         )
+    if not is_safe_url(url, allow_remote=True):
+        raise ValueError(
+            f"llmem: config: unsafe Ollama URL (rejected by URL validation): {url!r}"
+        )
     return url
 
 
@@ -287,10 +291,38 @@ def get_dream_report_path(
 def get_server_auth_token(
     config_path: Path | None = None, config: dict | None = None
 ) -> str | None:
+    """Return the server auth token from config, or None if not set.
+
+    Validates minimum token strength when a token is present:
+    must be at least 16 characters long. Weak tokens are rejected
+    to prevent trivial bypass.
+
+    Args:
+        config_path: Optional path to config.yaml.
+        config: Optional pre-loaded config dict.
+
+    Returns:
+        The auth token string if set and valid, None otherwise.
+
+    Raises:
+        ValueError: If the token is set but too short (< 16 chars).
+    """
     config = _resolve_config(config_path, config)
     token = config.get("server", {}).get("auth_token")
     if not token:
         return None
+    if not isinstance(token, str):
+        raise ValueError(
+            "llmem: config: server.auth_token must be a string, "
+            f"got {type(token).__name__}"
+        )
+    min_length = 16
+    if len(token) < min_length:
+        raise ValueError(
+            f"llmem: config: server.auth_token is too short "
+            f"({len(token)} chars, minimum {min_length}) — "
+            'generate a strong token with: python3 -c "import secrets; print(secrets.token_urlsafe(32))"'
+        )
     return token
 
 

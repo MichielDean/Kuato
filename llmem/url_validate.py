@@ -254,6 +254,12 @@ def safe_urlopen(
             for addr in resolved:
                 try:
                     ip = ipaddress.ip_address(addr)
+                    if not _check_ip_access(ip, allow_remote, port):
+                        raise ValueError(
+                            f"llmem: url_validate: URL rejected after re-resolve: "
+                            f"hostname {hostname!r} resolved to blocked address {addr} "
+                            f"— got {_strip_credentials(url_str)!r}"
+                        )
                 except ValueError:
                     # Unparseable address — treat as blocked.
                     raise ValueError(
@@ -281,6 +287,31 @@ def safe_urlopen(
         raise urllib.error.URLError(
             f"request to {safe_url!r} failed: {e.reason}"
         ) from e
+
+
+def _is_remote_allowed(url: str) -> bool:
+    """Infer allow_remote from URL — loopback URLs default to False.
+
+    Returns False for loopback IPs and local-looking hostnames
+    (e.g. 'localhost', '127.0.0.1', '::1'). Returns True only for
+    clearly non-loopback addresses. Returns False (fail-closed) for
+    hostnames that cannot be classified without DNS resolution.
+    """
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+    try:
+        ip = ipaddress.ip_address(hostname)
+        return not ip.is_loopback
+    except ValueError:
+        # Hostname is not an IP literal. If it looks like a local hostname,
+        # treat it as local. Otherwise fail-closed: unknown hostnames default
+        # to False to prevent SSRF via DNS resolution discrepancies.
+        local_hostnames = {"localhost", "localhost.localdomain", "localhost6"}
+        if hostname.lower() in local_hostnames:
+            return False
+        return False
 
 
 def validate_url(url: str, allow_remote: bool = False) -> str:

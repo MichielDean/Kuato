@@ -36,7 +36,7 @@ def register_session_adapter(name: str, adapter_class: type[SessionAdapter]) -> 
     """Register a session adapter class under a unique name.
 
     Args:
-        name: Unique adapter name (e.g., 'opencode', 'custom-adapter').
+        name: Unique adapter name (e.g., 'opencode', 'my_adapter').
         adapter_class: A subclass of SessionAdapter.
 
     Raises:
@@ -187,7 +187,7 @@ def register_cli_plugin(
     own subcommands to it.
 
     Args:
-        name: Unique plugin name (e.g., 'my-extension').
+    name: Unique plugin name (e.g., 'my_plugin').
         setup_fn: Callable with signature (argparse._SubParserGroup) -> None.
 
     Raises:

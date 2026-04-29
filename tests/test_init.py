@@ -129,8 +129,6 @@ class TestOllama_ProviderDetector:
             ):
                 result = detector.detect()
         assert result["provider"] == "openai"
-        assert result["openai_key_found"] == "true"
-
     def test_anthropic_api_key_detected(self):
         """When ANTHROPIC_API_KEY is set (and no OPENAI), provider should be 'anthropic'."""
         detector = ProviderDetector()
@@ -141,8 +139,6 @@ class TestOllama_ProviderDetector:
                 os.environ.pop("OPENAI_API_KEY", None)
                 result = detector.detect()
         assert result["provider"] == "anthropic"
-        assert result["anthropic_key_found"] == "true"
-
     def test_ollama_takes_precedence_over_api_keys(self):
         """When Ollama is running, provider should be 'ollama' even if API keys exist."""
         detector = ProviderDetector()
@@ -182,9 +178,6 @@ class TestOllama_ProviderDetector:
                 result = detector.detect()
         assert "provider" in result
         assert "ollama_url" in result
-        assert "openai_key_found" in result
-        assert "anthropic_key_found" in result
-
 
 # ===========================================================================
 # write_config_yaml
@@ -288,9 +281,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "ollama",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=True)
                         cmd_init(args)
 
@@ -311,9 +302,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "none",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=True)
                         cmd_init(args)
 
@@ -338,9 +327,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "ollama",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=True)
                         cmd_init(args)
 
@@ -362,9 +349,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "ollama",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=True)
                         cmd_init(args)
                         # Second call should not fail
@@ -389,9 +374,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "none",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         # Write initial config
                         home.mkdir(parents=True, exist_ok=True)
                         write_config_yaml(config_path, {"old": True})
@@ -422,9 +405,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "none",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=True, force=False)
                         cmd_init(args)
 
@@ -443,9 +424,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "none",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=True)
                         cmd_init(args)
 
@@ -465,9 +444,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "ollama",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=True)
                         cmd_init(args)
 
@@ -487,9 +464,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "none",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=True)
                         cmd_init(args)
 
@@ -513,9 +488,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "openai",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "true",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=True)
                         cmd_init(args)
 
@@ -535,9 +508,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "anthropic",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "true",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=True)
                         cmd_init(args)
 
@@ -557,9 +528,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "ollama",
                             "ollama_url": "http://my-remote:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(
                             non_interactive=True, ollama_url="http://my-remote:11434"
                         )
@@ -581,9 +550,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "none",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=True)
                         cmd_init(args)
 
@@ -602,9 +569,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "ollama",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=True)
                         # No input() should be called — this must not hang
                         cmd_init(args)
@@ -624,9 +589,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "none",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=False)
                         with patch("builtins.input", side_effect=KeyboardInterrupt):
                             with pytest.raises(SystemExit):
@@ -644,9 +607,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "none",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=True)
                         cmd_init(args)
 
@@ -706,9 +667,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "none",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         # User types an unsafe URL (file://) in interactive mode
                         args = _make_args(non_interactive=False)
                         with patch("builtins.input", return_value="file:///etc/passwd"):
@@ -728,9 +687,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "none",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         # User types ftp:// URL in interactive mode
                         args = _make_args(non_interactive=False)
                         with patch(
@@ -753,9 +710,7 @@ class TestInit_CmdInit:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "ollama",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         # User types a valid URL, then accepts default for dream
                         args = _make_args(non_interactive=False)
                         with patch("builtins.input", side_effect=[custom_url, ""]):
@@ -791,9 +746,7 @@ class TestInit_Integration:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "none",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         init_args = _make_args(non_interactive=True)
                         cmd_init(init_args)
 
@@ -834,9 +787,7 @@ class TestInit_Integration:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "ollama",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         args = _make_args(non_interactive=True)
                         cmd_init(args)
 
@@ -879,9 +830,7 @@ class TestInit_Integration:
                         MockDetector.return_value.detect.return_value = {
                             "provider": "none",
                             "ollama_url": "http://localhost:11434",
-                            "openai_key_found": "false",
-                            "anthropic_key_found": "false",
-                        }
+                                                                                }
                         # Patch Path.home() for migrate_from_lobsterdog
                         with patch("llmem.cli.Path") as MockPath:
                             MockPath.home.return_value = tmp_path

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * opencode-kuato postinstall script.
+ * llmem postinstall script.
  * Copies skill directories from the npm package into ~/.agents/skills/
  * so OpenCode can discover them via its standard skill discovery paths.
  *
@@ -32,7 +32,7 @@ function copyDirRecursive(src, dest) {
 function main() {
   // Verify the skills directory exists in the package
   if (!fs.existsSync(SKILLS_DIR)) {
-    console.error('opencode-kuato: skills directory not found at ' + SKILLS_DIR);
+    console.error('llmem: skills directory not found at ' + SKILLS_DIR);
     process.exit(1);
   }
 
@@ -40,7 +40,7 @@ function main() {
   try {
     fs.mkdirSync(TARGET_DIR, { recursive: true });
   } catch (err) {
-    console.error('opencode-kuato: failed to create target directory ' + TARGET_DIR + ': ' + err.message);
+    console.error('llmem: failed to create target directory ' + TARGET_DIR + ': ' + err.message);
     process.exit(1);
   }
 
@@ -48,7 +48,7 @@ function main() {
   try {
     fs.accessSync(TARGET_DIR, fs.constants.W_OK);
   } catch (err) {
-    console.error('opencode-kuato: target directory is not writable: ' + TARGET_DIR);
+    console.error('llmem: target directory is not writable: ' + TARGET_DIR);
     process.exit(1);
   }
 
@@ -62,12 +62,12 @@ function main() {
     try {
       copyDirRecursive(srcPath, destPath);
     } catch (err) {
-      console.error('opencode-kuato: failed to copy skill ' + dir.name + ': ' + err.message);
+      console.error('llmem: failed to copy skill ' + dir.name + ': ' + err.message);
       process.exit(1);
     }
   }
 
-  console.log('opencode-kuato: installed ' + skillDirs.length + ' skills to ' + TARGET_DIR);
+  console.log('llmem: installed ' + skillDirs.length + ' skills to ' + TARGET_DIR);
 }
 
 main();

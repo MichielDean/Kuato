@@ -83,8 +83,6 @@ class ProviderDetector:
             - ``"provider"``: One of ``"ollama"``, ``"openai"``,
               ``"anthropic"``, or ``"none"``.
             - ``"ollama_url"``: The detected or default Ollama URL.
-            - ``"openai_key_found"``: ``"true"`` or ``"false"``.
-            - ``"anthropic_key_found"``: ``"true"`` or ``"false"``.
         """
         ollama_running = is_ollama_running(ollama_url)
         openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -101,8 +99,6 @@ class ProviderDetector:
         return {
             "provider": provider,
             "ollama_url": ollama_url,
-            "openai_key_found": "true" if openai_key else "false",
-            "anthropic_key_found": "true" if anthropic_key else "false",
         }
 
 
