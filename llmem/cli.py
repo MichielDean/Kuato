@@ -836,6 +836,369 @@ def cmd_init(args):
     print(f"  Provider: {detection['provider']}")
 
 
+def cmd_context(args):
+    """Inject relevant memory context for a session.
+
+    Used by session hooks (e.g., Copilot CLI, OpenCode plugins) to inject
+    memories into a new or compacting session. Writes a context file and
+    prints its content to stdout.
+
+    Args:
+        args: An argparse Namespace with attributes:
+            - session_id (str): The session ID to inject context for.
+            - compacting (bool): If True, inject key memories for compaction.
+            - db (Path): Database path.
+
+    Prints the context content to stdout on success.
+    Prints to stderr and exits with 1 on validation or coordinator error.
+    """
+    from .session_hooks import create_session_hook_coordinator, SESSION_CREATED_SUCCESS
+    from .session_hooks import (
+        SESSION_COMPACTING_SUCCESS,
+        SESSION_COMPACTING_NO_MEMORIES,
+        SESSION_COMPACTING_ERROR,
+        SESSION_CREATED_ALREADY_PROCESSED,
+        SESSION_CREATED_ERROR,
+    )
+    from .paths import validate_session_id, get_context_dir
+
+    try:
+        validate_session_id(args.session_id)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        coordinator = create_session_hook_coordinator()
+    except Exception as e:
+        log.error("llmem: cli: context: failed to create coordinator: %s", e)
+        print(f"Error: llmem: context: failed to initialize: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.compacting:
+        result_type, context_file = coordinator.on_compacting(args.session_id)
+        if result_type == SESSION_COMPACTING_SUCCESS and context_file:
+            try:
+                print(Path(context_file).read_text())
+            except OSError as e:
+                log.error("llmem: cli: context: failed to read compact context: %s", e)
+                print(
+                    f"Error: llmem: context: failed to read context file: {e}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        elif result_type == SESSION_COMPACTING_NO_MEMORIES:
+            log.debug(
+                "llmem: cli: context: no key memories for session %s",
+                args.session_id,
+            )
+            # Print nothing — no key memories to inject
+        elif result_type == SESSION_COMPACTING_ERROR:
+            print(
+                f"Error: llmem: context: compacting hook failed for session "
+                f"{args.session_id}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        result_type, context_file = coordinator.on_created(args.session_id)
+        if result_type == SESSION_CREATED_SUCCESS and context_file:
+            try:
+                print(Path(context_file).read_text())
+            except OSError as e:
+                log.error("llmem: cli: context: failed to read context: %s", e)
+                print(
+                    f"Error: llmem: context: failed to read context file: {e}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        elif result_type == SESSION_CREATED_ALREADY_PROCESSED:
+            log.debug(
+                "llmem: cli: context: session %s already processed",
+                args.session_id,
+            )
+            # Re-read existing context file from disk if available
+            context_dir = get_context_dir()
+            existing_file = context_dir / f"{args.session_id}.md"
+            if existing_file.exists():
+                try:
+                    print(existing_file.read_text())
+                except OSError as e:
+                    log.debug(
+                        "llmem: cli: context: failed to read existing context file: %s",
+                        e,
+                    )
+        elif result_type == SESSION_CREATED_ERROR:
+            print(
+                f"Error: llmem: context: created hook failed for session "
+                f"{args.session_id}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+
+def cmd_hook(args):
+    """Handle session lifecycle hook events.
+
+    Delegates to the appropriate session hook handler based on the
+    subcommand (e.g., 'idle' triggers memory extraction and introspection).
+
+    Args:
+        args: An argparse Namespace with attributes:
+            - hook_type (str): The hook type ('idle').
+            - session_id (str): The session ID.
+            - db (Path): Database path.
+
+    Prints extraction summary on stdout for 'idle' hook.
+    Prints to stderr and exits with 1 on validation error.
+    """
+    from .session_hooks import (
+        create_session_hook_coordinator,
+        SESSION_IDLE_DEBOUNCED,
+        SESSION_IDLE_NO_TRANSCRIPT,
+    )
+    from .paths import validate_session_id
+
+    try:
+        validate_session_id(args.session_id)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.hook_type == "idle":
+        try:
+            coordinator = create_session_hook_coordinator()
+        except Exception as e:
+            log.error("llmem: cli: hook: idle: failed to create coordinator: %s", e)
+            print(
+                f"Error: llmem: hook: idle: failed to initialize: {e}", file=sys.stderr
+            )
+            sys.exit(1)
+
+        result_type, count = coordinator.on_idle(args.session_id)
+        if result_type == SESSION_IDLE_DEBOUNCED:
+            log.debug(
+                "llmem: cli: hook: idle: debounced for session %s",
+                args.session_id,
+            )
+        elif result_type == SESSION_IDLE_NO_TRANSCRIPT:
+            log.debug(
+                "llmem: cli: hook: idle: no transcript for session %s",
+                args.session_id,
+            )
+        else:
+            log.info(
+                "llmem: cli: hook: idle: %s (%d memories) for session %s",
+                result_type,
+                count,
+                args.session_id,
+            )
+    else:
+        print(
+            f"Error: unknown hook type '{args.hook_type}'. Supported: idle",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def cmd_track_review(args):
+    """Persist review findings as self_assessment memories.
+
+    Three modes:
+    - Single finding: --category + --what-happened (optionally --severity, --caught-by)
+    - Batch from file: --finding-file (JSON array of finding objects)
+    - Clean review: no flags → creates a REVIEW_PASSED memory
+
+    --category and --finding-file are mutually exclusive.
+    Every invocation MUST produce at least one memory.
+
+    Args:
+        args: An argparse Namespace with attributes:
+            - context (str|None): File/task identifier.
+            - category (str|None): Error taxonomy category for single finding.
+            - what_happened (str|None): Behavioral description for single finding.
+            - severity (str|None): Severity tier (Blocking, Required, etc.).
+            - caught_by (str|None): How the finding was discovered.
+            - finding_file (str|None): Path to JSON file with findings array.
+            - db (Path): Database path.
+    """
+    from .taxonomy import ERROR_TAXONOMY
+
+    store = MemoryStore(args.db)
+
+    if args.category and args.finding_file:
+        print(
+            "Error: --category and --finding-file are mutually exclusive",
+            file=sys.stderr,
+        )
+        store.close()
+        sys.exit(1)
+
+    if args.category:
+        # Single finding mode
+        category = args.category
+        if category not in ERROR_TAXONOMY:
+            print(
+                f"Error: unknown category '{category}'. "
+                f"Valid categories: {', '.join(ERROR_TAXONOMY.keys())}",
+                file=sys.stderr,
+            )
+            store.close()
+            sys.exit(1)
+
+        if not args.what_happened:
+            print("Error: --what-happened is required with --category", file=sys.stderr)
+            store.close()
+            sys.exit(1)
+
+        # Build structured content
+        content_lines = [f"Category: {category}"]
+        if args.context:
+            content_lines.append(f"Context: {args.context}")
+        content_lines.append(f"What_happened: {args.what_happened}")
+        content_lines.append(
+            f"Outcomes: {args.severity} finding"
+            if args.severity
+            else "Outcomes: finding"
+        )
+        if args.caught_by:
+            content_lines.append(f"What_caught_it: {args.caught_by}")
+        else:
+            content_lines.append("What_caught_it: self-review")
+        content_lines.append("Recurring: no")
+        content = "\n".join(content_lines)
+
+        mid = store.add(
+            type="self_assessment",
+            content=content,
+            source="review_tracker",
+            confidence=0.9,
+        )
+        print(f"Added self_assessment memory {mid} [{category}]")
+
+    elif args.finding_file:
+        # Batch mode from file
+        finding_path = Path(args.finding_file)
+        if not finding_path.exists():
+            print(
+                f"Error: llmem: track-review: finding file not found: {finding_path}",
+                file=sys.stderr,
+            )
+            store.close()
+            sys.exit(1)
+
+        try:
+            findings = json.loads(finding_path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            print(
+                f"Error: llmem: track-review: failed to read finding file: {e}",
+                file=sys.stderr,
+            )
+            store.close()
+            sys.exit(1)
+
+        if not isinstance(findings, list):
+            print(
+                "Error: llmem: track-review: finding file must contain a JSON array",
+                file=sys.stderr,
+            )
+            store.close()
+            sys.exit(1)
+
+        if len(findings) == 0:
+            # Empty array — semantically equivalent to a clean review.
+            # Satisfies the docstring contract: every invocation MUST produce at
+            # least one memory.
+            content_lines = ["Category: REVIEW_PASSED"]
+            if args.context:
+                content_lines.append(f"Context: {args.context}")
+            content_lines.append("What_happened: clean review — no findings")
+            content_lines.append("Outcomes: all clear")
+            caught_by = args.caught_by or "self-review"
+            content_lines.append(f"What_caught_it: {caught_by}")
+            content_lines.append("Recurring: no")
+            content = "\n".join(content_lines)
+
+            mid = store.add(
+                type="self_assessment",
+                content=content,
+                source="review_tracker",
+                confidence=0.9,
+            )
+            print(f"Added self_assessment memory {mid} [REVIEW_PASSED]")
+
+        for finding in findings:
+            category = finding.get("category", "MISSING_VERIFICATION")
+            if category not in ERROR_TAXONOMY:
+                log.warning(
+                    "llmem: track-review: unknown category '%s', using MISSING_VERIFICATION",
+                    category,
+                )
+                category = "MISSING_VERIFICATION"
+
+            what_happened = finding.get(
+                "what_happened", finding.get("whatHappened", "review finding")
+            )
+            severity = finding.get("severity", "")
+
+            content_lines = [f"Category: {category}"]
+            if args.context:
+                content_lines.append(f"Context: {args.context}")
+            content_lines.append(f"What_happened: {what_happened}")
+            if severity:
+                content_lines.append(f"Outcomes: {severity} finding")
+            caught_by = args.caught_by or finding.get("caughtBy", "self-review")
+            content_lines.append(f"What_caught_it: {caught_by}")
+            content_lines.append("Recurring: no")
+            content = "\n".join(content_lines)
+
+            mid = store.add(
+                type="self_assessment",
+                content=content,
+                source="review_tracker",
+                confidence=0.9,
+            )
+            print(f"Added self_assessment memory {mid} [{category}]")
+
+    else:
+        # Clean review — create REVIEW_PASSED memory
+        content_lines = ["Category: REVIEW_PASSED"]
+        if args.context:
+            content_lines.append(f"Context: {args.context}")
+        content_lines.append("What_happened: clean review — no findings")
+        content_lines.append("Outcomes: all clear")
+        caught_by = args.caught_by or "self-review"
+        content_lines.append(f"What_caught_it: {caught_by}")
+        content_lines.append("Recurring: no")
+        content = "\n".join(content_lines)
+
+        mid = store.add(
+            type="self_assessment",
+            content=content,
+            source="review_tracker",
+            confidence=0.9,
+        )
+        print(f"Added self_assessment memory {mid} [REVIEW_PASSED]")
+
+    store.close()
+
+
+def cmd_suggest_categories(args):
+    """List error taxonomy categories applicable to a severity tier.
+
+    Args:
+        args: An argparse Namespace with attributes:
+            - tier (str): Severity tier name (Blocking, Required, etc.).
+
+    Prints one category per line for the given tier.
+    """
+    from .taxonomy import REVIEW_SEVERITY_TAXONOMY
+
+    categories = REVIEW_SEVERITY_TAXONOMY.get(args.tier, [])
+    for cat in categories:
+        print(cat)
+
+
 def main():
     """Entry point for the llmem CLI."""
     # Backward-compat: warn when invoked as 'lobmem'
@@ -1078,6 +1441,77 @@ def main():
         help="Ollama base URL (default: http://localhost:11434)",
     )
 
+    # track-review
+    p_track_review = subparsers.add_parser(
+        "track-review",
+        help="Persist review findings as self_assessment memories",
+    )
+    p_track_review.add_argument(
+        "--context",
+        help="File or task identifier (e.g. 'handler.py:42')",
+    )
+    p_track_review.add_argument(
+        "--category",
+        help="Error taxonomy category for a single finding (e.g. NULL_SAFETY)",
+    )
+    p_track_review.add_argument(
+        "--what-happened",
+        help="Behavioral description of the finding",
+    )
+    p_track_review.add_argument(
+        "--severity",
+        help="Severity tier (Blocking, Required, Strong Suggestions, Noted)",
+    )
+    p_track_review.add_argument(
+        "--caught-by",
+        help="How the finding was discovered (e.g. self-review, CI)",
+    )
+    p_track_review.add_argument(
+        "--finding-file",
+        help="Path to a JSON file with an array of finding objects",
+    )
+
+    # suggest-categories
+    p_suggest_categories = subparsers.add_parser(
+        "suggest-categories",
+        help="List error taxonomy categories for a severity tier",
+    )
+    p_suggest_categories.add_argument(
+        "tier",
+        choices=["Blocking", "Required", "Strong Suggestions", "Noted", "Passed"],
+        help="Severity tier to list categories for",
+    )
+
+    # context
+    p_context = subparsers.add_parser(
+        "context",
+        help="Inject relevant memory context for a session",
+    )
+    p_context.add_argument(
+        "session_id",
+        help="Session ID to inject context for",
+    )
+    p_context.add_argument(
+        "--compacting",
+        action="store_true",
+        help="Inject key memories for compaction instead of session start context",
+    )
+
+    # hook
+    p_hook = subparsers.add_parser(
+        "hook",
+        help="Handle session lifecycle hook events",
+    )
+    p_hook.add_argument(
+        "hook_type",
+        choices=["idle"],
+        help="Hook type to dispatch",
+    )
+    p_hook.add_argument(
+        "session_id",
+        help="Session ID for the hook event",
+    )
+
     # Register CLI plugins
     for plugin_name in sorted(get_registered_cli_plugins()):
         from .registry import get_cli_plugin_setup_fn
@@ -1118,6 +1552,10 @@ def main():
         "embed": cmd_embed,
         "consolidate": cmd_consolidate,
         "learn": cmd_learn,
+        "context": cmd_context,
+        "hook": cmd_hook,
+        "track-review": cmd_track_review,
+        "suggest-categories": cmd_suggest_categories,
     }
 
     handler = commands.get(args.command)
