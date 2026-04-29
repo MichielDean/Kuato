@@ -17,7 +17,6 @@ from llmem.dream import (
     RemPhaseResult,
 )
 from llmem.store import MemoryStore
-from llmem.registry import _reset_registries
 
 
 class TestCliDream_DryRun:
