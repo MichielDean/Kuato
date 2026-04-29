@@ -293,28 +293,29 @@ class FixedLineChunking:
         return chunks
 
 
-def parse_gitignore(gitignore_path: Path) -> list[tuple[str, bool]]:
-    """Parse a .gitignore file into a list of pattern/negation tuples.
+def parse_gitignore(gitignore_path: Path) -> list[tuple[str, bool, bool]]:
+    """Parse a .gitignore file into pattern tuples.
 
-    Each tuple is (pattern: str, is_negation: bool).
+    Each tuple is (pattern: str, is_negation: bool, is_anchored: bool).
 
     Handles:
     - Blank lines (ignored)
     - Comments starting with # (ignored)
     - Negation patterns starting with !
     - Trailing whitespace is stripped
+    - Leading / anchors the pattern to the gitignore's directory
     - Leading/trailing backslash-escaped spaces are preserved
 
     Args:
         gitignore_path: Path to the .gitignore file.
 
     Returns:
-        List of (pattern, is_negation) tuples.
+        List of (pattern, is_negation, is_anchored) tuples.
     """
     if not gitignore_path.exists():
         return []
 
-    patterns: list[tuple[str, bool]] = []
+    patterns: list[tuple[str, bool, bool]] = []
     try:
         text = gitignore_path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
@@ -333,14 +334,21 @@ def parse_gitignore(gitignore_path: Path) -> list[tuple[str, bool]]:
         is_negation = line.startswith("!")
         if is_negation:
             line = line[1:]
-        # Strip leading slash if present (anchors to root)
-        # but keep the pattern for matching
-        patterns.append((line, is_negation))
+        # A leading / anchors the pattern to the directory containing the
+        # .gitignore.  Strip it so the pattern is a plain name (e.g. "build")
+        # rather than "/build", but remember that it was anchored so that
+        # _matches_pattern only matches at the root level, not at any depth.
+        is_anchored = line.startswith("/")
+        if is_anchored:
+            line = line[1:]
+        patterns.append((line, is_negation, is_anchored))
 
     return patterns
 
 
-def _matches_pattern(path: str, pattern: str, is_dir: bool = False) -> bool:
+def _matches_pattern(
+    path: str, pattern: str, is_dir: bool = False, anchored: bool = False
+) -> bool:
     """Check if a relative path matches a single gitignore pattern.
 
     Supports:
@@ -348,13 +356,16 @@ def _matches_pattern(path: str, pattern: str, is_dir: bool = False) -> bool:
     - ``?`` matches any single character (except /)
     - ``**`` matches any sequence of characters including /
     - Patterns ending with ``/`` match directories only
-    - Patterns without ``/`` match at any depth
+    - Patterns without ``/`` match at any depth (unless ``anchored=True``)
 
     Args:
         path: Relative path from the repo root (using / as separator).
         pattern: A single gitignore pattern (not a negation).
         is_dir: Whether the path is a directory. When False, patterns
             that end with ``/`` (directory-only patterns) will not match.
+        anchored: Whether the pattern was anchored (started with ``/`` in
+            the .gitignore). Anchored patterns only match at the root
+            level, not at any depth.
 
     Returns:
         True if the path matches the pattern.
@@ -366,8 +377,11 @@ def _matches_pattern(path: str, pattern: str, is_dir: bool = False) -> bool:
             return False
         pattern = pattern[:-1]
 
-    # Determine if pattern is anchored (contains /)
-    anchored = "/" in pattern
+    # Determine if pattern is anchored to the gitignore directory.
+    # A pattern is anchored if it was explicitly anchored with a leading /
+    # (passed via the anchored parameter) or if it contains an internal /
+    # (e.g. "src/build").
+    pattern_anchored = anchored or "/" in pattern
 
     # Build regex from the gitignore pattern
     # Convert glob-style pattern to regex
@@ -400,8 +414,8 @@ def _matches_pattern(path: str, pattern: str, is_dir: bool = False) -> bool:
 
     regex = "".join(regex_parts)
 
-    if anchored:
-        # Pattern contains /, so it's anchored to gitignore location
+    if pattern_anchored:
+        # Pattern is anchored to gitignore location
         full_regex = "^" + regex + "$"
     else:
         # Pattern without / matches at any depth
@@ -418,14 +432,18 @@ def _matches_pattern(path: str, pattern: str, is_dir: bool = False) -> bool:
 
 
 def is_ignored(
-    path: Path, root: Path, patterns: list[tuple[str, bool]], is_dir: bool = False
+    path: Path,
+    root: Path,
+    patterns: list[tuple[str, bool, bool]],
+    is_dir: bool = False,
 ) -> bool:
     """Check if a file path should be ignored based on gitignore patterns.
 
     Args:
         path: Absolute path to the file or directory.
         root: Absolute path to the repository root (where .gitignore lives).
-        patterns: List of (pattern, is_negation) tuples from parse_gitignore.
+        patterns: List of (pattern, is_negation, is_anchored) tuples from
+            parse_gitignore.
         is_dir: Whether the path is a directory. When True, directory-only
             patterns (those ending in ``/``) can match. When False (the
             default for files), directory-only patterns are skipped.
@@ -442,12 +460,14 @@ def is_ignored(
     name = path.name
 
     ignored = False
-    for pattern, is_negation in patterns:
+    for pattern, is_negation, is_anchored in patterns:
         # Check both the full relative path and just the filename
         # for unanchored patterns. Pass is_dir so that directory-only
         # patterns (ending in /) match directories but not files.
-        if _matches_pattern(rel_str, pattern, is_dir=is_dir) or (
-            "/" not in pattern and _matches_pattern(name, pattern, is_dir=is_dir)
+        if _matches_pattern(rel_str, pattern, is_dir=is_dir, anchored=is_anchored) or (
+            "/" not in pattern
+            and not is_anchored
+            and _matches_pattern(name, pattern, is_dir=is_dir, anchored=is_anchored)
         ):
             if is_negation:
                 ignored = False
@@ -467,7 +487,7 @@ _DEFAULT_MAX_DEPTH = 50
 
 def walk_code_files(
     root_path: Path,
-    patterns: list[tuple[str, bool]] | None = None,
+    patterns: list[tuple[str, bool, bool]] | None = None,
     max_file_size: int = _DEFAULT_MAX_FILE_SIZE,
     max_depth: int = _DEFAULT_MAX_DEPTH,
 ) -> list[Path]:
@@ -586,7 +606,7 @@ def walk_code_files(
 
     def _walk(
         directory: Path,
-        parent_patterns: list[tuple[str, bool]],
+        parent_patterns: list[tuple[str, bool, bool]],
         depth: int,
     ) -> None:
         if depth > max_depth:

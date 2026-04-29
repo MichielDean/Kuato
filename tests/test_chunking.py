@@ -347,9 +347,39 @@ class TestChunking_GitignoreParser:
         gitignore.write_text("*.pyc\nbuild/\n!important.txt\n")
         patterns = parse_gitignore(gitignore)
         assert len(patterns) == 3
-        assert patterns[0] == ("*.pyc", False)
-        assert patterns[1] == ("build/", False)
-        assert patterns[2] == ("important.txt", True)
+        assert patterns[0] == ("*.pyc", False, False)
+        assert patterns[1] == ("build/", False, False)
+        assert patterns[2] == ("important.txt", True, False)
+
+    def test_parse_gitignore_leading_slash_strips_and_anchors(self, tmp_path):
+        """Issue ll-67q3p-aqy08: Leading / strips the slash and marks as anchored.
+
+        A .gitignore pattern like '/build' means 'build' anchored to the
+        root directory. The leading / must be stripped and is_anchored must
+        be True so that it only matches at root level, not at any depth.
+        """
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text("/build\n*.log\n/dist/\n")
+        patterns = parse_gitignore(gitignore)
+        assert len(patterns) == 3
+        # '/build' -> pattern='build', is_negation=False, is_anchored=True
+        assert patterns[0] == ("build", False, True)
+        # '*.log' -> no leading slash, so is_anchored=False
+        assert patterns[1] == ("*.log", False, False)
+        # '/dist/' -> pattern='dist/', is_anchored=True, dir-only still handled
+        assert patterns[2] == ("dist/", False, True)
+
+    def test_parse_gitignore_negation_with_leading_slash(self, tmp_path):
+        """Negation patterns with leading slash strip both ! and /.
+
+        '!/important.log' -> pattern='important.log', is_negation=True,
+        is_anchored=True.
+        """
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text("!/important.log\n")
+        patterns = parse_gitignore(gitignore)
+        assert len(patterns) == 1
+        assert patterns[0] == ("important.log", True, True)
 
     def test_parse_gitignore_comments_and_blanks(self, tmp_path):
         """Comments and blank lines are ignored."""
@@ -357,7 +387,7 @@ class TestChunking_GitignoreParser:
         gitignore.write_text("# comment\n\n*.log\n")
         patterns = parse_gitignore(gitignore)
         assert len(patterns) == 1
-        assert patterns[0] == ("*.log", False)
+        assert patterns[0] == ("*.log", False, False)
 
     def test_parse_gitignore_nonexistent(self, tmp_path):
         """Non-existent .gitignore returns empty patterns."""
@@ -366,21 +396,21 @@ class TestChunking_GitignoreParser:
 
     def test_is_ignored_matches_star(self, tmp_path):
         """*.pyc pattern matches .pyc files."""
-        patterns = [("*.pyc", False)]
+        patterns = [("*.pyc", False, False)]
         test_file = tmp_path / "test.pyc"
         test_file.touch()
         assert is_ignored(test_file, tmp_path, patterns)
 
     def test_is_ignored_does_not_match_other(self, tmp_path):
         """*.pyc pattern does not match .py files."""
-        patterns = [("* .pyc", False)]
+        patterns = [("* .pyc", False, False)]
         test_file = tmp_path / "test.py"
         test_file.touch()
         assert not is_ignored(test_file, tmp_path, [])
 
     def test_is_ignored_negation(self, tmp_path):
         """Negation pattern overrides previous ignore."""
-        patterns = [("*.log", False), ("important.log", True)]
+        patterns = [("*.log", False, False), ("important.log", True, False)]
         important_file = tmp_path / "important.log"
         important_file.touch()
         # Negation should un-ignore
@@ -706,7 +736,7 @@ class TestChunking_DirOnlyGitignorePattern:
         A .gitignore pattern 'build/' should not cause a file named
         'build' to be ignored.
         """
-        patterns = [("build/", False)]
+        patterns = [("build/", False, False)]
         build_file = tmp_path / "build"
         build_file.touch()
         assert not is_ignored(build_file, tmp_path, patterns, is_dir=False)
@@ -717,7 +747,7 @@ class TestChunking_DirOnlyGitignorePattern:
         A .gitignore pattern 'build/' should cause a directory named
         'build' to be ignored.
         """
-        patterns = [("build/", False)]
+        patterns = [("build/", False, False)]
         build_dir = tmp_path / "build"
         build_dir.mkdir()
         assert is_ignored(build_dir, tmp_path, patterns, is_dir=True)
@@ -764,8 +794,116 @@ class TestChunking_DirOnlyGitignorePattern:
         A pattern '!build/' combined with 'build/' should un-ignore
         the build directory.
         """
-        patterns = [("build/", False), ("build/", True)]
+        patterns = [("build/", False, False), ("build/", True, False)]
         build_dir = tmp_path / "build"
         build_dir.mkdir()
         # First pattern ignores build/, second negation un-ignores it
         assert not is_ignored(build_dir, tmp_path, patterns, is_dir=True)
+
+
+class TestChunking_AnchoredGitignorePattern:
+    """Test that gitignore patterns with leading / are anchored to root.
+
+    Issue ll-67q3p-aqy08: parse_gitignore did not strip the leading / from
+    patterns, causing root-anchored patterns like '/build' to never match
+    relative paths. A leading / in .gitignore means the pattern only
+    matches at the root level, not at any directory depth.
+    """
+
+    def test_matches_pattern_anchored_matches_root_path(self):
+        """An anchored pattern matches a path at the root level.
+
+        Pattern 'build' with anchored=True should match 'build' (root-level).
+        """
+        assert _matches_pattern("build", "build", is_dir=False, anchored=True)
+
+    def test_matches_pattern_anchored_does_not_match_nested_path(self):
+        """An anchored pattern does not match a path at a deeper depth.
+
+        Pattern 'build' with anchored=True should NOT match 'src/build'
+        because anchored means root-level only.
+        """
+        assert not _matches_pattern("src/build", "build", is_dir=False, anchored=True)
+
+    def test_matches_pattern_unanchored_matches_nested_path(self):
+        """An unanchored pattern matches at any depth.
+
+        Pattern 'build' with anchored=False should match both 'build'
+        and 'src/build'.
+        """
+        assert _matches_pattern("build", "build", is_dir=False, anchored=False)
+        assert _matches_pattern("src/build", "build", is_dir=False, anchored=False)
+
+    def test_matches_pattern_anchored_with_dir_only(self):
+        """An anchored dir-only pattern '/build/' matches a directory at root only.
+
+        Pattern 'build/' with anchored=True should match 'build' (root dir)
+        but NOT 'src/build' (nested dir).
+        """
+        assert _matches_pattern("build", "build/", is_dir=True, anchored=True)
+        assert not _matches_pattern("src/build", "build/", is_dir=True, anchored=True)
+
+    def test_is_ignored_anchored_pattern_root_only(self, tmp_path):
+        """is_ignored with an anchored pattern ignores root-level paths.
+
+        A pattern ('build', is_anchored=True) should ignore 'build'
+        at the root but not 'src/build' nested deeper.
+        """
+        patterns = [("build", False, True)]
+        build_root = tmp_path / "build"
+        build_root.touch()
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        build_nested = src_dir / "build"
+        build_nested.touch()
+        # Root 'build' is ignored
+        assert is_ignored(build_root, tmp_path, patterns, is_dir=False)
+        # Nested 'src/build' is NOT ignored by an anchored pattern
+        assert not is_ignored(build_nested, tmp_path, patterns, is_dir=False)
+
+    def test_parse_gitignore_leading_slash_integration(self, tmp_path):
+        """Integration: .gitignore '/build' skips only root-level build.
+
+        Writing a .gitignore with '/build' and walking the directory
+        should skip root-level 'build' but index nested 'src/build'.
+        """
+        (tmp_path / ".gitignore").write_text("/build\n")
+        # Root-level 'build' file should be skipped
+        (tmp_path / "build").write_text("should be skipped")
+        # Nested 'build' in src/ should be indexed
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        (src_dir / "build").write_text("should be indexed")
+        (src_dir / "main.py").write_text("hello")
+
+        files = walk_code_files(tmp_path)
+        file_names = {f.name for f in files}
+        # Root 'build' is skipped by /build pattern (anchored)
+        # Nested 'src/build' is NOT matched by the anchored pattern
+        assert "build" in file_names  # the src/build file
+        assert "main.py" in file_names
+
+    def test_parse_gitignore_leading_slash_dir_pattern(self, tmp_path):
+        """Integration: .gitignore '/dist/' skips root-level dist dir only.
+
+        Writing a .gitignore with '/dist/' and walking the directory
+        should skip root-level 'dist' directory but not 'src/dist'.
+        """
+        (tmp_path / ".gitignore").write_text("/dist/\n")
+        # Root-level dist directory should be skipped
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+        (dist_dir / "output.py").write_text("dist output")
+        # Nested dist in src/ should NOT be skipped
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        nested_dist = src_dir / "dist"
+        nested_dist.mkdir()
+        (nested_dist / "inner.py").write_text("inner")
+        (tmp_path / "main.py").write_text("hello")
+
+        files = walk_code_files(tmp_path)
+        file_names = {f.name for f in files}
+        assert "main.py" in file_names
+        assert "inner.py" in file_names  # Inside nested src/dist/
+        assert "output.py" not in file_names  # Inside skipped root dist/
