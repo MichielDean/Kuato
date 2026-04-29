@@ -168,12 +168,6 @@ llmem track-review --finding-file /tmp/review-findings.json --context "handler.p
 llmem track-review --category NULL_SAFETY --what-happened "missing null check" --context "handler.py:42" --severity Required --caught-by self-review  Single finding
 llmem track-review --context "handler.py"                                                   Clean review (no findings) → creates REVIEW_PASSED memory
 
-# Track test-and-verify outcomes as self_assessment memories (automatic post-verification hook)
-llmem track-test --passed --command lint --context "handler.py"                            Passing outcome → REVIEW_PASSED
-llmem track-test --failures 2 --command test --what-happened "2 test failures" --context "handler.py"   Failing outcome → ERROR_HANDLING
-llmem track-test --passed --command format --context "handler.py" --iteration-count 1      With iteration count
-llmem track-test --failures 1 --command typecheck --what-happened "type error" --caught-by ci-pipeline   Custom caught-by
-
 # List error taxonomy categories for a severity tier
 llmem suggest-categories Required          # → NULL_SAFETY, ERROR_HANDLING, MISSING_VERIFICATION, EDGE_CASE
 llmem suggest-categories Blocking         # → AUTH_BYPASS, RACE_CONDITION, DATA_INTEGRITY
@@ -325,7 +319,7 @@ retriever = Retriever(store, embedder=embedder, blend=0.5)
 - **Iteration count** — use `llmem introspect --iteration-count N` to record how many attempts before success. This feeds calibration tracking: if average iteration counts for a category decrease after a behavioral adaptation, the adaptation is marked effective.
 - **Calibration status metadata** — procedure memories created by behavioral insights receive `calibration_status` (trend: `decreasing`, `stable`, or `increasing`) and `calibrated_at` metadata when calibration runs. Stale procedures get `stale_procedure: true` and `stale_at` metadata. These are visible via `llmem get <id>`.
 - **Review outcome tracking** — `llmem track-review` persists review findings as `self_assessment` memories automatically. It is the mechanical post-review hook for adversarial code reviews. Three modes: single finding (`--category` + `--what-happened`), batch (`--finding-file` with JSON array), and clean review (no flags → `REVIEW_PASSED`). `--category` and `--finding-file` are mutually exclusive. Every review invocation MUST produce at least one memory — clean reviews create a `REVIEW_PASSED` memory automatically. Use `llmem suggest-categories <TIER>` to see valid categories for a severity tier (Blocking, Required, Strong Suggestions, Noted, Passed).
-- **Test outcome tracking** — `llmem track-test` persists test-and-verify outcomes as `self_assessment` memories automatically. It is the mechanical post-verification hook for the `test-and-verify` skill. Two modes: passing (`--passed`) and failing (`--failures N` with required `--what-happened`). `--passed` and `--failures` are mutually exclusive. The `--command` flag is required and must be one of: `format`, `lint`, `typecheck`, `test`. Command determines the error category: `format`/`lint` → `MISSING_VERIFICATION`, `typecheck`/`test` → `ERROR_HANDLING`. Passing outcomes create a `REVIEW_PASSED` memory. Use `--iteration-count N` to record how many attempts were needed (feeds calibration tracking). Use `--caught-by` to override the default `test-and-verify` source.
+
 
 ## Dream — Background Consolidation
 
