@@ -923,8 +923,11 @@ def cmd_context(args):
             if existing_file.exists():
                 try:
                     print(existing_file.read_text())
-                except OSError:
-                    pass
+                except OSError as e:
+                    log.debug(
+                        "llmem: cli: context: failed to read existing context file: %s",
+                        e,
+                    )
         elif result_type == SESSION_CREATED_ERROR:
             print(
                 f"Error: llmem: context: created hook failed for session "

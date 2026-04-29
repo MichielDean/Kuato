@@ -3,7 +3,7 @@ name: memory-assistant
 description: >
   AI assistant that manages memories via the llmem CLI. Use for adding,
   searching, updating, and consolidating memories. Can run introspection,
-  track review findings, and track test outcomes. Provides memory context
+  track review findings. Provides memory context
   for sessions and supports relation traversal for discovering related
   memories.
 tools:
