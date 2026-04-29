@@ -447,8 +447,19 @@ def is_ignored(path: Path, root: Path, patterns: list[tuple[str, bool]]) -> bool
     return ignored
 
 
+# Default maximum file size for indexing: 1 MiB prevents memory exhaustion
+# from accidentally indexing large binary or generated files.
+_DEFAULT_MAX_FILE_SIZE = 1 * 1024 * 1024  # 1 MiB
+
+# Default maximum recursion depth for directory walking.
+_DEFAULT_MAX_DEPTH = 50
+
+
 def walk_code_files(
-    root_path: Path, patterns: list[tuple[str, bool]] | None = None
+    root_path: Path,
+    patterns: list[tuple[str, bool]] | None = None,
+    max_file_size: int = _DEFAULT_MAX_FILE_SIZE,
+    max_depth: int = _DEFAULT_MAX_DEPTH,
 ) -> list[Path]:
     """Walk a directory tree and return paths of code files to index.
 
@@ -456,10 +467,19 @@ def walk_code_files(
     non-code directories (``.git``, ``__pycache__``, ``node_modules``,
     ``.venv``, ``venv``).
 
+    Symlinks to both files and directories are skipped to prevent
+    path traversal and data exposure. Use ``-L`` / ``follow_symlinks``
+    in the CLI if you explicitly want to follow trusted symlinks.
+
     Args:
         root_path: Root directory to walk.
         patterns: Optional pre-parsed gitignore patterns. If None,
             reads ``.gitignore`` from root_path.
+        max_file_size: Maximum file size in bytes to index. Files
+            exceeding this size are skipped. Defaults to 1 MiB.
+        max_depth: Maximum directory recursion depth. Prevents
+            stack overflow from deeply nested directory trees.
+            Defaults to 50.
 
     Returns:
         List of absolute Path objects for files to index.
@@ -531,7 +551,17 @@ def walk_code_files(
 
     result: list[Path] = []
 
-    def _walk(directory: Path, parent_patterns: list[tuple[str, bool]]) -> None:
+    def _walk(
+        directory: Path,
+        parent_patterns: list[tuple[str, bool]],
+        depth: int,
+    ) -> None:
+        if depth > max_depth:
+            log.debug(
+                "llmem: chunking: max depth %d exceeded at %s", max_depth, directory
+            )
+            return
+
         try:
             entries = sorted(directory.iterdir())
         except PermissionError as e:
@@ -546,12 +576,17 @@ def walk_code_files(
             current_patterns = parent_patterns + sub_patterns
 
         for entry in entries:
+            # Skip symlinks to prevent path traversal and data exposure
+            if entry.is_symlink():
+                log.debug("llmem: chunking: skipping symlink %s", entry)
+                continue
+
             if entry.is_dir():
                 if entry.name in _SKIP_DIRS:
                     continue
                 if is_ignored(entry, root_path, current_patterns):
                     continue
-                _walk(entry, current_patterns)
+                _walk(entry, current_patterns, depth + 1)
             elif entry.is_file():
                 if entry.name in _SKIP_FILENAMES:
                     continue
@@ -559,7 +594,22 @@ def walk_code_files(
                     continue
                 if is_ignored(entry, root_path, current_patterns):
                     continue
+                # Skip files exceeding the size limit to prevent memory exhaustion
+                try:
+                    file_size = entry.stat().st_size
+                except OSError as e:
+                    log.debug("llmem: chunking: cannot stat %s: %s", entry, e)
+                    continue
+                if file_size > max_file_size:
+                    log.debug(
+                        "llmem: chunking: skipping file %s "
+                        "(%d bytes exceeds max_file_size %d)",
+                        entry,
+                        file_size,
+                        max_file_size,
+                    )
+                    continue
                 result.append(entry)
 
-    _walk(root_path, patterns)
+    _walk(root_path, patterns, depth=0)
     return result

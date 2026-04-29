@@ -23,6 +23,8 @@ from .chunking import (
     FixedLineChunking,
     detect_language,
     walk_code_files,
+    _DEFAULT_MAX_FILE_SIZE,
+    _DEFAULT_MAX_DEPTH,
 )
 from .code_index import CodeIndex
 
@@ -362,8 +364,18 @@ def cmd_learn(args):
     else:
         chunker = ParagraphChunking()
 
-    # Walk directory for files to index
-    code_files = walk_code_files(root_path)
+    # Walk directory for files to index (symlinks are always skipped to
+    # prevent path traversal; size and depth limits prevent resource exhaustion)
+    max_file_size = getattr(args, "max_file_size", None)
+    if max_file_size is None:
+        max_file_size = _DEFAULT_MAX_FILE_SIZE
+    max_depth = getattr(args, "max_depth", None)
+    if max_depth is None:
+        max_depth = _DEFAULT_MAX_DEPTH
+
+    code_files = walk_code_files(
+        root_path, max_file_size=max_file_size, max_depth=max_depth
+    )
     if not code_files:
         print("No code files found to index.")
         return
@@ -881,6 +893,18 @@ def main():
         "--no-embed",
         action="store_true",
         help="Skip embedding generation (store chunks only)",
+    )
+    p_learn.add_argument(
+        "--max-file-size",
+        type=int,
+        default=None,
+        help="Maximum file size in bytes to index (default: 1048576 = 1 MiB)",
+    )
+    p_learn.add_argument(
+        "--max-depth",
+        type=int,
+        default=None,
+        help="Maximum directory recursion depth (default: 50)",
     )
     p_learn.add_argument(
         "--ollama-url",

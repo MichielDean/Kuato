@@ -419,3 +419,174 @@ class TestChunking_GitignoreParser:
         files = walk_code_files(tmp_path)
         assert len(files) == 1
         assert files[0].name == "main.py"
+
+
+class TestChunking_WalkCodeFiles_Security:
+    """Security-related tests for walk_code_files: symlinks, size limits, depth limits."""
+
+    def test_walk_skips_file_symlink(self, tmp_path):
+        """walk_code_files skips symlinks to files (path traversal prevention).
+
+        A symlink pointing to a file outside the root must not be followed,
+        preventing indexing of arbitrary files on the filesystem.
+        """
+        # Create a real file outside the project root
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        secret_file = outside_dir / "secret.txt"
+        secret_file.write_text("secret data")
+
+        # Create a symlink inside the project root pointing to the outside file
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / "main.py").write_text("print('hello')")
+        symlink_path = project_dir / "linked_secret.txt"
+        symlink_path.symlink_to(secret_file)
+
+        files = walk_code_files(project_dir)
+        file_names = {f.name for f in files}
+        assert "main.py" in file_names
+        assert "linked_secret.txt" not in file_names
+
+    def test_walk_skips_directory_symlink(self, tmp_path):
+        """walk_code_files skips symlinks to directories (path traversal prevention).
+
+        A symlink pointing to a directory outside the root must not be
+        traversed, preventing indexing of entire directory trees outside
+        the project root.
+        """
+        # Create a directory outside the project root with a code file
+        outside_dir = tmp_path / "outside_code"
+        outside_dir.mkdir()
+        (outside_dir / "leaked.py").write_text("sensitive = True")
+
+        # Create a symlink inside the project root pointing outside
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / "main.py").write_text("print('hello')")
+        symlink_dir = project_dir / "evil_link"
+        symlink_dir.symlink_to(outside_dir)
+
+        files = walk_code_files(project_dir)
+        file_names = {f.name for f in files}
+        assert "main.py" in file_names
+        assert "leaked.py" not in file_names
+
+    def test_walk_skips_circular_symlink(self, tmp_path):
+        """walk_code_files skips circular directory symlinks.
+
+        A symlink pointing back to an ancestor directory would create an
+        infinite loop. walk_code_files must not follow it.
+        """
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / "main.py").write_text("print('hello')")
+        # Create a circular symlink: project/sub -> project
+        sub_dir = project_dir / "sub"
+        sub_dir.symlink_to(project_dir)
+
+        files = walk_code_files(project_dir)
+        # Should find main.py exactly once, not infinitely
+        assert len(files) == 1
+        assert files[0].name == "main.py"
+
+    def test_walk_skips_large_files(self, tmp_path):
+        """walk_code_files skips files exceeding max_file_size.
+
+        A file larger than the configured size limit is skipped entirely,
+        preventing memory exhaustion from indexing large files.
+        """
+        (tmp_path / "small.py").write_text("x = 1")
+        # Create a file that exceeds the default 1 MiB limit
+        large_content = "x = 1\n" * 200000  # ~1.4 MB
+        (tmp_path / "large.py").write_text(large_content)
+
+        files = walk_code_files(tmp_path)
+        file_names = {f.name for f in files}
+        assert "small.py" in file_names
+        assert "large.py" not in file_names
+
+    def test_walk_custom_max_file_size(self, tmp_path):
+        """walk_code_files respects a custom max_file_size parameter.
+
+        When max_file_size is set to a small value, files exceeding that
+        threshold are skipped.
+        """
+        (tmp_path / "small.py").write_text("x = 1")
+        (tmp_path / "medium.py").write_text("x = 1\n" * 100)  # ~700 bytes
+
+        files = walk_code_files(tmp_path, max_file_size=500)
+        file_names = {f.name for f in files}
+        assert "small.py" in file_names
+        assert "medium.py" not in file_names
+
+    def test_walk_respects_max_depth(self, tmp_path):
+        """walk_code_files respects the max_depth parameter.
+
+        Directories deeper than max_depth are not traversed, preventing
+        stack overflow from excessively deep directory nesting.
+        """
+        # Create a 5-level deep directory structure
+        current = tmp_path
+        for i in range(5):
+            current = current / f"level{i}"
+            current.mkdir()
+        (current / "deep.py").write_text("deep = True")
+
+        # Also add a shallow file
+        (tmp_path / "shallow.py").write_text("shallow = True")
+
+        # With max_depth=2, only files within 2 levels should be found
+        files = walk_code_files(tmp_path, max_depth=2)
+        file_names = {f.name for f in files}
+        assert "shallow.py" in file_names
+        assert "deep.py" not in file_names
+
+    def test_walk_default_depth_allows_reasonable_nesting(self, tmp_path):
+        """walk_code_files with default max_depth=50 allows reasonable nesting.
+
+        A 10-level deep directory structure is well within the default
+        limit of 50 and should be fully traversed.
+        """
+        current = tmp_path
+        for i in range(10):
+            current = current / f"dir{i}"
+            current.mkdir()
+        (current / "deep.py").write_text("deep = True")
+
+        files = walk_code_files(tmp_path)
+        file_names = {f.name for f in files}
+        assert "deep.py" in file_names
+
+    def test_walk_symlink_file_not_in_results(self, tmp_path):
+        """Issue ll-67q3p-16s63: symlinked files are excluded from results.
+
+        Even when a symlink appears to be a regular file with a valid
+        extension, it must not appear in the results to prevent path
+        traversal and data exposure attacks.
+        """
+        # Create an external file and symlink it into the project
+        outside = tmp_path / "external"
+        outside.mkdir()
+        (outside / "targets.py").write_text("secret = 'data'")
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "real.py").write_text("ok = True")
+        (project / "attack.py").symlink_to(outside / "targets.py")
+
+        files = walk_code_files(project)
+        file_names = {f.name for f in files}
+        assert "real.py" in file_names
+        assert "attack.py" not in file_names
+
+    def test_walk_zero_max_file_size_skips_everything(self, tmp_path):
+        """walk_code_files with max_file_size=0 skips all files.
+
+        Setting max_file_size to zero means no file can be indexed,
+        which is a valid (if unusual) configuration.
+        """
+        (tmp_path / "tiny.py").write_text("x = 1")
+
+        files = walk_code_files(tmp_path, max_file_size=0)
+        assert len(files) == 0
