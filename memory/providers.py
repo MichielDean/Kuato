@@ -461,6 +461,9 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
     def embed(self, text: str) -> list[float]:
         """Embed a single text string via OpenAI /v1/embeddings.
 
+        Delegates to embed_batch to ensure input validation is applied
+        consistently (MAX_TEXT_LENGTH, MAX_BATCH_SIZE checks).
+
         Args:
             text: The string to embed.
 
@@ -469,16 +472,9 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
 
         Raises:
             RuntimeError: On HTTP errors or connection failures.
+            ValueError: If text length exceeds limits.
         """
-        result = self._make_request(
-            "/v1/embeddings",
-            {
-                "model": self._embed_model,
-                "input": text,
-            },
-            timeout=self._timeout,
-        )
-        return result["data"][0]["embedding"]
+        return self.embed_batch([text])[0]
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed multiple text strings via OpenAI /v1/embeddings.

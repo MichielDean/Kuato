@@ -225,7 +225,8 @@ class TestOpenAIProvider:
         call_args = mock_req.call_args
         assert call_args[0][0] == "/v1/embeddings"
         assert call_args[0][1]["model"] == "text-embedding-3-small"
-        assert call_args[0][1]["input"] == "test text"
+        # embed() delegates to embed_batch, so input is wrapped in a list
+        assert call_args[0][1]["input"] == ["test text"]
 
     def test_embed_batch_calls_openai(self):
         provider = OpenAIProvider(api_key="test-key")
@@ -3358,3 +3359,40 @@ class TestOpenAIProvider_EmbedBatchInputValidation:
         long_text = "a" * (MAX_TEXT_LENGTH + 1)
         with pytest.raises(ValueError, match="text at index .* exceeds maximum length"):
             provider.embed_batch([long_text])
+
+
+class TestOpenAIProvider_EmbedInputValidation:
+    """Test OpenAIProvider.embed() delegates to embed_batch for input validation.
+
+    Previously embed() bypassed _validate_embed_inputs by calling _make_request
+    directly. Now it delegates to embed_batch([text])[0] so single-text embeds
+    are also validated against MAX_TEXT_LENGTH.
+    """
+
+    def test_embed_rejects_oversized_text(self):
+        """OpenAIProvider.embed() raises ValueError for text > MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = OpenAIProvider(api_key="test-key")
+        long_text = "a" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="text at index .* exceeds maximum length"):
+            provider.embed(long_text)
+
+    def test_embed_accepts_valid_text(self):
+        """OpenAIProvider.embed() accepts text within length limits.
+
+        Verifies that valid text reaches _make_request (mocked), proving
+        the text was not rejected by the _validate_embed_inputs check.
+        """
+        provider = OpenAIProvider(api_key="test-key")
+        vec = [0.1] * 1536
+        with patch.object(
+            provider,
+            "_make_request",
+            return_value={
+                "data": [{"embedding": vec, "index": 0}],
+            },
+        ) as mock_req:
+            result = provider.embed("short valid text")
+        assert result == vec
+        mock_req.assert_called_once()

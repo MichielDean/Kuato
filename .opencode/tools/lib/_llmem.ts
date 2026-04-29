@@ -58,29 +58,39 @@ export async function runLlmem(
     });
 
     // Race the process exit against a timeout to prevent indefinite hangs.
-    const [exitCode, stdout, stderr] = await Promise.all([
-      Promise.race([
-        proc.exited,
-        new Promise<number>((_, reject) =>
-          setTimeout(() => {
-            proc.kill();
-            reject(new Error(`llmem subprocess timed out after ${timeoutMs}ms`));
-          }, timeoutMs)
-        ),
-      ]),
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
+    // Track the timeout ID so we can clear it when the process exits first,
+    // preventing an unhandled promise rejection from the orphaned timer.
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        proc.kill();
+        reject(new Error(`llmem subprocess timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
 
-    if (exitCode !== 0) {
-      const stderrSnippet = stderr.slice(0, 500).trim();
-      return {
-        stdout: `Error: llmem ${args[0] || ""} failed (exit code ${exitCode}): ${stderrSnippet}`,
-        exitCode,
-      };
+    try {
+      const [exitCode, stdout, stderr] = await Promise.all([
+        Promise.race([proc.exited, timeoutPromise]),
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+
+      if (exitCode !== 0) {
+        const stderrSnippet = stderr.slice(0, 500).trim();
+        return {
+          stdout: `Error: llmem ${args[0] || ""} failed (exit code ${exitCode}): ${stderrSnippet}`,
+          exitCode,
+        };
+      }
+
+      return { stdout: stdout.trimEnd(), exitCode: 0 };
+    } finally {
+      // Clear the timeout timer if the process exited first,
+      // preventing an unhandled rejection from the orphaned promise.
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
     }
-
-    return { stdout: stdout.trimEnd(), exitCode: 0 };
   } catch (err: unknown) {
     // Bun.spawn throws if the binary is not found
     const message = err instanceof Error ? err.message : String(err);
