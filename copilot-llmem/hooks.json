@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": {
+      "type": "command",
+      "bash": "SESSION_ID=$(cat | python3 -c 'import sys,json; print(json.load(sys.stdin).get(\"session_id\",\"\"))') && llmem context \"$SESSION_ID\"",
+      "powershell": "$input | python3 -c 'import sys,json; print(json.load(sys.stdin).get(\"session_id\",\"\"))' | ForEach-Object { llmem context $_ }",
+      "timeoutSec": 30
+    },
+    "agentStop": {
+      "type": "command",
+      "bash": "SESSION_ID=$(cat | python3 -c 'import sys,json; print(json.load(sys.stdin).get(\"session_id\",\"\"))') && llmem hook idle \"$SESSION_ID\"",
+      "powershell": "$input | python3 -c 'import sys,json; print(json.load(sys.stdin).get(\"session_id\",\"\"))' | ForEach-Object { llmem hook idle $_ }",
+      "timeoutSec": 60
+    }
+  }
+}

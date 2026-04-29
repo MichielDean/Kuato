@@ -1,0 +1,9 @@
+{
+  "name": "copilot-llmem",
+  "description": "LLMem session hooks for Copilot CLI: memory injection on session lifecycle events via declarative hooks",
+  "version": "1.0.0",
+  "license": "MIT",
+  "skills": "../skills",
+  "hooks": "hooks.json",
+  "agents": "agents/"
+}

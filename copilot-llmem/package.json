@@ -1,0 +1,27 @@
+{
+  "name": "copilot-llmem",
+  "version": "1.0.0",
+  "description": "LLMem session hooks for Copilot CLI: memory injection on session lifecycle events",
+  "license": "MIT",
+  "scripts": {
+    "postinstall": "node install.js",
+    "test": "node test.js"
+  },
+  "files": [
+    "src/",
+    "install.js",
+    "test.js",
+    "skills/",
+    "agents/",
+    "hooks.json",
+    "plugin.json"
+  ],
+  "keywords": [
+    "copilot",
+    "copilot-cli",
+    "llmem",
+    "memory",
+    "session-hooks",
+    "agent"
+  ]
+}
