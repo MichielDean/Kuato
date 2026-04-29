@@ -59,6 +59,15 @@ npm test
 
 This validates skill directory structure, frontmatter, forbidden references, and the install script.
 
+### Linting
+
+Python code is linted with [ruff](https://docs.astral.sh/ruff/). CI runs this as a separate job, so contributors must check locally before pushing:
+
+```bash
+pip install ruff
+ruff check llmem/ tests/
+```
+
 ### opencode-llmem Package Tests
 
 ```bash
@@ -97,7 +106,7 @@ All files in this repository are checked against a list of forbidden patterns (i
 
 1. Fork the repository and create a feature branch from `main`.
 2. Make your changes, including tests for any new functionality.
-3. Ensure all tests pass: `python -m pytest`, `npm test`, and `cd opencode-llmem && npm test`.
+3. Ensure all checks pass: `ruff check llmem/ tests/`, `python -m pytest`, `npm test`, and `cd opencode-llmem && npm test`.
 4. Ensure no forbidden patterns are introduced (covered by `npm test`).
 5. Open a pull request against the `main` branch with a clear description of the change.
 
