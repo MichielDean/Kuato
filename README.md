@@ -352,24 +352,28 @@ Options:
   --db PATH    Path to memory database (default: ~/.config/llmem/memory.db)
 
 Commands:
-  add             Add a memory
-  get             Get a memory by ID
-  search          Search memories (hybrid RRF fusion of FTS5 + semantic)
-  list            List memories
-  stats           Show memory statistics
-  update          Update a memory
-  invalidate      Invalidate a memory (mark expired/wrong)
-  delete          Delete a memory
-  export          Export all memories to JSON
-  import          Import memories from a JSON file
-  register-type   Register a new memory type
-  types           List registered memory types
-  note            Add a note to the working memory inbox
-  inbox           List items in the working memory inbox
-  embed           Report embedding quality metrics
-  consolidate     Promote inbox items to long-term memory
-  init            Initialize the llmem memory system
-  learn           Ingest a codebase into the code index
+  add                 Add a memory
+  get                 Get a memory by ID
+  search              Search memories (hybrid RRF fusion of FTS5 + semantic)
+  list                List memories
+  stats               Show memory statistics
+  update              Update a memory
+  invalidate          Invalidate a memory (mark expired/wrong)
+  delete              Delete a memory
+  export              Export all memories to JSON
+  import              Import memories from a JSON file
+  register-type       Register a new memory type
+  types               List registered memory types
+  note                Add a note to the working memory inbox
+  inbox               List items in the working memory inbox
+  embed               Report embedding quality metrics
+  consolidate         Promote inbox items to long-term memory
+  init                Initialize the llmem memory system
+  learn               Ingest a codebase into the code index
+  context             Inject relevant memory context for a session
+  hook                Handle session lifecycle hook events
+  track-review        Persist review findings as self_assessment memories
+  suggest-categories  List error taxonomy categories for a severity tier
 ```
 
 Plugins registered via [`register_cli_plugin`](#cli-plugin-registry) add additional subcommands at runtime.
@@ -567,6 +571,75 @@ Ingest a codebase directory into the code index. Walks the directory tree respec
 **Language detection:** File extensions are mapped to language names automatically (e.g., `.py` → `python`, `.rs` → `rust`, `.go` → `go`). Unknown extensions produce `None`.
 
 **Output:** `Ingested N chunks from M files`
+
+### `llmem context`
+
+```bash
+llmem context SESSION_ID [--compacting]
+```
+
+Inject relevant memory context for a session. Used by session hooks (e.g., Copilot CLI, OpenCode plugins) to inject memories into a new or compacting session. Writes a context file and prints its content to stdout.
+
+- `SESSION_ID` (required): The session ID to inject context for. Validated against path traversal attacks (rejects `/`, `\`, `..`).
+- `--compacting`: If set, inject key memories for compaction instead of session start context. High-confidence memories of types `decision`, `preference`, `procedure`, and `project_state` (confidence ≥ 0.7) are selected.
+
+On success, prints the context content to stdout. On error, prints to stderr and exits with code 1. If the session was already processed, prints nothing (for session start) or the existing context file (for re-invocations).
+
+### `llmem hook`
+
+```bash
+llmem hook idle SESSION_ID
+```
+
+Handle session lifecycle hook events. Currently supports only the `idle` hook type, which triggers memory extraction and introspection for a session.
+
+- `hook_type` (required): The hook type to dispatch. Only `idle` is supported.
+- `SESSION_ID` (required): The session ID for the hook event. Validated against path traversal attacks.
+
+The idle hook processes the session's transcript, extracts memories, and runs introspection automatically. It uses the `extraction_log` table with `source_type='session'` to prevent re-extraction. If the session was recently processed (debounce), it logs a debug message and exits normally.
+
+### `llmem track-review`
+
+```bash
+llmem track-review --context CONTEXT  [--category CATEGORY --what-happened WHAT] [--severity SEVERITY] [--caught-by WHO]
+llmem track-review --finding-file FILE --context CONTEXT
+llmem track-review --context CONTEXT
+```
+
+Persist review findings as `self_assessment` memories. This is the mechanical post-review hook for adversarial code reviews. Three modes:
+
+1. **Single finding**: `--category` + `--what-happened` (optionally `--severity`, `--caught-by`)
+2. **Batch from file**: `--finding-file` (JSON array of finding objects, each with `category`, `what_happened`, optional `severity` and `caughtBy`)
+3. **Clean review**: no flags → creates a `REVIEW_PASSED` memory
+
+- `--context` (recommended): File or task identifier (e.g., `handler.py:42`).
+- `--category`: Error taxonomy category for a single finding (e.g., `NULL_SAFETY`, `ERROR_HANDLING`). See `llmem suggest-categories` for categories per severity tier.
+- `--what-happened`: Behavioral description of the finding.
+- `--severity`: Severity tier (`Blocking`, `Required`, `Strong Suggestions`, `Noted`).
+- `--caught-by`: How the finding was discovered (e.g., `self-review`, `CI`). Defaults to `self-review` for single findings, and `self-review` for batch findings where `caughtBy` is not specified in the JSON.
+- `--finding-file`: Path to a JSON file containing an array of finding objects. Mutually exclusive with `--category`.
+
+`--category` and `--finding-file` are mutually exclusive. Every invocation MUST produce at least one memory — clean reviews create a `REVIEW_PASSED` memory automatically. An empty JSON array in batch mode also creates a `REVIEW_PASSED` memory.
+
+### `llmem suggest-categories`
+
+```bash
+llmem suggest-categories TIER
+```
+
+List the error taxonomy categories applicable to a severity tier. Useful for determining which categories to use when tracking review findings.
+
+- `TIER` (required): Severity tier. Choices: `Blocking`, `Required`, `Strong Suggestions`, `Noted`, `Passed`.
+
+Output: One category per line. Example:
+
+```
+$ llmem suggest-categories Required
+NULL_SAFETY
+ERROR_HANDLING
+MISSING_VERIFICATION
+EDGE_CASE
+```
 
 ## Multi-Signal Reranking
 
@@ -1340,6 +1413,67 @@ This registers handlers for the `session.created`, `session.idle`, and `session.
 
 The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.config/llmem/config.yaml` by default). The `opencode.context_dir` key controls where context files are written.
 
+## Copilot CLI Integration (npm)
+
+The `copilot-llmem` npm package provides a Copilot CLI plugin that integrates LLMem session hooks into GitHub Copilot CLI via declarative hooks. It calls the same `llmem` CLI under the hood as the OpenCode plugin.
+
+### Installation
+
+```bash
+copilot plugin install MichielDean/llmem-plugin
+```
+
+Or via npm:
+
+```bash
+npm install copilot-llmem
+```
+
+The `postinstall` script copies the skill directories (`llmem`, `introspection`, `introspection-review-tracker`) and the `memory-assistant` agent to `~/.agents/` so they are discoverable at runtime.
+
+### How It Works
+
+The plugin registers three session lifecycle hooks in `hooks.json`:
+
+| Hook | CLI Command | Behavior |
+|------|-------------|----------|
+| `sessionStart` | `llmem context <session_id>` | Injects relevant memory context at session start |
+| `agentStop` | `llmem hook idle <session_id>` | Extracts memories and runs introspection when an agent stops |
+| `sessionCompacting` | `llmem context --compacting <session_id>` | Injects key memories during session compaction |
+
+Each hook extracts the `session_id` from the incoming JSON via `python3 -c`, passes it to the `llmem` CLI, and degrades gracefully on errors.
+
+### Plugin Structure
+
+```
+copilot-llmem/
+  plugin.json              # Plugin manifest
+  hooks.json               # Declarative hook definitions
+  install.js               # Postinstall script (copies skills/agents to ~/.agents/)
+  package.json             # npm package config
+  agents/
+    memory-assistant.agent.md  # AI assistant agent definition
+  skills/
+    llmem/SKILL.md             # LLMem skill reference
+    introspection/SKILL.md     # Introspection framework skill
+    introspection-review-tracker/SKILL.md  # Review outcome tracking skill
+```
+
+### Verification
+
+After installation, verify the skills are discoverable:
+
+```bash
+ls ~/.agents/skills/llmem ~/.agents/skills/introspection ~/.agents/skills/introspection-review-tracker
+ls ~/.agents/agents/memory-assistant.agent.md
+```
+
+Run the bundled tests:
+
+```bash
+npm test
+```
+
 ## Security
 
 - `LMEM_HOME` is validated against path traversal, system directories, and symlink attacks.
@@ -1396,6 +1530,7 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 | `llmem.url_validate` | `is_safe_url()`, `safe_urlopen()`, `_strip_credentials()`, `validate_base_url()`, `_NoRedirectHandler`, `_extract_url_string()` (mirrors `memory.url_validate`), DNS rebinding protection |
 | `llmem.paths` | `validate_session_id()`, `get_context_dir()`, `_validate_write_path()`, `BLOCKED_SYSTEM_PREFIXES`, home/write path checks |
 | `llmem.registry` | `register_session_hook()`, `get_registered_session_hooks()`, `VALID_SESSION_EVENT_TYPES` |
+| `llmem.taxonomy` | `ERROR_TAXONOMY`, `REVIEW_SEVERITY_TAXONOMY`, `SELF_ASSESSMENT_FIELDS`, `ERROR_TAXONOMY_KEYS` |
 | `llmem.metrics` | `compute_metrics()`, `anisotropy()`, `similarity_range()`, `discrimination_gap()`, `cosine_similarity()`, `bytes_to_vec()`, `EmbeddingMetrics` dataclass, warning thresholds, `METRICS_MAX_EMBEDDINGS` |
 | `llmem.store` | `MemoryStore` with `export_all(limit=)`, `import_memories()` validation, brute-force/embedding caps, dimension validation, inbox methods (`add_to_inbox`, `get_from_inbox`, `list_inbox`, `remove_from_inbox`, `update_inbox_attention_score`, `consolidate`), capacity eviction, `get_embeddings_with_types(limit=)`, `count_embeddings()` |
 | `llmem.code_index` | `CodeIndex` — manages `code_chunks` table, FTS5/vec virtual tables, add/search/remove operations |
@@ -1408,7 +1543,7 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 python -m pytest
 ```
 
-967 Python tests and 53 JavaScript tests covering all providers, URL validation, configuration, session extraction, security, and edge cases.
+1181 Python tests and 65 JavaScript tests (copilot-llmem) covering all providers, URL validation, configuration, security, session hooks, CLI commands (context, hook, track-review, suggest-categories), and edge cases.
 
 ## License
 
