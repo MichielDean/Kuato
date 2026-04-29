@@ -21,11 +21,15 @@ export default tool({
     ),
   },
   execute: async (args, context) => {
-    const cmdArgs: string[] = ["invalidate", args.id];
+    // Build optional flags before the -- separator so argparse
+    // recognises them. The -- separator prevents the positional
+    // ID from being parsed as a flag (argument injection).
+    const cmdArgs: string[] = ["invalidate"];
 
     if (args.reason) {
       cmdArgs.push("--reason", args.reason);
     }
+    cmdArgs.push("--", args.id);
 
     const result = await runLlmem(cmdArgs, {
       worktree: context?.worktree,

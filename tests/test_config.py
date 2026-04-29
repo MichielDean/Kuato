@@ -253,3 +253,174 @@ class TestConfig_WriteConfigYaml_Permissions:
         assert not (dir_mode & stat.S_IXOTH), (
             "Config dir should not be others-accessible"
         )
+
+
+class TestWriteConfigYaml_FilePermissions:
+    """Test that write_config_yaml creates files with 0o600 permissions."""
+
+    def test_file_created_with_0600_permissions(self, tmp_path):
+        """write_config_yaml must create config files with 0o600 to protect API keys."""
+        import os
+        import stat
+
+        from llmem.config import write_config_yaml
+
+        config_path = tmp_path / "config.yaml"
+        config = {"memory": {"db": "/tmp/test.db"}}
+        result = write_config_yaml(config_path, config)
+        assert result is True
+
+        file_mode = stat.S_IMODE(os.stat(config_path).st_mode)
+        assert file_mode == 0o600, (
+            f"Expected file permissions 0o600, got {oct(file_mode)}"
+        )
+
+    def test_file_overwritten_preserves_0600_permissions(self, tmp_path):
+        """write_config_yaml with force=True must still use 0o600 permissions."""
+        import os
+        import stat
+
+        from llmem.config import write_config_yaml
+
+        config_path = tmp_path / "config.yaml"
+        config = {"memory": {"db": "/tmp/test.db"}}
+
+        # Initial write
+        write_config_yaml(config_path, config)
+
+        # Overwrite with force=True
+        updated_config = {"memory": {"db": "/tmp/updated.db"}}
+        write_config_yaml(config_path, updated_config, force=True)
+
+        file_mode = stat.S_IMODE(os.stat(config_path).st_mode)
+        assert file_mode == 0o600, (
+            f"Expected file permissions 0o600 after force overwrite, got {oct(file_mode)}"
+        )
+
+    def test_existing_file_not_overwritten_without_force(self, tmp_path):
+        """write_config_yaml returns False when file exists and force=False."""
+        from llmem.config import write_config_yaml
+
+        config_path = tmp_path / "config.yaml"
+        config = {"memory": {"db": "/tmp/test.db"}}
+
+        write_config_yaml(config_path, config)
+        result = write_config_yaml(config_path, config, force=False)
+        assert result is False
+
+
+class TestGetOllamaUrl_SsrfValidation:
+    """Test that llmem.config.get_ollama_url validates URLs against SSRF attacks.
+
+    ll-vfgwu-n3dam: get_ollama_url must call is_safe_url() to block metadata
+    endpoints and other SSRF vectors. It must also strip credentials from error
+    messages to prevent secret leakage.
+    """
+
+    def test_default_url_passes_validation(self):
+        """Default Ollama URL (http://localhost:11434) must pass is_safe_url."""
+        from llmem.config import get_ollama_url
+
+        # Default URL should pass — loopback on Ollama port is always valid
+        result = get_ollama_url(config={})
+        assert result == "http://localhost:11434"
+
+    def test_valid_remote_url_passes_with_allow_remote(self):
+        """is_safe_url is called with allow_remote=True; remote URLs should pass
+        when they resolve to public IPs (not private/link-local/etc)."""
+        from unittest.mock import patch
+
+        from llmem.config import get_ollama_url
+
+        # Mock DNS to resolve to a public IP
+        with patch("llmem.config.is_safe_url", return_value=True):
+            result = get_ollama_url(
+                config={
+                    "memory": {"ollama_url": "http://remote-ollama.example.com:11434"}
+                }
+            )
+            assert result == "http://remote-ollama.example.com:11434"
+
+    def test_metadata_endpoint_blocked(self):
+        """URLs pointing to cloud metadata endpoints (169.254.169.254) must be blocked."""
+        from llmem.config import get_ollama_url
+
+        with pytest.raises(ValueError, match="blocked.*unsafe address"):
+            get_ollama_url(
+                config={
+                    "memory": {"ollama_url": "http://169.254.169.254/latest/meta-data/"}
+                }
+            )
+
+    def test_private_ip_blocked(self):
+        """URLs pointing to private IPs (10.x.x.x) must be blocked."""
+        from unittest.mock import patch
+
+        from llmem.config import get_ollama_url
+
+        # is_safe_url blocks private IPs even with allow_remote=True
+        with patch("llmem.config.is_safe_url", return_value=False):
+            with pytest.raises(ValueError, match="blocked.*unsafe address"):
+                get_ollama_url(
+                    config={"memory": {"ollama_url": "http://10.0.0.1:11434"}}
+                )
+
+    def test_non_http_scheme_blocked(self):
+        """Non-http/https schemes must be blocked."""
+        from llmem.config import get_ollama_url
+
+        with pytest.raises(ValueError, match="must be http/https"):
+            get_ollama_url(config={"memory": {"ollama_url": "ftp://localhost:11434"}})
+
+    def test_file_scheme_blocked(self):
+        """file:// scheme must be blocked."""
+        from llmem.config import get_ollama_url
+
+        with pytest.raises(ValueError, match="must be http/https"):
+            get_ollama_url(config={"memory": {"ollama_url": "file:///etc/passwd"}})
+
+    def test_credentials_stripped_from_scheme_error_message(self):
+        """Error messages must not contain credentials."""
+        from llmem.config import get_ollama_url
+
+        with pytest.raises(ValueError) as exc_info:
+            get_ollama_url(
+                config={"memory": {"ollama_url": "ftp://user:secret@localhost:11434"}}
+            )
+        # Credentials must NOT appear in the error message
+        assert "secret" not in str(exc_info.value)
+        assert "user" not in str(exc_info.value)
+
+    def test_credentials_stripped_from_ssrf_error_message(self):
+        """Error messages from is_safe_url rejection must not contain credentials."""
+        from unittest.mock import patch
+
+        from llmem.config import get_ollama_url
+
+        with patch("llmem.config.is_safe_url", return_value=False):
+            with pytest.raises(ValueError) as exc_info:
+                get_ollama_url(
+                    config={
+                        "memory": {
+                            "ollama_url": "http://admin:password@169.254.169.254/"
+                        }
+                    }
+                )
+            # Credentials must NOT appear in the error message
+            assert "password" not in str(exc_info.value)
+            assert "admin" not in str(exc_info.value)
+
+    def test_is_safe_url_called_with_allow_remote_true(self):
+        """get_ollama_url must call is_safe_url with allow_remote=True
+        because Ollama can legitimately run on remote hosts."""
+        from unittest.mock import patch
+
+        from llmem.config import get_ollama_url
+
+        with patch("llmem.config.is_safe_url", return_value=True) as mock_safe:
+            get_ollama_url(
+                config={"memory": {"ollama_url": "http://remote-host:11434"}}
+            )
+            mock_safe.assert_called_once_with(
+                "http://remote-host:11434", allow_remote=True
+            )

@@ -6,6 +6,7 @@ Provides resolve_provider for graceful degradation across providers.
 """
 
 import abc
+import ipaddress
 import json
 import logging
 import os
@@ -14,9 +15,37 @@ import urllib.error
 from urllib.parse import urlparse
 
 from .ollama import check_ollama_model, _call_ollama_generate
-from .url_validate import is_safe_url, safe_urlopen
+from .url_validate import is_safe_url, safe_urlopen, _strip_credentials
 
 log = logging.getLogger(__name__)
+
+# Input size limits to prevent abuse (OOM, resource exhaustion).
+# Individual text inputs longer than MAX_TEXT_LENGTH are rejected.
+# Batch requests larger than MAX_BATCH_SIZE are rejected.
+MAX_TEXT_LENGTH = 100_000  # 100K characters per text
+MAX_BATCH_SIZE = 2048  # max texts per batch request
+
+
+def _validate_embed_inputs(texts: list[str]) -> None:
+    """Validate embed/embed_batch inputs against size limits.
+
+    Args:
+        texts: List of texts to validate.
+
+    Raises:
+        ValueError: If batch size exceeds MAX_BATCH_SIZE or any text
+            exceeds MAX_TEXT_LENGTH.
+    """
+    if len(texts) > MAX_BATCH_SIZE:
+        raise ValueError(
+            f"providers: batch size {len(texts)} exceeds maximum {MAX_BATCH_SIZE}"
+        )
+    for i, text in enumerate(texts):
+        if len(text) > MAX_TEXT_LENGTH:
+            raise ValueError(
+                f"providers: text at index {i} exceeds maximum length "
+                f"{MAX_TEXT_LENGTH} (got {len(text)} characters)"
+            )
 
 
 # Loopback hostnames that are safe for HTTP (non-HTTPS) API key delivery.
@@ -26,22 +55,38 @@ _LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def _is_loopback_hostname(url: str) -> bool:
-    """Check whether a URL's hostname is an exact loopback address.
+    """Check whether a URL's hostname is a loopback address.
 
-    Uses urlparse to extract the hostname and compares it against known
-    loopback identifiers. This prevents substring-matching bypasses where
-    a URL like http://localhost.evil.com contains 'localhost' as a
-    substring but actually resolves to a remote host.
+    Uses urlparse to extract the hostname and checks it against known
+    loopback identifiers (string match) and also validates via ipaddress
+    for IPv6-mapped IPv4 addresses (e.g. ::ffff:127.0.0.1).
+
+    This prevents substring-matching bypasses where a URL like
+    http://localhost.evil.com contains 'localhost' as a substring but
+    actually resolves to a remote host.
 
     Args:
         url: The URL to check.
 
     Returns:
-        True if the hostname is exactly 'localhost', '127.0.0.1', or '::1'.
+        True if the hostname is a loopback address.
     """
     parsed = urlparse(url)
     hostname = parsed.hostname
-    return hostname in _LOOPBACK_HOSTNAMES if hostname else False
+    if not hostname:
+        return False
+    if hostname in _LOOPBACK_HOSTNAMES:
+        return True
+    # Also check via ipaddress for IPv6-mapped loopback addresses
+    # (e.g. ::ffff:127.0.0.1, ::ffff:7f00:1) that urlparse extracts
+    # without brackets.
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_loopback:
+            return True
+    except ValueError:
+        pass
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +97,8 @@ def _is_loopback_hostname(url: str) -> bool:
 class EmbedProvider(abc.ABC):
     """Abstract base class for embedding providers.
 
-    Concrete providers must implement embed, embed_batch, and check_available.
+    Concrete providers must implement embed, embed_batch, check_available,
+    and dimension.
     """
 
     @abc.abstractmethod
@@ -83,6 +129,18 @@ class EmbedProvider(abc.ABC):
 
         Returns:
             True if available, False on any error. Never raises.
+        """
+
+    @abc.abstractmethod
+    def dimension(self) -> int:
+        """Return the output vector dimensionality of this provider.
+
+        Must be implementable without making API calls (known from model
+        metadata or constructor config).
+
+        Returns:
+            The number of floats in each embedding vector produced by
+            this provider.
         """
 
 
@@ -193,6 +251,7 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
         return self._embed_batch_internal(texts)
 
     def _embed_batch_internal(self, texts: list[str]) -> list[list[float]]:
+        _validate_embed_inputs(texts)
         results: list[list[float]] = []
         for text in texts:
             payload = json.dumps(
@@ -250,6 +309,11 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
             RuntimeError: On HTTP errors or connection failures.
             ValueError: On URL validation failures.
         """
+        if len(prompt) > MAX_TEXT_LENGTH:
+            raise ValueError(
+                f"providers: prompt exceeds maximum length {MAX_TEXT_LENGTH} "
+                f"(got {len(prompt)} characters)"
+            )
         effective_timeout = timeout if timeout is not None else self._timeout
         return _call_ollama_generate(
             model=self._generate_model,
@@ -269,6 +333,24 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
         return check_ollama_model(
             self._embed_model, self._base_url
         ) and check_ollama_model(self._generate_model, self._base_url)
+
+    def dimension(self) -> int:
+        """Return the embedding dimension for the configured Ollama model.
+
+        Defaults to 768 (nomic-embed-text dimension). The dimension can
+        be overridden via the embed_model constructor parameter — known
+        model dimensions are looked up, others return the default.
+
+        Returns:
+            The number of floats in each embedding vector.
+        """
+        _KNOWN_OLLAMA_DIMENSIONS: dict[str, int] = {
+            "nomic-embed-text": 768,
+            "mxbai-embed-large": 1024,
+            "all-minilm": 384,
+            "snowflake-arctic-embed": 1024,
+        }
+        return _KNOWN_OLLAMA_DIMENSIONS.get(self._embed_model, 768)
 
 
 # ---------------------------------------------------------------------------
@@ -316,13 +398,13 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
         if base_url.startswith("http://") and not _is_loopback_hostname(base_url):
             raise ValueError(
                 "providers: OpenAI API key cannot be sent over non-HTTPS to non-loopback URL "
-                f"— use HTTPS or a localhost base URL, got {base_url!r}"
+                f"— use HTTPS or a localhost base URL, got {_strip_credentials(base_url)!r}"
             )
         if base_url != DEFAULT_OPENAI_BASE_URL:
             log.warning(
                 "providers: OpenAI API key sent to non-default base_url %r "
                 "— verify this is not a credential exfiltration attack",
-                base_url,
+                _strip_credentials(base_url),
             )
         self._embed_model = embed_model
         self._generate_model = generate_model
@@ -379,6 +461,9 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
     def embed(self, text: str) -> list[float]:
         """Embed a single text string via OpenAI /v1/embeddings.
 
+        Delegates to embed_batch to ensure input validation is applied
+        consistently (MAX_TEXT_LENGTH, MAX_BATCH_SIZE checks).
+
         Args:
             text: The string to embed.
 
@@ -387,16 +472,9 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
 
         Raises:
             RuntimeError: On HTTP errors or connection failures.
+            ValueError: If text length exceeds limits.
         """
-        result = self._make_request(
-            "/v1/embeddings",
-            {
-                "model": self._embed_model,
-                "input": text,
-            },
-            timeout=self._timeout,
-        )
-        return result["data"][0]["embedding"]
+        return self.embed_batch([text])[0]
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed multiple text strings via OpenAI /v1/embeddings.
@@ -409,7 +487,9 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
 
         Raises:
             RuntimeError: On HTTP errors or connection failures.
+            ValueError: If batch size or text length exceeds limits.
         """
+        _validate_embed_inputs(texts)
         result = self._make_request(
             "/v1/embeddings",
             {
@@ -443,7 +523,13 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
 
         Raises:
             RuntimeError: On HTTP errors or connection failures.
+            ValueError: If prompt length exceeds limit.
         """
+        if len(prompt) > MAX_TEXT_LENGTH:
+            raise ValueError(
+                f"providers: prompt exceeds maximum length {MAX_TEXT_LENGTH} "
+                f"(got {len(prompt)} characters)"
+            )
         result = self._make_request(
             "/v1/chat/completions",
             {
@@ -474,6 +560,23 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
         except Exception:
             log.debug("providers: OpenAI check_available failed", exc_info=True)
             return False
+
+    def dimension(self) -> int:
+        """Return the embedding dimension for the configured OpenAI model.
+
+        Defaults to 1536 (text-embedding-3-small dimension). The dimension
+        can be overridden via the embed_model constructor parameter — known
+        model dimensions are looked up, others return the default.
+
+        Returns:
+            The number of floats in each embedding vector.
+        """
+        _KNOWN_OPENAI_DIMENSIONS: dict[str, int] = {
+            "text-embedding-3-small": 1536,
+            "text-embedding-3-large": 3072,
+            "text-embedding-ada-002": 1536,
+        }
+        return _KNOWN_OPENAI_DIMENSIONS.get(self._embed_model, 1536)
 
 
 # ---------------------------------------------------------------------------
@@ -519,13 +622,13 @@ class AnthropicProvider(GenerateProvider):
         if base_url.startswith("http://") and not _is_loopback_hostname(base_url):
             raise ValueError(
                 "providers: Anthropic API key cannot be sent over non-HTTPS to non-loopback URL "
-                f"— use HTTPS or a localhost base URL, got {base_url!r}"
+                f"— use HTTPS or a localhost base URL, got {_strip_credentials(base_url)!r}"
             )
         if base_url != DEFAULT_ANTHROPIC_BASE_URL:
             log.warning(
                 "providers: Anthropic API key sent to non-default base_url %r "
                 "— verify this is not a credential exfiltration attack",
-                base_url,
+                _strip_credentials(base_url),
             )
         self._model = model
         self._base_url = base_url
@@ -556,7 +659,13 @@ class AnthropicProvider(GenerateProvider):
 
         Raises:
             RuntimeError: On HTTP errors or connection failures.
+            ValueError: If prompt length exceeds limit.
         """
+        if len(prompt) > MAX_TEXT_LENGTH:
+            raise ValueError(
+                f"providers: prompt exceeds maximum length {MAX_TEXT_LENGTH} "
+                f"(got {len(prompt)} characters)"
+            )
         effective_timeout = timeout if timeout is not None else self._timeout
         payload = json.dumps(
             {
@@ -690,6 +799,169 @@ class NoneProvider(EmbedProvider, GenerateProvider):
         """
         return False
 
+    def dimension(self) -> int:
+        """Return the configured zero-vector dimension.
+
+        Returns:
+            The number of floats in each embedding vector (defaults to 768).
+        """
+        return self._embed_dimensions
+
+
+# ---------------------------------------------------------------------------
+# SentenceTransformersProvider
+# ---------------------------------------------------------------------------
+
+DEFAULT_LOCAL_MODEL = "all-MiniLM-L6-v2"
+
+# Known sentence-transformers model dimensions.  Used by
+# SentenceTransformersProvider.dimension() so it never needs
+# to load the model (honouring the EmbedProvider ABC contract).
+_KNOWN_LOCAL_DIMENSIONS: dict[str, int] = {
+    "all-MiniLM-L6-v2": 384,
+    "all-MiniLM-L12-v2": 384,
+    "all-mpnet-base-v2": 768,
+    "paraphrase-MiniLM-L6-v2": 384,
+    "paraphrase-mpnet-base-v2": 768,
+    "all-roberta-large-v1": 1024,
+    "multi-qa-MiniLM-L6-cos-v1": 384,
+    "multi-qa-mpnet-base-dot-v1": 768,
+}
+_DEFAULT_LOCAL_DIMENSION = 384
+
+
+class SentenceTransformersProvider(EmbedProvider):
+    """Local embedding provider using sentence-transformers.
+
+    Runs embeddings locally without any server dependency. Requires the
+    ``sentence-transformers`` package (install via ``pip install llmem[local]``).
+
+    The constructor does NOT make network calls — model download happens
+    lazily on first ``embed()`` call or ``check_available()``.
+    """
+
+    def __init__(
+        self,
+        model_name: str = DEFAULT_LOCAL_MODEL,
+        dimensions: int | None = None,
+    ):
+        if not model_name or not isinstance(model_name, str):
+            raise ValueError("providers: local: model_name must be a non-empty string")
+        self._model_name = model_name
+        self._dimensions = dimensions
+        self._model = None
+        self._model_loaded = False
+        self._availability_checked = False
+        self._available: bool | None = None
+
+    def __repr__(self) -> str:
+        return f"SentenceTransformersProvider(model_name={self._model_name!r})"
+
+    def _load_model(self):
+        """Lazily load the sentence-transformers model.
+
+        Raises:
+            ImportError: If sentence_transformers is not installed.
+            RuntimeError: If the model fails to load.
+        """
+        if self._model_loaded:
+            return
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError:
+            raise ImportError(
+                "providers: local: sentence-transformers is not installed. "
+                "Install it with: pip install llmem[local]"
+            )
+        try:
+            self._model = SentenceTransformer(self._model_name)
+            self._model_loaded = True
+        except Exception as e:
+            raise RuntimeError(
+                f"providers: local: failed to load model {self._model_name!r}: {e}"
+            ) from e
+
+    def embed(self, text: str) -> list[float]:
+        """Embed a single text string using sentence-transformers.
+
+        Args:
+            text: The string to embed.
+
+        Returns:
+            A list of floats representing the embedding vector.
+
+        Raises:
+            RuntimeError: If the model failed to load.
+        """
+        result = self.embed_batch([text])
+        return result[0]
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Embed multiple text strings using sentence-transformers.
+
+        Uses the SentenceTransformer.encode() batch API for efficiency.
+
+        Args:
+            texts: A list of strings to embed. Empty input returns empty list.
+
+        Returns:
+            A list of embedding vectors, one per input text.
+
+        Raises:
+            RuntimeError: If the model failed to load.
+            ValueError: If batch size or text length exceeds limits.
+        """
+        if not texts:
+            return []
+        _validate_embed_inputs(texts)
+        try:
+            self._load_model()
+        except Exception:
+            log.error("providers: local: embed failed: model not loaded", exc_info=True)
+            raise
+        try:
+            embeddings = self._model.encode(texts, convert_to_numpy=True)
+            return [row.tolist() for row in embeddings]
+        except Exception as e:
+            log.error("providers: local: embed failed: %s", e, exc_info=True)
+            raise RuntimeError(f"providers: local: embed failed: {e}") from e
+
+    def check_available(self) -> bool:
+        """Check if the sentence-transformers model can be loaded.
+
+        Returns:
+            True if the model loads successfully, False on any error.
+            Never raises. Caches the result so repeated calls don't
+            re-load the model.
+        """
+        if self._availability_checked:
+            return bool(self._available)
+        try:
+            self._load_model()
+            self._available = True
+        except Exception:
+            log.debug("providers: local: check_available failed", exc_info=True)
+            self._available = False
+        self._availability_checked = True
+        return bool(self._available)
+
+    def dimension(self) -> int:
+        """Return the embedding dimension for the model.
+
+        If ``dimensions`` was provided in the constructor, returns that
+        value. Otherwise, looks up the model name in the known-dimensions
+        table. Unknown models return the default (384).
+
+        This method is lightweight — it never loads the model or makes
+        network calls, honouring the EmbedProvider ABC contract.
+
+        Returns:
+            The number of floats in each embedding vector.
+        """
+        if self._dimensions is not None:
+            return self._dimensions
+        return _KNOWN_LOCAL_DIMENSIONS.get(self._model_name, _DEFAULT_LOCAL_DIMENSION)
+
 
 # ---------------------------------------------------------------------------
 # Provider resolution
@@ -737,11 +1009,14 @@ def resolve_provider(
         ollama_cfg.get("base_url") or legacy_ollama_url or DEFAULT_OLLAMA_BASE_URL
     )
 
+    local_cfg = provider_cfg.get("local") or {}
+
     # Resolve embed provider
     embed_provider = _resolve_embed_provider(
         embed_provider_name,
         embed_cfg,
         ollama_base_url,
+        local_cfg,
         config,
     )
 
@@ -760,14 +1035,16 @@ def _resolve_embed_provider(
     name: str,
     embed_cfg: dict,
     ollama_base_url: str,
+    local_cfg: dict,
     config: dict,
 ) -> EmbedProvider:
     """Resolve the embed provider based on name and config.
 
     Args:
-        name: Provider name ('ollama', 'openai', 'anthropic', 'none').
+        name: Provider name ('ollama', 'openai', 'anthropic', 'local', 'none').
         embed_cfg: The provider.embed config section.
         ollama_base_url: The Ollama base URL.
+        local_cfg: The provider.local config section.
         config: The full config dict.
 
     Returns:
@@ -816,6 +1093,8 @@ def _resolve_embed_provider(
     elif name == "anthropic":
         log.info("providers: anthropic has no embedding API, trying fallback")
         return _fallback_embed_provider(config)
+    elif name == "local":
+        return _resolve_local_embed_provider(local_cfg, model_override, config)
     elif name == "none":
         return NoneProvider()
     else:
@@ -909,21 +1188,65 @@ def _resolve_generate_provider(
         return _fallback_generate_provider(config)
 
 
+def _resolve_local_embed_provider(
+    local_cfg: dict,
+    model_override: str | None,
+    config: dict,
+) -> EmbedProvider:
+    """Resolve the local (sentence-transformers) embed provider.
+
+    Args:
+        local_cfg: The provider.local config section.
+        model_override: Model name override from provider.embed.model.
+        config: The full config dict.
+
+    Returns:
+        A SentenceTransformersProvider if available, or NoneProvider with warning.
+    """
+    model_name = model_override or local_cfg.get("model") or DEFAULT_LOCAL_MODEL
+    try:
+        provider = SentenceTransformersProvider(model_name=model_name)
+    except ValueError:
+        log.warning(
+            "providers: local embed config invalid, falling back to NoneProvider"
+        )
+        return _fallback_embed_provider(config, skip_openai=False, skip_local=True)
+    if provider.check_available():
+        return provider
+    log.warning(
+        "providers: local embed provider (sentence-transformers) not available, "
+        "falling back to NoneProvider. Install sentence-transformers with: "
+        "pip install llmem[local]"
+    )
+    return _fallback_embed_provider(config, skip_openai=False, skip_local=True)
+
+
 def _fallback_embed_provider(
     config: dict,
     skip_openai: bool = False,
+    skip_local: bool = False,
 ) -> EmbedProvider:
-    """Try fallback embed providers: openai, then none.
+    """Try fallback embed providers: local, openai, then none.
 
     Args:
         config: The full config dict.
         skip_openai: If True, skip OpenAI fallback.
+        skip_local: If True, skip local (sentence-transformers) fallback.
 
     Returns:
         An EmbedProvider instance (at worst, NoneProvider).
     """
+    provider_cfg = config.get("provider") or {}
+    if not skip_local:
+        local_cfg = provider_cfg.get("local") or {}
+        local_model = local_cfg.get("model") or DEFAULT_LOCAL_MODEL
+        try:
+            provider = SentenceTransformersProvider(model_name=local_model)
+            if provider.check_available():
+                return provider
+        except ValueError:
+            log.info("providers: local embed not available in fallback, skipping")
     if not skip_openai:
-        provider_cfg = config.get("provider") or {}
         openai_cfg = provider_cfg.get("openai") or {}
         api_key = openai_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY")
         if api_key:

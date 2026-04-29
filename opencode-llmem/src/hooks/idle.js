@@ -4,6 +4,9 @@
  * When an OpenCode session goes idle (debounced 30 seconds), this
  * hook triggers memory extraction and introspection via the llmem CLI.
  * The debounce ensures the extraction doesn't fire on every brief pause.
+ *
+ * Rate limiting: concurrent invocations are capped to MAX_CONCURRENT
+ * processes to prevent resource exhaustion during rapid idle events.
  */
 
 var child_process = require('child_process');
@@ -14,8 +17,14 @@ var DEBOUNCE_MS = 30000; // 30 seconds
 // Maximum age for idle tracking entries before eviction (5 minutes)
 var MAX_IDLE_AGE_MS = 300000;
 
+// Maximum concurrent llmem processes to prevent resource exhaustion
+var MAX_CONCURRENT = 3;
+
 // Track last idle time per session for debouncing
 var _lastIdleTime = {};
+
+// Track currently running processes for rate limiting
+var _activeCount = 0;
 
 /**
  * Evict stale entries from the idle time tracker.
@@ -36,6 +45,9 @@ function _evictStaleEntries() {
 /**
  * Handle the session.idle event by extracting memories (debounced).
  *
+ * Rate-limits concurrent invocations to MAX_CONCURRENT to prevent
+ * resource exhaustion during rapid idle events.
+ *
  * @param {string} sessionId - The OpenCode session ID.
  * @param {object} config - The llmem configuration object.
  */
@@ -55,11 +67,21 @@ function handle(sessionId, config) {
     return;
   }
 
+  // Rate limit: skip if too many concurrent processes are running
+  if (_activeCount >= MAX_CONCURRENT) {
+    console.warn(
+      'opencode-llmem: session.idle hook skipped: ' +
+      _activeCount + ' concurrent processes already running (max ' + MAX_CONCURRENT + ')'
+    );
+    return;
+  }
+
   _lastIdleTime[sessionId] = now;
 
   // Evict stale entries to prevent unbounded growth
   _evictStaleEntries();
 
+  _activeCount++;
   try {
     // Use execFileSync to prevent command injection via sessionId
     child_process.execFileSync(
@@ -70,6 +92,8 @@ function handle(sessionId, config) {
   } catch (err) {
     // Graceful degradation — don't crash on extraction failure
     console.error('opencode-llmem: session.idle hook failed: ' + err.message);
+  } finally {
+    _activeCount--;
   }
 }
 
