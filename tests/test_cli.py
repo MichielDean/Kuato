@@ -743,12 +743,10 @@ class TestCli_SearchCodeInterleaving:
 
 
 class TestCli_EmbedMetrics:
-    """Test cmd_embed --metrics reports anisotropy and similarity range."""
+    """Test cmd_embed reports anisotropy and similarity range."""
 
-    def test_embed_metrics_reports_anisotropy_and_similarity_range(
-        self, tmp_path, capsys
-    ):
-        """cmd_embed --metrics reports anisotropy and similarity range values."""
+    def test_embed_reports_anisotropy_and_similarity_range(self, tmp_path, capsys):
+        """cmd_embed reports anisotropy and similarity range values."""
         from llmem.cli import cmd_embed
         from llmem.embed import EmbeddingEngine
         from llmem.store import MemoryStore
@@ -772,7 +770,7 @@ class TestCli_EmbedMetrics:
         )
         store.close()
 
-        args = argparse.Namespace(db=db, metrics=True)
+        args = argparse.Namespace(db=db)
         with patch(
             "llmem.cli.MemoryStore",
             side_effect=lambda db_path, **kw: MemoryStore(
@@ -787,8 +785,8 @@ class TestCli_EmbedMetrics:
         assert "Discrimination gap" in captured.out
         assert "3 vectors" in captured.out
 
-    def test_embed_metrics_warns_on_high_anisotropy(self, tmp_path, capsys):
-        """cmd_embed --metrics warns when anisotropy exceeds 0.5."""
+    def test_embed_warns_on_high_anisotropy(self, tmp_path, capsys):
+        """cmd_embed warns when anisotropy exceeds 0.5."""
         from llmem.cli import cmd_embed
         from llmem.embed import EmbeddingEngine
         from llmem.store import MemoryStore
@@ -803,7 +801,7 @@ class TestCli_EmbedMetrics:
         store.add(type="fact", content="test3", embedding=emb)
         store.close()
 
-        args = argparse.Namespace(db=db, metrics=True)
+        args = argparse.Namespace(db=db)
         with patch(
             "llmem.cli.MemoryStore",
             side_effect=lambda db_path, **kw: MemoryStore(
@@ -817,8 +815,8 @@ class TestCli_EmbedMetrics:
         assert "WARNING" in captured.err
         assert "anisotropy" in captured.err.lower() or "Anisotropy" in captured.err
 
-    def test_embed_metrics_warns_on_low_similarity_range(self, tmp_path, capsys):
-        """cmd_embed --metrics warns when similarity_range is below 0.1."""
+    def test_embed_warns_on_low_similarity_range(self, tmp_path, capsys):
+        """cmd_embed warns when similarity_range is below 0.1."""
         from llmem.cli import cmd_embed
         from llmem.embed import EmbeddingEngine
         from llmem.store import MemoryStore
@@ -832,7 +830,7 @@ class TestCli_EmbedMetrics:
         store.add(type="fact", content="test2", embedding=emb)
         store.close()
 
-        args = argparse.Namespace(db=db, metrics=True)
+        args = argparse.Namespace(db=db)
         with patch(
             "llmem.cli.MemoryStore",
             side_effect=lambda db_path, **kw: MemoryStore(
@@ -846,8 +844,8 @@ class TestCli_EmbedMetrics:
         # Both high anisotropy and low similarity range should warn
         assert "poor quality" in captured.err
 
-    def test_embed_metrics_no_warning_on_good_embeddings(self, tmp_path, capsys):
-        """cmd_embed --metrics does not warn when metrics are within thresholds."""
+    def test_embed_no_warning_on_good_embeddings(self, tmp_path, capsys):
+        """cmd_embed does not warn when metrics are within thresholds."""
         from llmem.cli import cmd_embed
         from llmem.embed import EmbeddingEngine
         from llmem.store import MemoryStore
@@ -876,7 +874,7 @@ class TestCli_EmbedMetrics:
         )
         store.close()
 
-        args = argparse.Namespace(db=db, metrics=True)
+        args = argparse.Namespace(db=db)
         with patch(
             "llmem.cli.MemoryStore",
             side_effect=lambda db_path, **kw: MemoryStore(
@@ -890,8 +888,8 @@ class TestCli_EmbedMetrics:
         assert "Similarity range" in captured.out
         assert "WARNING" not in captured.err
 
-    def test_embed_without_metrics_flag_no_output(self, tmp_path, capsys):
-        """cmd_embed without --metrics flag does not report metrics."""
+    def test_embed_always_reports_metrics(self, tmp_path, capsys):
+        """cmd_embed always reports metrics — no --metrics flag needed."""
         from llmem.cli import cmd_embed
         from llmem.embed import EmbeddingEngine
         from llmem.store import MemoryStore
@@ -905,7 +903,8 @@ class TestCli_EmbedMetrics:
         )
         store.close()
 
-        args = argparse.Namespace(db=db, metrics=False)
+        # No metrics attribute on args — embed always reports
+        args = argparse.Namespace(db=db)
         with patch(
             "llmem.cli.MemoryStore",
             side_effect=lambda db_path, **kw: MemoryStore(
@@ -915,8 +914,8 @@ class TestCli_EmbedMetrics:
             cmd_embed(args)
 
         captured = capsys.readouterr()
-        assert "Anisotropy" not in captured.out
-        assert "Similarity range" not in captured.out
+        assert "Anisotropy" in captured.out
+        assert "Similarity range" in captured.out
 
     def test_embed_does_not_generate_new_embeddings(self, tmp_path, capsys):
         """cmd_embed only analyses existing embeddings — it never creates new ones.
@@ -935,7 +934,7 @@ class TestCli_EmbedMetrics:
         assert store.get(mid)["embedding"] is None
         store.close()
 
-        args = argparse.Namespace(db=db, metrics=True)
+        args = argparse.Namespace(db=db)
         with patch(
             "llmem.cli.MemoryStore",
             side_effect=lambda db_path, **kw: MemoryStore(

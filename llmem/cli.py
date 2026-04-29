@@ -637,22 +637,18 @@ def cmd_embed(args):
     from the embeddings already stored in the database. Does NOT
     generate new embeddings — only analyses existing ones.
 
-    Metrics are reported only when the --metrics flag is provided;
-    without it, the command exits silently.
+    Since the sole purpose of the embed subcommand is to report
+    metrics, they are always reported (no --metrics flag needed).
 
     Args:
         args: argparse Namespace with attributes:
             - db (Path): Database path.
-            - metrics (bool): If True, compute and report embedding metrics.
 
     Prints metric values to stdout. Emits warnings if anisotropy
     exceeds the threshold or similarity range is below the threshold.
     """
     store = MemoryStore(args.db)
-
-    if getattr(args, "metrics", False):
-        _report_embedding_metrics(store)
-
+    _report_embedding_metrics(store)
     store.close()
 
 
@@ -970,11 +966,6 @@ def main():
 
     # embed
     p_embed = subparsers.add_parser("embed", help="Report embedding quality metrics")
-    p_embed.add_argument(
-        "--metrics",
-        action="store_true",
-        help="Compute and report embedding quality metrics (anisotropy, similarity range, discrimination gap)",
-    )
 
     # consolidate
     p_consolidate = subparsers.add_parser(
