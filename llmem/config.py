@@ -12,7 +12,7 @@ from .paths import (
     get_config_path as _get_config_path,
     _validate_home_path,
 )
-from .url_validate import is_safe_url
+from .url_validate import is_safe_url, _strip_credentials
 
 log = logging.getLogger(__name__)
 
@@ -191,12 +191,32 @@ def get_db_path(config_path: Path | None = None, config: dict | None = None) -> 
 
 
 def get_ollama_url(config_path: Path | None = None, config: dict | None = None) -> str:
+    """Return the Ollama base URL from config, falling back to the default.
+
+    Validates the URL with is_safe_url() to prevent SSRF attacks
+    (e.g. metadata endpoint access). Strips credentials from error
+    messages to avoid leaking secrets.
+
+    Args:
+        config_path: Optional path to config.yaml.
+        config: Optional pre-loaded config dict.
+
+    Returns:
+        The validated Ollama URL string.
+
+    Raises:
+        ValueError: If the URL fails scheme or is_safe_url() validation.
+    """
     config = _resolve_config(config_path, config)
     defaults = _resolve_defaults()
     url = config.get("memory", {}).get("ollama_url") or defaults["memory"]["ollama_url"]
     if not url.startswith(("http://", "https://")):
         raise ValueError(
-            f"llmem: config: unsafe Ollama URL (must be http/https): {url!r}"
+            f"llmem: config: unsafe Ollama URL (must be http/https): {_strip_credentials(url)!r}"
+        )
+    if not is_safe_url(url, allow_remote=True):
+        raise ValueError(
+            f"llmem: config: Ollama URL blocked (unsafe address): {_strip_credentials(url)!r}"
         )
     if not is_safe_url(url, allow_remote=True):
         raise ValueError(
