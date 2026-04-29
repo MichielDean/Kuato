@@ -890,6 +890,34 @@ class TestCli_EmbedMetrics:
         assert "Similarity range" in captured.out
         assert "WARNING" not in captured.err
 
+    def test_embed_without_metrics_flag_no_output(self, tmp_path, capsys):
+        """cmd_embed without --metrics flag does not report metrics."""
+        from llmem.cli import cmd_embed
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.add(
+            type="fact",
+            content="test fact",
+            embedding=EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0]),
+        )
+        store.close()
+
+        args = argparse.Namespace(db=db, metrics=False)
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_embed(args)
+
+        captured = capsys.readouterr()
+        assert "Anisotropy" not in captured.out
+        assert "Similarity range" not in captured.out
+
 
 class TestCli_ConsolidateMetrics:
     """Test cmd_consolidate --metrics reports embedding quality metrics."""

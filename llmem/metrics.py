@@ -90,6 +90,10 @@ def anisotropy(embeddings: list[list[float]]) -> float:
     For 2+ identical non-zero vectors, returns 1.0. For 2+ orthogonal
     vectors, returns a value near 0.0.
 
+    Anisotropy is defined as the average pairwise cosine similarity,
+    clamped to [0.0, 1.0]. Opposite vectors (cosine = -1) can produce
+    negative raw averages, but the clamped result is always non-negative.
+
     Args:
         embeddings: List of embedding vectors.
 
@@ -100,14 +104,11 @@ def anisotropy(embeddings: list[list[float]]) -> float:
     if len(embeddings) <= 1:
         return 0.0
 
-    # Anisotropy: 1 minus the average pairwise cosine similarity,
-    # adjusted so that isotropic (uniform) distributions score low.
-    # Using: anisotropy = max_cosine - min_cosine if they exist, but
-    # the standard definition is average pairwise similarity centred
-    # around the mean direction.  A simpler proxy: average pairwise
-    # cosine similarity.  When all vectors are identical, average
-    # pairwise cosine = 1.0, anisotropy = 1.0.  When all vectors are
-    # orthogonal, average pairwise cosine ≈ 0.0, anisotropy ≈ 0.0.
+    # Anisotropy: average pairwise cosine similarity, clamped to [0, 1].
+    # When all vectors are identical, average pairwise cosine = 1.0
+    # → anisotropy = 1.0. When all orthogonal, avg ≈ 0.0 → anisotropy ≈ 0.0.
+    # Opposite vectors can produce negative raw values; clamping ensures
+    # the contract [0.0, 1.0] is always honoured.
     total = 0.0
     count = 0
     for i in range(len(embeddings)):
@@ -117,9 +118,7 @@ def anisotropy(embeddings: list[list[float]]) -> float:
     if count == 0:
         return 0.0
     avg_sim = total / count
-    # Anisotropy is the average pairwise similarity for identical
-    # vectors this is 1.0, for orthogonal it's ~0.0.
-    return avg_sim
+    return max(0.0, min(1.0, avg_sim))
 
 
 def similarity_range(embeddings: list[list[float]]) -> float:

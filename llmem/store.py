@@ -1596,7 +1596,24 @@ class MemoryStore:
             d["hints"] = []
         return d
 
+    def get_embeddings_with_types(self) -> list[tuple[bytes, str]]:
+        """Return all non-null embeddings with their memory type.
+
+        Returns a list of (embedding_bytes, type) tuples for each memory
+        that has an embedding. Used by the CLI metrics reporter to compute
+        embedding quality metrics without accessing private store internals.
+
+        Returns:
+            List of (embedding, type) tuples. Empty list if no embeddings
+            exist.
+        """
+        conn = self._connect()
+        rows = conn.execute(
+            'SELECT "embedding", "type" FROM "memories" WHERE "embedding" IS NOT NULL'
+        ).fetchall()
+        return [(row["embedding"], row["type"]) for row in rows]
+
     @staticmethod
     def _cosine_sim(a: list[float], b: list[float]) -> float:
-        """Compute cosine similarity. Delegates to metrics.cosine_similarity."""
+        """Compute cosine similarity. Delegates to metrics.cosine_similarity"""
         return _cosine_similarity(a, b)

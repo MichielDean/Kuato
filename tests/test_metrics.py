@@ -100,10 +100,24 @@ class TestMetrics_Anisotropy:
         assert anisotropy([[1, 0, 0]]) == 0.0
 
     def test_anisotropy_two_opposite_vectors(self):
-        """Anisotropy of two opposite vectors (cos_sim = -1) should be negative."""
+        """Anisotropy of two opposite vectors (cos_sim = -1) is clamped to 0.0."""
         result = anisotropy([[1, 0], [-1, 0]])
-        # Average pairwise similarity = -1.0, so anisotropy = -1.0
-        assert result == pytest.approx(-1.0)
+        # Average pairwise similarity = -1.0, but clamped to [0.0, 1.0]
+        assert result == pytest.approx(0.0)
+
+    def test_anisotropy_always_in_zero_to_one_range(self):
+        """Anisotropy always returns a value in [0.0, 1.0] per its contract."""
+        # Opposite vectors produce raw average similarity = -1.0,
+        # but the contract says [0.0, 1.0], so it must be clamped.
+        result = anisotropy([[1, 0, 0], [-1, 0, 0]])
+        assert 0.0 <= result <= 1.0
+
+    def test_anisotropy_mixed_opposite_and_aligned(self):
+        """Anisotropy of mixed opposite and aligned vectors stays in [0.0, 1.0]."""
+        # [1,0], [1,0], [-1,0]: pairs are (1.0, -1.0, -1.0)
+        # raw avg = -1/3, clamped to 0.0
+        result = anisotropy([[1, 0], [1, 0], [-1, 0]])
+        assert 0.0 <= result <= 1.0
 
 
 class TestMetrics_SimilarityRange:
@@ -248,3 +262,49 @@ class TestMetrics_EmbeddingMetricsDataclass:
             anisotropy=0.4, similarity_range=0.6, discrimination_gap=None
         )
         assert m.discrimination_gap is None
+
+
+class TestMetrics_StoreGetEmbeddingsWithTypes:
+    """Test MemoryStore.get_embeddings_with_types public API."""
+
+    def test_returns_embeddings_with_types(self, tmp_path):
+        """get_embeddings_with_types returns (bytes, type) pairs for memories with embeddings."""
+        from llmem.store import MemoryStore
+        from llmem.embed import EmbeddingEngine
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.add(
+            type="fact",
+            content="embedded fact",
+            embedding=EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0]),
+        )
+        store.add(
+            type="decision",
+            content="embedded decision",
+            embedding=EmbeddingEngine.vec_to_bytes([0.0, 1.0, 0.0]),
+        )
+        store.add(
+            type="fact",
+            content="fact without embedding",
+        )
+
+        rows = store.get_embeddings_with_types()
+        assert len(rows) == 2
+        assert all(isinstance(emb, bytes) for emb, _ in rows)
+        types = [t for _, t in rows]
+        assert "fact" in types
+        assert "decision" in types
+        store.close()
+
+    def test_returns_empty_when_no_embeddings(self, tmp_path):
+        """get_embeddings_with_types returns empty list when no embeddings exist."""
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.add(type="fact", content="no embedding here")
+
+        rows = store.get_embeddings_with_types()
+        assert rows == []
+        store.close()

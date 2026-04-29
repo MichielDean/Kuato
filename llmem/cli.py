@@ -35,6 +35,64 @@ from .chunking import (
 from .code_index import CodeIndex
 
 
+def _report_embedding_metrics(store: MemoryStore) -> None:
+    """Compute and print embedding quality metrics from the store.
+
+    Fetches all embeddings via store.get_embeddings_with_types(),
+    computes anisotropy, similarity range, and discrimination gap,
+    and prints the results. Emits warnings to stderr when metrics
+    exceed warning thresholds.
+
+    Args:
+        store: An open MemoryStore instance.
+    """
+    rows = store.get_embeddings_with_types()
+
+    if not rows:
+        print("No embedded memories found.")
+        return
+
+    embeddings = []
+    labels = []
+    for emb_bytes, mem_type in rows:
+        vec = bytes_to_vec(emb_bytes)
+        if vec:
+            embeddings.append(vec)
+            labels.append(mem_type)
+
+    if not embeddings:
+        print("No valid embeddings found.")
+        return
+
+    m = compute_metrics(embeddings, labels=labels)
+
+    print(f"Embedding metrics ({len(embeddings)} vectors):")
+    print(f"  Anisotropy:        {m.anisotropy:.4f}")
+    print(f"  Similarity range:  {m.similarity_range:.4f}")
+    if m.discrimination_gap is not None:
+        print(f"  Discrimination gap: {m.discrimination_gap:.4f}")
+
+    warnings = []
+    if m.anisotropy > ANISOTROPY_WARNING_THRESHOLD:
+        warnings.append(
+            f"Anisotropy ({m.anisotropy:.4f}) exceeds threshold "
+            f"({ANISOTROPY_WARNING_THRESHOLD})."
+        )
+    if m.similarity_range < SIMILARITY_RANGE_WARNING_THRESHOLD:
+        warnings.append(
+            f"Similarity range ({m.similarity_range:.4f}) is below threshold "
+            f"({SIMILARITY_RANGE_WARNING_THRESHOLD})."
+        )
+    if warnings:
+        print()
+        for w in warnings:
+            print(f"WARNING: {w}", file=sys.stderr)
+        print(
+            "Embeddings may be poor quality, consider using a different model.",
+            file=sys.stderr,
+        )
+
+
 VALID_SOURCES = ["manual", "session", "heartbeat", "extraction", "import"]
 
 # Maximum size for imported files (10 MiB, matching config max_file_size default)
@@ -576,7 +634,8 @@ def cmd_embed(args):
     """Embed memories and optionally report quality metrics.
 
     Reads all memories from the store and computes embedding quality
-    metrics (anisotropy, similarity range, discrimination gap).
+    metrics (anisotropy, similarity range, discrimination gap) only
+    when the --metrics flag is provided.
 
     Args:
         args: argparse Namespace with attributes:
@@ -586,61 +645,10 @@ def cmd_embed(args):
     Prints metric values to stdout. Emits warnings if anisotropy
     exceeds the threshold or similarity range is below the threshold.
     """
-    from .embed import EmbeddingEngine
-
     store = MemoryStore(args.db)
 
-    conn = store._connect()
-    rows = conn.execute(
-        'SELECT "id", "type", "embedding" FROM "memories" WHERE "embedding" IS NOT NULL'
-    ).fetchall()
-    conn.close()
-
-    if not rows:
-        print("No embedded memories found.")
-        store.close()
-        return
-
-    embeddings = []
-    labels = []
-    for row in rows:
-        vec = bytes_to_vec(row["embedding"])
-        if vec:
-            embeddings.append(vec)
-            labels.append(row["type"])
-
-    if not embeddings:
-        print("No valid embeddings found.")
-        store.close()
-        return
-
-    metrics = compute_metrics(embeddings, labels=labels)
-
-    print(f"Embedding metrics ({len(embeddings)} vectors):")
-    print(f"  Anisotropy:        {metrics.anisotropy:.4f}")
-    print(f"  Similarity range:  {metrics.similarity_range:.4f}")
-    if metrics.discrimination_gap is not None:
-        print(f"  Discrimination gap: {metrics.discrimination_gap:.4f}")
-
-    warnings = []
-    if metrics.anisotropy > ANISOTROPY_WARNING_THRESHOLD:
-        warnings.append(
-            f"Anisotropy ({metrics.anisotropy:.4f}) exceeds threshold "
-            f"({ANISOTROPY_WARNING_THRESHOLD})."
-        )
-    if metrics.similarity_range < SIMILARITY_RANGE_WARNING_THRESHOLD:
-        warnings.append(
-            f"Similarity range ({metrics.similarity_range:.4f}) is below threshold "
-            f"({SIMILARITY_RANGE_WARNING_THRESHOLD})."
-        )
-    if warnings:
-        print()
-        for w in warnings:
-            print(f"WARNING: {w}", file=sys.stderr)
-        print(
-            "Embeddings may be poor quality, consider using a different model.",
-            file=sys.stderr,
-        )
+    if getattr(args, "metrics", False):
+        _report_embedding_metrics(store)
 
     store.close()
 
@@ -678,47 +686,8 @@ def cmd_consolidate(args):
 
     # Report embedding metrics if requested
     if getattr(args, "metrics", False):
-        conn = store._connect()
-        rows = conn.execute(
-            'SELECT "id", "type", "embedding" FROM "memories" WHERE "embedding" IS NOT NULL'
-        ).fetchall()
-        conn.close()
-
-        if rows:
-            embeddings = []
-            labels = []
-            for row in rows:
-                vec = bytes_to_vec(row["embedding"])
-                if vec:
-                    embeddings.append(vec)
-                    labels.append(row["type"])
-
-            if embeddings:
-                m = compute_metrics(embeddings, labels=labels)
-                print(f"\nEmbedding metrics ({len(embeddings)} vectors):")
-                print(f"  Anisotropy:         {m.anisotropy:.4f}")
-                print(f"  Similarity range:   {m.similarity_range:.4f}")
-                if m.discrimination_gap is not None:
-                    print(f"  Discrimination gap: {m.discrimination_gap:.4f}")
-
-                warnings = []
-                if m.anisotropy > ANISOTROPY_WARNING_THRESHOLD:
-                    warnings.append(
-                        f"Anisotropy ({m.anisotropy:.4f}) exceeds threshold "
-                        f"({ANISOTROPY_WARNING_THRESHOLD})."
-                    )
-                if m.similarity_range < SIMILARITY_RANGE_WARNING_THRESHOLD:
-                    warnings.append(
-                        f"Similarity range ({m.similarity_range:.4f}) is below threshold "
-                        f"({SIMILARITY_RANGE_WARNING_THRESHOLD})."
-                    )
-                if warnings:
-                    for w in warnings:
-                        print(f"WARNING: {w}", file=sys.stderr)
-                    print(
-                        "Embeddings may be poor quality, consider using a different model.",
-                        file=sys.stderr,
-                    )
+        print()
+        _report_embedding_metrics(store)
 
     store.close()
 
