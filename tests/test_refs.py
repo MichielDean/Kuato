@@ -1,7 +1,5 @@
 """Tests for llmem.refs module — resolve_code_ref() and validate_code_ref_path()."""
 
-from pathlib import Path
-
 import pytest
 
 from llmem.refs import resolve_code_ref, validate_code_ref_path

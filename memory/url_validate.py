@@ -60,7 +60,7 @@ def _check_ip_access(
     if _ip_is_blocked(ip):
         return False
     if ip.is_loopback:
-        if not allow_remote and port != OLLAMA_DEFAULT_PORT:
+        if port != OLLAMA_DEFAULT_PORT:
             return False
         return True
     # Non-loopback IPs are only allowed when allow_remote is True.

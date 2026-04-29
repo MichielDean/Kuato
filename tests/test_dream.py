@@ -137,7 +137,7 @@ class TestDream_DeepPhaseAutoLink:
         # Add two memories with near-identical embeddings
         emb = struct.pack("3f", 0.9, 0.1, 0.1)
         mid1 = store.add(type="fact", content="python programming", embedding=emb)
-        mid2 = store.add(type="fact", content="python programming lang", embedding=emb)
+        store.add(type="fact", content="python programming lang", embedding=emb)
 
         dreamer = Dreamer(store=store, auto_link_threshold=0.85)
         result = dreamer.run(apply=True, phase="deep")

@@ -187,7 +187,8 @@ def _split_sql_statements(sql: str) -> list[str]:
             # Check if current_lines only has comments/blanks — if so,
             # this is a standalone transaction control statement
             all_comments = all(
-                l.strip() == "" or l.strip().startswith("--") for l in current_lines
+                line.strip() == "" or line.strip().startswith("--")
+                for line in current_lines
             )
             if all_comments:
                 # Discard the comments before and the transaction control itself
@@ -203,9 +204,9 @@ def _split_sql_statements(sql: str) -> list[str]:
             # Filter out comment-only and _schema_migrations statements
             if stmt:
                 non_comment_lines = [
-                    l
-                    for l in stmt.split("\n")
-                    if l.strip() and not l.strip().startswith("--")
+                    line
+                    for line in stmt.split("\n")
+                    if line.strip() and not line.strip().startswith("--")
                 ]
                 if non_comment_lines:
                     # Skip _schema_migrations inserts — the migration runner
@@ -219,9 +220,9 @@ def _split_sql_statements(sql: str) -> list[str]:
         stmt = "\n".join(current_lines).strip()
         if stmt:
             non_comment_lines = [
-                l
-                for l in stmt.split("\n")
-                if l.strip() and not l.strip().startswith("--")
+                line
+                for line in stmt.split("\n")
+                if line.strip() and not line.strip().startswith("--")
             ]
             if non_comment_lines:
                 if 'INSERT INTO "_schema_migrations"' not in stmt:
@@ -1125,7 +1126,7 @@ class MemoryStore:
         # Build target_type filter clause if specified
         tt_filter = ""
         if target_type is not None:
-            tt_filter = f' AND "target_type" = ?'
+            tt_filter = ' AND "target_type" = ?'
 
         conn = self._connect()
         placeholders = ",".join("?" for _ in start_ids)
