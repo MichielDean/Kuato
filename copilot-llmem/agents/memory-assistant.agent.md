@@ -90,16 +90,15 @@ llmem introspect --category NULL_SAFETY --what-happened "missing null check" --c
 llmem introspect --auto --session /path/to/session.json
 ```
 
-### Review and Test Tracking
+### Review Tracking
 
 ```bash
 # Track review findings
 llmem track-review --finding-file /tmp/review-findings.json --context "handler.py"
 llmem track-review --category ERROR_HANDLING --what-happened "swallowed error" --context "handler.py:42" --severity Required --caught-by self-review
 
-# Track test outcomes
-llmem track-test --passed --command lint --context "handler.py"
-llmem track-test --failures 2 --command test --what-happened "2 test failures" --context "handler.py"
+# Signal a clean review (no findings)
+llmem track-review --context "handler.py"
 ```
 
 ## Memory Types

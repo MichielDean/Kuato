@@ -1019,11 +1019,7 @@ def cmd_track_review(args):
             - finding_file (str|None): Path to JSON file with findings array.
             - db (Path): Database path.
     """
-    from .taxonomy import (
-        ERROR_TAXONOMY,
-        REVIEW_SEVERITY_TAXONOMY,
-        SELF_ASSESSMENT_FIELDS,
-    )
+    from .taxonomy import ERROR_TAXONOMY
 
     store = MemoryStore(args.db)
 
