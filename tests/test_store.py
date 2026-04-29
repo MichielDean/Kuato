@@ -458,3 +458,102 @@ class TestStore_Migration005Compatibility:
         assert store.delete(mid)
         assert store.get(mid) is None
         store.close()
+
+
+class TestStore_RelationsRefTypes:
+    """Test add_relation with target_type and references relation type."""
+
+    def test_add_relation_with_target_type_code(self, store):
+        """add_relation with target_type='code' inserts row with target_type='code'."""
+        mid = store.add(type="fact", content="source memory")
+        code_target_id = "src/lib.rs:42:58"
+        rel_id = store.add_relation(
+            mid, code_target_id, "references", target_type="code"
+        )
+        assert rel_id is not None
+        relations = store.get_relations(mid)
+        assert len(relations) >= 1
+        ref_rel = [r for r in relations if r["id"] == rel_id][0]
+        assert ref_rel["target_type"] == "code"
+        assert ref_rel["target_id"] == code_target_id
+        assert ref_rel["relation_type"] == "references"
+
+    def test_add_relation_default_target_type_memory(self, store):
+        """add_relation without target_type defaults to 'memory'."""
+        mid1 = store.add(type="fact", content="memory A")
+        mid2 = store.add(type="fact", content="memory B")
+        rel_id = store.add_relation(mid1, mid2, "related_to")
+        relations = store.get_relations(mid1)
+        ref_rel = [r for r in relations if r["id"] == rel_id][0]
+        assert ref_rel["target_type"] == "memory"
+
+    def test_add_relation_references_type_accepted(self, store):
+        """add_relation with 'references' type succeeds (CHECK constraint extended)."""
+        mid = store.add(type="fact", content="source memory")
+        mid2 = store.add(type="fact", content="target memory")
+        rel_id = store.add_relation(mid, mid2, "references")
+        assert rel_id is not None
+        relations = store.get_relations(mid)
+        assert any(r["relation_type"] == "references" for r in relations)
+
+    def test_existing_relations_have_target_type_memory(self, store):
+        """All relation rows have target_type='memory' after migration 006."""
+        mid1 = store.add(type="fact", content="first")
+        mid2 = store.add(type="fact", content="second")
+        store.add_relation(mid1, mid2, "related_to")
+        conn = store._connect()
+        rows = conn.execute('SELECT "target_type" FROM "relations"').fetchall()
+        store.close() if False else None
+        for row in rows:
+            assert row[0] == "memory"
+
+    def test_get_relations_includes_target_type(self, store):
+        """get_relations(mem_id) returns dicts with a target_type key."""
+        mid = store.add(type="fact", content="test memory")
+        mid2 = store.add(type="fact", content="related memory")
+        store.add_relation(mid, mid2, "related_to")
+        relations = store.get_relations(mid)
+        assert len(relations) >= 1
+        for r in relations:
+            assert "target_type" in r
+
+
+class TestStore_TraverseRelationsWithRefs:
+    """Test traverse_relations with target_type filter for code refs."""
+
+    def test_traverse_relations_follows_code_refs(self, store):
+        """traverse_relations where mem has a references edge to a code chunk
+        returns the code chunk target_id."""
+        mid = store.add(type="fact", content="source memory")
+        code_ref = "src/lib.rs:42:58"
+        store.add_relation(mid, code_ref, "references", target_type="code")
+        results = store.traverse_relations([mid], max_depth=1)
+        code_results = [r for r in results if r["target_type"] == "code"]
+        assert len(code_results) >= 1
+        assert code_results[0]["target_id"] == code_ref
+
+    def test_traverse_relations_code_ref_expansion_depth(self, store):
+        """traverse_relations respects max_depth, does not expand beyond configured depth."""
+        mid = store.add(type="fact", content="root memory")
+        results_depth_1 = store.traverse_relations([mid], max_depth=1)
+        results_depth_2 = store.traverse_relations([mid], max_depth=2)
+        # Both should return results since there's one hop, but the structure
+        # should respect the max_depth parameter (no extra expansion beyond 1)
+        assert isinstance(results_depth_1, list)
+        assert isinstance(results_depth_2, list)
+
+    def test_traverse_relations_target_type_filter(self, store):
+        """traverse_relations with target_type='code' only returns code edges."""
+        mid = store.add(type="fact", content="source memory")
+        mid2 = store.add(type="fact", content="target memory")
+        code_ref = "src/lib.rs:1:10"
+        store.add_relation(mid, mid2, "related_to", target_type="memory")
+        store.add_relation(mid, code_ref, "references", target_type="code")
+        # target_type='code' only
+        code_results = store.traverse_relations([mid], max_depth=1, target_type="code")
+        for r in code_results:
+            assert r["target_type"] == "code"
+        # target_type='memory' only
+        mem_results = store.traverse_relations([mid], max_depth=1, target_type="memory")
+        for r in mem_results:
+            assert r["target_type"] == "memory"

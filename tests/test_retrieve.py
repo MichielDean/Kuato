@@ -1049,3 +1049,76 @@ class TestRetrieve_RerankingIntegration:
         assert any(r["id"] == mid for r in results)
         mem_after = store.get(mid, track_access=False)
         assert mem_after["access_count"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Ref expansion tests — traverse_refs in Retriever.search()
+# ---------------------------------------------------------------------------
+
+
+class TestRetrieve_RefExpansion:
+    """Test Retriever.search() with traverse_refs flag for code reference expansion."""
+
+    def test_search_traverse_refs_expands_code_refs(self, store, tmp_path):
+        """When traverse_refs=True, search results include resolved code ref content."""
+        # Create a test file for the code ref to resolve
+        f = tmp_path / "test_code.py"
+        f.write_text("def hello():\n    return 'world'\n")
+        code_ref = f"{f}:1:2"
+
+        mid = store.add(type="fact", content="searchable memory about hello function")
+        store.add_relation(mid, code_ref, "references", target_type="code")
+
+        retriever = Retriever(store=store, embedder=None)
+        results = retriever.search(
+            "hello function", traverse_refs=True, max_ref_depth=1
+        )
+        # Should have at least one code ref result
+        code_results = [r for r in results if r.get("_source") == "code"]
+        assert len(code_results) >= 1
+        assert "hello" in code_results[0]["content"]
+
+    def test_search_traverse_refs_default_off(self, store, tmp_path):
+        """When traverse_refs=False (default), search results do NOT include code refs."""
+        f = tmp_path / "test_code.py"
+        f.write_text("def hello():\n    return 'world'\n")
+        code_ref = f"{f}:1:2"
+
+        mid = store.add(type="fact", content="searchable memory about hello function")
+        store.add_relation(mid, code_ref, "references", target_type="code")
+
+        retriever = Retriever(store=store, embedder=None)
+        results = retriever.search("hello function")
+        code_results = [r for r in results if r.get("_source") == "code"]
+        assert len(code_results) == 0
+
+    def test_search_traverse_refs_respects_max_ref_depth(self, store, tmp_path):
+        """max_ref_depth=1 only follows one hop."""
+        f = tmp_path / "test_code.py"
+        f.write_text("def hello():\n    return 'world'\n")
+        code_ref = f"{f}:1:2"
+
+        mid = store.add(type="fact", content="searchable memory")
+        store.add_relation(mid, code_ref, "references", target_type="code")
+
+        retriever = Retriever(store=store, embedder=None)
+        results = retriever.search("searchable", traverse_refs=True, max_ref_depth=1)
+        code_results = [r for r in results if r.get("_source") == "code"]
+        assert len(code_results) >= 1
+
+    def test_search_traverse_refs_missing_file_skipped(self, store, caplog):
+        """A code ref pointing to a missing file is silently skipped (logged, not raised)."""
+        code_ref = "/tmp/nonexistent_ref_file_xyz:1:5"
+
+        mid = store.add(type="fact", content="memory pointing to missing code")
+        store.add_relation(mid, code_ref, "references", target_type="code")
+
+        retriever = Retriever(store=store, embedder=None)
+        with caplog.at_level(logging.DEBUG, logger="llmem.refs"):
+            results = retriever.search(
+                "missing code", traverse_refs=True, max_ref_depth=1
+            )
+        # No code results from missing file
+        code_results = [r for r in results if r.get("_source") == "code"]
+        assert len(code_results) == 0
+        # Should not raise

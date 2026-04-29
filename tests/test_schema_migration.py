@@ -201,3 +201,66 @@ class TestMigration_CodeChunksTable:
         assert "BEGIN TRANSACTION" not in sql_content
         # Only the schema_migrations INSERT is allowed, no data DML
         assert 'INSERT INTO "memory_types"' not in sql_content
+
+
+class TestMigration_006RefTypes:
+    """Test that migration 006 adds target_type column and extends relation_type CHECK."""
+
+    def test_006_ref_types_migration_applied(self, tmp_path):
+        """Migration 006 is tracked in _schema_migrations."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        conn = store._connect()
+        rows = conn.execute(
+            'SELECT "version" FROM "_schema_migrations" ORDER BY "version"'
+        ).fetchall()
+        versions = [row[0] for row in rows]
+        store.close()
+        assert 6 in versions
+
+    def test_006_relations_has_target_type_column(self, tmp_path):
+        """relations table has a target_type column."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        conn = store._connect()
+        cursor = conn.execute("PRAGMA table_info('relations')")
+        columns = {row[1] for row in cursor.fetchall()}
+        store.close()
+        assert "target_type" in columns
+
+    def test_006_target_type_default_is_memory(self, tmp_path):
+        """Existing relation rows have target_type='memory'."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        # Add a relation to test default
+        mid1 = store.add(type="fact", content="memory A")
+        mid2 = store.add(type="fact", content="memory B")
+        rel_id = store.add_relation(mid1, mid2, "related_to")
+        conn = store._connect()
+        rows = conn.execute(
+            'SELECT "target_type" FROM "relations" WHERE "id" = ?',
+            (rel_id,),
+        ).fetchall()
+        store.close()
+        assert all(row[0] == "memory" for row in rows)
+
+    def test_006_relation_type_includes_references(self, tmp_path):
+        """The CHECK constraint on relation_type includes 'references'."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        mid1 = store.add(type="fact", content="memory A")
+        mid2 = store.add(type="fact", content="memory B")
+        # This would raise if 'references' is not in the CHECK constraint
+        rel_id = store.add_relation(mid1, mid2, "references")
+        assert rel_id is not None
+        store.close()
+
+    def test_006_is_ddl_only(self):
+        """Migration 006 contains DDL, no BEGIN TRANSACTION (DDL-only pattern)."""
+        import importlib.resources
+
+        migrations_pkg = importlib.resources.files("llmem_migrations")
+        sql_content = migrations_pkg.joinpath("006_add_ref_types.sql").read_text()
+        assert "CREATE TABLE" in sql_content or "ALTER TABLE" in sql_content
+        # No transaction wrapping for DDL
+        assert "BEGIN TRANSACTION" not in sql_content

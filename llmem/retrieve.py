@@ -201,6 +201,8 @@ class Retriever:
         type_filter: str | None = None,
         traverse_relations: bool = False,
         relation_depth: int = 1,
+        traverse_refs: bool = False,
+        max_ref_depth: int = 3,
         track_access: bool = True,
     ) -> list[dict]:
         """Search memories with ranking.
@@ -211,6 +213,12 @@ class Retriever:
             type_filter: Filter by memory type.
             traverse_relations: Include related memories.
             relation_depth: Max relation traversal depth.
+            traverse_refs: If True, follow references edges (target_type='code')
+                from result memory IDs and resolve code refs via
+                refs.resolve_code_ref(), appending resolved code dicts to
+                results. Defaults to False.
+            max_ref_depth: Max ref expansion depth (1-5, default 3).
+                Controls how many hops to follow when traversing code refs.
             track_access: If True, increment access_count and update
                 accessed_at for each result. Defaults to True.
 
@@ -237,6 +245,27 @@ class Retriever:
                 for mid in related_ids[:limit]:
                     if mid in related_memories:
                         results.append(related_memories[mid])
+
+        if traverse_refs and results:
+            from .refs import resolve_code_ref, DEFAULT_MAX_REF_DEPTH
+
+            effective_depth = min(max(max_ref_depth, 1), 5)
+            mem_ids = [r["id"] for r in results if r.get("id")]
+            code_refs = self._store.traverse_relations(
+                mem_ids,
+                max_depth=effective_depth,
+                target_type="code",
+            )
+            seen_refs = set()
+            for ref in code_refs:
+                ref_id = ref["target_id"]
+                if ref_id in seen_refs:
+                    continue
+                seen_refs.add(ref_id)
+                resolved = resolve_code_ref(ref_id)
+                if resolved is not None:
+                    resolved["_source"] = "code"
+                    results.append(resolved)
 
         return results[:limit]
 

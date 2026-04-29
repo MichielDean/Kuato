@@ -43,6 +43,7 @@ DEFAULT_BEHAVIORAL_LOOKBACK_DAYS = 30
 DEFAULT_CALIBRATION_ENABLED = True
 DEFAULT_STALE_PROCEDURE_DAYS = 30
 DEFAULT_CALIBRATION_LOOKBACK_DAYS = 90
+DEFAULT_AUTO_LINK_THRESHOLD = 0.85
 
 
 def _validate_output_path(path: Path, label: str) -> Path:
@@ -96,6 +97,7 @@ class DeepPhaseResult:
     promoted_count: int = 0
     invalidated_count: int = 0
     merged_count: int = 0
+    auto_linked_count: int = 0
     decay_details: list[dict] = field(default_factory=list)
     boost_details: list[dict] = field(default_factory=list)
     promote_details: list[dict] = field(default_factory=list)
@@ -145,6 +147,7 @@ class Dreamer:
         calibration_enabled: bool = DEFAULT_CALIBRATION_ENABLED,
         stale_procedure_days: int = DEFAULT_STALE_PROCEDURE_DAYS,
         calibration_lookback_days: int = DEFAULT_CALIBRATION_LOOKBACK_DAYS,
+        auto_link_threshold: float = DEFAULT_AUTO_LINK_THRESHOLD,
     ):
         self._store = store
         self._similarity_threshold = similarity_threshold
@@ -170,6 +173,7 @@ class Dreamer:
         self._calibration_enabled = calibration_enabled
         self._stale_procedure_days = stale_procedure_days
         self._calibration_lookback_days = calibration_lookback_days
+        self._auto_link_threshold = auto_link_threshold
 
     def run(self, apply: bool = False, phase: str | None = None) -> DreamResult:
         """Run the dream consolidation pass.
@@ -273,6 +277,31 @@ class Dreamer:
             )
             result.promoted_count += len(consolidate_result["promoted"])
 
+        # Auto-link similar memories using consolidate_duplicates
+        if apply:
+            try:
+                pairs = self._store.consolidate_duplicates(
+                    similarity_threshold=self._auto_link_threshold
+                )
+                existing = self._store.get_relations_batch(
+                    [p["source"] for p in pairs] + [p["target"] for p in pairs]
+                )
+                existing_set = set()
+                for rel in existing:
+                    pair = tuple(sorted([rel["source_id"], rel["target_id"]]))
+                    if rel["relation_type"] == "related_to":
+                        existing_set.add(pair)
+                for pair in pairs:
+                    pair_key = tuple(sorted([pair["source"], pair["target"]]))
+                    if pair_key not in existing_set:
+                        self._store.add_relation(
+                            pair["source"], pair["target"], "related_to"
+                        )
+                        result.auto_linked_count += 1
+                        existing_set.add(pair_key)
+            except Exception as exc:
+                log.debug("llmem: dream: auto-link failed: %s", exc)
+
         return result
 
     def _rem_phase(self, apply: bool = False) -> RemPhaseResult:
@@ -304,6 +333,7 @@ class Dreamer:
             entry += f"- Promoted: {result.deep.promoted_count}\n"
             entry += f"- Invalidated: {result.deep.invalidated_count}\n"
             entry += f"- Merged: {result.deep.merged_count}\n"
+            entry += f"- Auto-linked: {result.deep.auto_linked_count}\n"
 
         with open(diary_path, "a") as f:
             # Acquire an exclusive lock to prevent concurrent writes
