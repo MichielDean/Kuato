@@ -1221,14 +1221,15 @@ class MemoryStore:
             item = self._inbox_row_to_dict(row)
             if item["attention_score"] >= min_score:
                 # Promote to memories table
-                mem_id = self.add(
-                    type="fact",
-                    content=item["content"],
-                    source="consolidation",
-                    confidence=item["attention_score"],
-                    metadata=item.get("metadata") or {},
-                )
-                item["memory_id"] = mem_id
+                if not dry_run:
+                    mem_id = self.add(
+                        type="fact",
+                        content=item["content"],
+                        source="consolidation",
+                        confidence=item["attention_score"],
+                        metadata=item.get("metadata") or {},
+                    )
+                    item["memory_id"] = mem_id
                 promoted.append(item)
                 if not dry_run:
                     conn.execute('DELETE FROM "inbox" WHERE "id" = ?', (item["id"],))

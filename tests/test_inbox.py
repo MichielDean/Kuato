@@ -205,6 +205,26 @@ class TestConsolidate_DryRun:
         # Inbox should still have both items (dry run makes no changes)
         assert store.inbox_count() == 2
 
+    def test_consolidate_dry_run_no_memory_inserts(self, store):
+        """dry_run=True must NOT create entries in the memories table."""
+        initial_count = store.count()
+        store.add_to_inbox(content="will not promote", attention_score=0.8)
+        store.add_to_inbox(content="will not evict", attention_score=0.2)
+        result = store.consolidate(min_score=0.5, dry_run=True)
+        assert len(result["promoted"]) == 1
+        assert len(result["evicted"]) == 1
+        # No new memories should have been created
+        assert store.count() == initial_count
+        # Inbox unchanged
+        assert store.inbox_count() == 2
+
+    def test_consolidate_dry_run_no_memory_id(self, store):
+        """dry_run=True must not assign memory_id since no insertion happened."""
+        store.add_to_inbox(content="ephemeral", attention_score=0.9)
+        result = store.consolidate(min_score=0.5, dry_run=True)
+        assert len(result["promoted"]) == 1
+        assert "memory_id" not in result["promoted"][0]
+
 
 class TestConsolidate_ClearsInboxAfterPromotion:
     """After consolidate(), the inbox is empty."""
