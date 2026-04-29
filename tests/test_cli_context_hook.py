@@ -517,6 +517,142 @@ class TestCli_ContextAndHook_InvalidSessionId:
         assert "path traversal" in stderr.lower() or "error" in stderr.lower()
 
 
+class TestCmdContext_SingleExecution:
+    """Test that cmd_context calls the coordinator exactly once.
+
+    Regression test: a duplicate code block caused cmd_context to create
+    two coordinators and execute the hook twice, producing doubled output.
+    """
+
+    def test_on_created_called_once(self, tmp_path, capsys):
+        """cmd_context calls coordinator.on_created exactly once."""
+        context_dir = tmp_path / "context"
+        context_dir.mkdir()
+        context_file = context_dir / "ses_once.md"
+        context_file.write_text("- [fact] single execution fact")
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.on_created.return_value = (
+            SESSION_CREATED_SUCCESS,
+            str(context_file),
+        )
+
+        with patch(_COORDINATOR_PATCH, return_value=mock_coordinator):
+            args = argparse.Namespace(
+                session_id="ses_once",
+                compacting=False,
+                db=tmp_path / "test.db",
+            )
+            cmd_context(args)
+
+        mock_coordinator.on_created.assert_called_once_with("ses_once")
+
+    def test_on_compacting_called_once(self, tmp_path, capsys):
+        """cmd_context --compacting calls coordinator.on_compacting exactly once."""
+        context_dir = tmp_path / "context"
+        context_dir.mkdir()
+        context_file = context_dir / "ses_once-compact.md"
+        context_file.write_text("- [decision] compact once")
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.on_compacting.return_value = (
+            SESSION_COMPACTING_SUCCESS,
+            str(context_file),
+        )
+
+        with patch(_COORDINATOR_PATCH, return_value=mock_coordinator):
+            args = argparse.Namespace(
+                session_id="ses_once",
+                compacting=True,
+                db=tmp_path / "test.db",
+            )
+            cmd_context(args)
+
+        mock_coordinator.on_compacting.assert_called_once_with("ses_once")
+
+    def test_context_content_appears_once_in_output(self, tmp_path, capsys):
+        """cmd_context prints context content exactly once (not doubled)."""
+        context_dir = tmp_path / "context"
+        context_dir.mkdir()
+        context_file = context_dir / "ses_exact.md"
+        content = "- [fact] unique marker xyzzy"
+        context_file.write_text(content)
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.on_created.return_value = (
+            SESSION_CREATED_SUCCESS,
+            str(context_file),
+        )
+
+        with patch(_COORDINATOR_PATCH, return_value=mock_coordinator):
+            args = argparse.Namespace(
+                session_id="ses_exact",
+                compacting=False,
+                db=tmp_path / "test.db",
+            )
+            cmd_context(args)
+
+        captured = capsys.readouterr()
+        assert captured.out.count(content) == 1, (
+            f"Context content should appear exactly once, but appeared "
+            f"{captured.out.count(content)} times"
+        )
+
+    def test_compacting_content_appears_once_in_output(self, tmp_path, capsys):
+        """cmd_context --compacting prints content exactly once (not doubled)."""
+        context_dir = tmp_path / "context"
+        context_dir.mkdir()
+        context_file = context_dir / "ses_compact_exact.md"
+        content = "- [decision] compact marker plugh"
+        context_file.write_text(content)
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.on_compacting.return_value = (
+            SESSION_COMPACTING_SUCCESS,
+            str(context_file),
+        )
+
+        with patch(_COORDINATOR_PATCH, return_value=mock_coordinator):
+            args = argparse.Namespace(
+                session_id="ses_compact_exact",
+                compacting=True,
+                db=tmp_path / "test.db",
+            )
+            cmd_context(args)
+
+        captured = capsys.readouterr()
+        assert captured.out.count(content) == 1, (
+            f"Compacting content should appear exactly once, but appeared "
+            f"{captured.out.count(content)} times"
+        )
+
+    def test_coordinator_created_once(self, tmp_path):
+        """cmd_context creates the coordinator exactly once."""
+        context_dir = tmp_path / "context"
+        context_dir.mkdir()
+        context_file = context_dir / "ses_coord.md"
+        context_file.write_text("- [fact] coord test")
+
+        mock_coordinator = MagicMock()
+        mock_coordinator.on_created.return_value = (
+            SESSION_CREATED_SUCCESS,
+            str(context_file),
+        )
+
+        with patch(_COORDINATOR_PATCH, return_value=mock_coordinator) as mock_factory:
+            args = argparse.Namespace(
+                session_id="ses_coord",
+                compacting=False,
+                db=tmp_path / "test.db",
+            )
+            cmd_context(args)
+
+        assert mock_factory.call_count == 1, (
+            f"create_session_hook_coordinator should be called exactly once, "
+            f"but was called {mock_factory.call_count} times"
+        )
+
+
 class TestCmdContext_ReadFileFailure:
     """Test cmd_context when reading the context file fails."""
 

@@ -153,8 +153,11 @@ llmem merge <source-id> <target-id>
 llmem export --output memories.json
 llmem import memories.json
 
-# Generate context block for injection
-llmem context "what context is needed" --budget 4000
+# Inject memory context for a new session
+llmem context <session_id>
+
+# Inject key memories during session compaction
+llmem context --compacting <session_id>
 
 # Add a structured self_assessment memory (introspection, manual mode)
 llmem introspect --category NULL_SAFETY --what-happened "missing null check before property access" --context "handler.py:42" --caught-by self-review --proposed-update "always check for None before accessing .field"

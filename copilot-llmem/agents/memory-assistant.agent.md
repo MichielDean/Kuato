@@ -63,8 +63,11 @@ llmem delete <id>
 ### Context and Stats
 
 ```bash
-# Generate context for injection
-llmem context "what context is needed" --budget 4000
+# Inject memory context for a new session (session start hook)
+llmem context <session_id>
+
+# Inject key memories during session compaction
+llmem context --compacting <session_id>
 
 # Show memory statistics
 llmem stats
@@ -74,11 +77,7 @@ llmem stats
 
 ```bash
 # Run the idle hook to extract memories from a session
-llmem hook idle <sessionId>
-
-# Process session transcripts
-llmem hook --source direct
-llmem hook --source all
+llmem hook idle <session_id>
 ```
 
 ### Introspection
