@@ -16,6 +16,10 @@ log = logging.getLogger(__name__)
 ANISOTROPY_WARNING_THRESHOLD: float = 0.5
 SIMILARITY_RANGE_WARNING_THRESHOLD: float = 0.1
 
+# Maximum number of embeddings passed to compute_metrics. Caps O(n²)
+# pairwise computations to prevent DoS on large stores.
+METRICS_MAX_EMBEDDINGS: int = 10000
+
 
 @dataclass(frozen=True)
 class EmbeddingMetrics:
@@ -222,7 +226,9 @@ def discrimination_gap(
 
 
 def compute_metrics(
-    embeddings: list[list[float]], labels: list[str] | None = None
+    embeddings: list[list[float]],
+    labels: list[str] | None = None,
+    max_embeddings: int = METRICS_MAX_EMBEDDINGS,
 ) -> EmbeddingMetrics:
     """Compute all embedding quality metrics at once.
 
@@ -230,13 +236,29 @@ def compute_metrics(
     with ``anisotropy``, ``similarity_range``, and ``discrimination_gap``
     (None if labels are not provided).
 
+    When ``len(embeddings) > max_embeddings``, the input is truncated to
+    the first ``max_embeddings`` vectors to cap O(n²) pairwise
+    computations. A warning is logged when truncation occurs.
+
     Args:
         embeddings: List of embedding vectors.
         labels: Optional list of string labels, same length as embeddings.
+        max_embeddings: Maximum number of embeddings to process.
+            Defaults to :data:`METRICS_MAX_EMBEDDINGS` (10000). Caps
+            O(n²) computation to prevent DoS on large stores.
 
     Returns:
         An EmbeddingMetrics dataclass with computed values.
     """
+    if len(embeddings) > max_embeddings:
+        log.warning(
+            "llmem: metrics: capping embeddings from %d to %d for metrics computation",
+            len(embeddings),
+            max_embeddings,
+        )
+        embeddings = embeddings[:max_embeddings]
+        if labels is not None:
+            labels = labels[:max_embeddings]
     aniso = anisotropy(embeddings)
     sim_range = similarity_range(embeddings)
     disc_gap = discrimination_gap(embeddings, labels) if labels is not None else None

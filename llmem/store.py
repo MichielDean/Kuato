@@ -847,6 +847,23 @@ class MemoryStore:
         ).fetchall()
         return {r["type"]: r["cnt"] for r in rows}
 
+    def count_embeddings(self) -> int:
+        """Return the count of valid memories with non-null embeddings.
+
+        Counts memories where ``embedding IS NOT NULL`` and
+        ``valid_until IS NULL``, matching the filter used by
+        :meth:`get_embeddings_with_types`.
+
+        Returns:
+            Integer count of valid embedded memories.
+        """
+        conn = self._connect()
+        row = conn.execute(
+            'SELECT COUNT(*) FROM "memories" '
+            'WHERE "embedding" IS NOT NULL AND "valid_until" IS NULL'
+        ).fetchone()
+        return row[0]
+
     def add_relation(
         self,
         source_id: str,
@@ -1596,8 +1613,10 @@ class MemoryStore:
             d["hints"] = []
         return d
 
-    def get_embeddings_with_types(self) -> list[tuple[bytes, str]]:
-        """Return all non-null embeddings with their memory type.
+    def get_embeddings_with_types(
+        self, limit: int = _BRUTE_FORCE_MAX_ROWS
+    ) -> list[tuple[bytes, str]]:
+        """Return non-null embeddings with their memory type, up to a limit.
 
         Returns a list of (embedding_bytes, type) tuples for each valid
         (non-expired) memory that has an embedding. Used by the CLI metrics
@@ -1606,14 +1625,33 @@ class MemoryStore:
         valid_until IS NULL, consistent with other embedding queries in the
         store.
 
+        The ``limit`` parameter caps the number of rows returned to prevent
+        O(n²) pairwise metrics computations from causing OOM or CPU hangs
+        on large stores. Defaults to :data:`_BRUTE_FORCE_MAX_ROWS` (10000),
+        the same cap used for brute-force embedding search.
+
+        Args:
+            limit: Maximum number of rows to return. Defaults to
+                ``_BRUTE_FORCE_MAX_ROWS``. Set to 0 for no limit (use
+                with caution on large stores).
+
         Returns:
             List of (embedding, type) tuples. Empty list if no embeddings
             exist.
         """
         conn = self._connect()
-        rows = conn.execute(
-            'SELECT "embedding", "type" FROM "memories" WHERE "embedding" IS NOT NULL AND "valid_until" IS NULL'
-        ).fetchall()
+        if limit > 0:
+            rows = conn.execute(
+                'SELECT "embedding", "type" FROM "memories" '
+                'WHERE "embedding" IS NOT NULL AND "valid_until" IS NULL '
+                "LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                'SELECT "embedding", "type" FROM "memories" '
+                'WHERE "embedding" IS NOT NULL AND "valid_until" IS NULL'
+            ).fetchall()
         return [(row["embedding"], row["type"]) for row in rows]
 
     @staticmethod

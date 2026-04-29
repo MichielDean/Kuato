@@ -16,6 +16,7 @@ from .metrics import (
     bytes_to_vec,
     ANISOTROPY_WARNING_THRESHOLD,
     SIMILARITY_RANGE_WARNING_THRESHOLD,
+    METRICS_MAX_EMBEDDINGS,
 )
 from .paths import get_db_path, get_config_path, get_llmem_home
 from .paths import _validate_write_path, _is_blocked_path
@@ -38,15 +39,18 @@ from .code_index import CodeIndex
 def _report_embedding_metrics(store: MemoryStore) -> None:
     """Compute and print embedding quality metrics from the store.
 
-    Fetches all embeddings via store.get_embeddings_with_types(),
-    computes anisotropy, similarity range, and discrimination gap,
-    and prints the results. Emits warnings to stderr when metrics
-    exceed warning thresholds.
+    Fetches embeddings via store.get_embeddings_with_types(), capped at
+    ``METRICS_MAX_EMBEDDINGS``, computes anisotropy, similarity range,
+    and discrimination gap, and prints the results. Emits warnings to
+    stderr when metrics exceed warning thresholds or when the result
+    set is capped.
 
     Args:
         store: An open MemoryStore instance.
     """
-    rows = store.get_embeddings_with_types()
+    total_count = store.count_embeddings()
+    limit = METRICS_MAX_EMBEDDINGS
+    rows = store.get_embeddings_with_types(limit=limit)
 
     if not rows:
         print("No embedded memories found.")
@@ -64,9 +68,16 @@ def _report_embedding_metrics(store: MemoryStore) -> None:
         print("No valid embeddings found.")
         return
 
+    capped = total_count > limit
     m = compute_metrics(embeddings, labels=labels)
 
-    print(f"Embedding metrics ({len(embeddings)} vectors):")
+    if capped:
+        print(
+            f"Embedding metrics ({len(embeddings)} of {total_count} vectors, "
+            f"capped at {limit}):"
+        )
+    else:
+        print(f"Embedding metrics ({len(embeddings)} vectors):")
     print(f"  Anisotropy:        {m.anisotropy:.4f}")
     print(f"  Similarity range:  {m.similarity_range:.4f}")
     if m.discrimination_gap is not None:

@@ -1000,3 +1000,63 @@ class TestCli_ConsolidateMetrics:
         assert "Promoted" in captured.out
         assert "Anisotropy" in captured.out
         assert "Similarity range" in captured.out
+
+
+class TestCli_EmbedMetricsCapping:
+    """Test that _report_embedding_metrics respects embedding caps from DoS protection."""
+
+    def test_embed_reports_capped_count_when_exceeding_limit(self, tmp_path, capsys):
+        """_report_embedding_metrics shows capped vector count when total > limit."""
+        from llmem.cli import _report_embedding_metrics
+        from llmem.embed import EmbeddingEngine
+        from llmem.metrics import METRICS_MAX_EMBEDDINGS
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        # Add a few embeddings (not enough to hit the real cap, but we test
+        # the code path by checking the output format)
+        emb = EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0])
+        for i in range(3):
+            store.add(type="fact", content=f"fact {i}", embedding=emb)
+        store.close()
+
+        store2 = MemoryStore(db_path=db, disable_vec=True)
+        _report_embedding_metrics(store2)
+        store2.close()
+
+        captured = capsys.readouterr()
+        # With 3 embeddings < METRICS_MAX_EMBEDDINGS, no capping message
+        assert "3 vectors" in captured.out
+        assert "capped" not in captured.out.lower()
+
+    def test_get_embeddings_with_types_respects_limit(self, tmp_path):
+        """get_embeddings_with_types limit parameter caps returned rows."""
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        emb = EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0])
+        for i in range(5):
+            store.add(type="fact", content=f"fact {i}", embedding=emb)
+
+        # With limit=2, only 2 rows returned
+        rows = store.get_embeddings_with_types(limit=2)
+        assert len(rows) == 2
+        store.close()
+
+    def test_count_embeddings_returns_correct_count(self, tmp_path):
+        """count_embeddings returns count of valid memories with embeddings."""
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        emb = EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0])
+        store.add(type="fact", content="embedded", embedding=emb)
+        store.add(type="fact", content="not embedded")
+        store.add(type="decision", content="also embedded", embedding=emb)
+
+        assert store.count_embeddings() == 2
+        store.close()

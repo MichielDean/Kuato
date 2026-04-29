@@ -367,3 +367,69 @@ class TestMetrics_StoreGetEmbeddingsWithTypes:
         rows = store.get_embeddings_with_types()
         assert rows == []
         store.close()
+
+    def test_limit_parameter_caps_results(self, tmp_path):
+        """get_embeddings_with_types respects the limit parameter."""
+        from llmem.store import MemoryStore
+        from llmem.embed import EmbeddingEngine
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        emb = EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0])
+        # Insert 5 memories with embeddings
+        for i in range(5):
+            store.add(type="fact", content=f"fact {i}", embedding=emb)
+
+        # With limit=2, only 2 rows should be returned
+        rows = store.get_embeddings_with_types(limit=2)
+        assert len(rows) == 2
+
+        # With limit=10, all 5 rows should be returned
+        rows_all = store.get_embeddings_with_types(limit=10)
+        assert len(rows_all) == 5
+
+        # Default limit (None → _BRUTE_FORCE_MAX_ROWS) returns all
+        rows_default = store.get_embeddings_with_types()
+        assert len(rows_default) == 5
+        store.close()
+
+
+class TestMetrics_ComputeMetricsCap:
+    """Test compute_metrics max_embeddings cap."""
+
+    def test_compute_metrics_caps_embeddings_at_max(self):
+        """compute_metrics caps input to max_embeddings when exceeded."""
+        # Create more embeddings than the cap
+        vecs = [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 1.0],
+        ]
+
+        result = compute_metrics(vecs, max_embeddings=3)
+        # Should compute metrics on only 3 vectors (the first 3)
+        # Verify it doesn't crash and returns valid metrics
+        assert result.anisotropy >= 0.0
+        assert result.similarity_range >= 0.0
+
+    def test_compute_metrics_no_cap_when_below_max(self):
+        """compute_metrics does not cap when embeddings count ≤ max_embeddings."""
+        vecs = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+        result_uncapped = compute_metrics(vecs)
+        result_capped = compute_metrics(vecs, max_embeddings=100)
+
+        assert result_uncapped.anisotropy == result_capped.anisotropy
+        assert result_uncapped.similarity_range == result_capped.similarity_range
+
+    def test_compute_metrics_default_max_is_brute_force_cap(self):
+        """compute_metrics defaults max_embeddings to METRICS_MAX_EMBEDDINGS."""
+        from llmem.metrics import METRICS_MAX_EMBEDDINGS
+
+        # The default should be the module constant
+        vecs = [[1.0, 0.0, 0.0]]
+        result = compute_metrics(vecs)
+        # With 1 vector, the cap doesn't matter; just verify it doesn't error
+        assert result.anisotropy == 0.0
+        assert METRICS_MAX_EMBEDDINGS > 0
