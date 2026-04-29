@@ -1316,14 +1316,14 @@ class TestProviders_CredentialExfiltration:
         assert provider._base_url == "https://api.openai.com"
 
     def test_openai_allows_localhost_with_api_key(self):
-        """OpenAIProvider should accept HTTP localhost URLs for development."""
-        provider = OpenAIProvider(api_key="test-key", base_url="http://localhost:8080")
-        assert provider._base_url == "http://localhost:8080"
+        """OpenAIProvider should accept HTTP localhost URLs on Ollama default port."""
+        provider = OpenAIProvider(api_key="test-key", base_url="http://localhost:11434")
+        assert provider._base_url == "http://localhost:11434"
 
     def test_openai_allows_127_with_api_key(self):
-        """OpenAIProvider should accept HTTP 127.0.0.1 URLs for development."""
-        provider = OpenAIProvider(api_key="test-key", base_url="http://127.0.0.1:8080")
-        assert provider._base_url == "http://127.0.0.1:8080"
+        """OpenAIProvider should accept HTTP 127.0.0.1 URLs on Ollama default port."""
+        provider = OpenAIProvider(api_key="test-key", base_url="http://127.0.0.1:11434")
+        assert provider._base_url == "http://127.0.0.1:11434"
 
     def test_anthropic_allows_https_base_url(self):
         """AnthropicProvider should accept HTTPS URLs (normal usage)."""
@@ -1541,11 +1541,14 @@ class TestUrlValidate_SafeUrlopen_ExplicitAllowRemote:
     """Test safe_urlopen allow_remote parameter."""
 
     def test_explicit_allow_remote_true_for_loopback(self):
-        """allow_remote=True with loopback URL should pass is_safe_url
-        but will likely fail to connect (which is OK)."""
-        # We can only test validation — actual connection will fail
-        # Validate that the URL passes is_safe_url with allow_remote=True
-        assert is_safe_url("http://localhost:8080/api", allow_remote=True) is True
+        """allow_remote=True with loopback URL on Ollama default port
+        passes is_safe_url. Non-Ollama ports are blocked for loopback
+        regardless of allow_remote (security policy: loopback is only
+        allowed on port 11434)."""
+        # Port 11434 is the Ollama default — loopback allowed
+        assert is_safe_url("http://localhost:11434/api", allow_remote=True) is True
+        # Non-default port on loopback is still blocked
+        assert is_safe_url("http://localhost:8080/api", allow_remote=True) is False
 
 
 class TestPaths_ValidateHomePath_SymlinkCheck:
