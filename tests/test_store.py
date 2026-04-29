@@ -516,6 +516,70 @@ class TestStore_RelationsRefTypes:
         for r in relations:
             assert "target_type" in r
 
+    def test_add_relation_code_ref_rejects_absolute_path(self, store):
+        """add_relation rejects target_type='code' with absolute path — prevents
+        arbitrary file reads via code refs like /etc/passwd or /home/user/.ssh/id_rsa."""
+        import pytest
+
+        mid = store.add(type="fact", content="source memory")
+        with pytest.raises(ValueError, match="unsafe path"):
+            store.add_relation(mid, "/etc/passwd:1:5", "references", target_type="code")
+
+    def test_add_relation_code_ref_rejects_traversal(self, store):
+        """add_relation rejects target_type='code' with '..' traversal — prevents
+        directory escape via code refs like ../../etc/passwd."""
+        import pytest
+
+        mid = store.add(type="fact", content="source memory")
+        with pytest.raises(ValueError, match="unsafe path"):
+            store.add_relation(
+                mid, "../../etc/passwd:1:5", "references", target_type="code"
+            )
+
+    def test_add_relation_code_ref_rejects_absolute_home_path(self, store):
+        """add_relation rejects target_type='code' with absolute /home path —
+        prevents reading SSH keys, .bashrc, etc."""
+        import pytest
+
+        mid = store.add(type="fact", content="source memory")
+        with pytest.raises(ValueError, match="unsafe path"):
+            store.add_relation(
+                mid,
+                "/home/user/.ssh/id_rsa:1:5",
+                "references",
+                target_type="code",
+            )
+
+    def test_add_relation_code_ref_rejects_invalid_format(self, store):
+        """add_relation rejects target_type='code' with invalid format
+        (missing line numbers)."""
+        import pytest
+
+        mid = store.add(type="fact", content="source memory")
+        with pytest.raises(ValueError, match="path:start_line:end_line"):
+            store.add_relation(mid, "src/lib.rs:42", "references", target_type="code")
+
+    def test_add_relation_code_ref_accepts_relative_path(self, store):
+        """add_relation accepts target_type='code' with safe relative path."""
+        mid = store.add(type="fact", content="source memory")
+        code_target_id = "src/lib.rs:42:58"
+        rel_id = store.add_relation(
+            mid, code_target_id, "references", target_type="code"
+        )
+        assert rel_id is not None
+        relations = store.get_relations(mid)
+        ref_rel = [r for r in relations if r["id"] == rel_id][0]
+        assert ref_rel["target_id"] == code_target_id
+
+    def test_add_relation_memory_target_unaffected_by_path_validation(self, store):
+        """add_relation with target_type='memory' is not affected by code ref
+        path validation — memory IDs may look like paths but aren't validated."""
+        mid1 = store.add(type="fact", content="source memory")
+        mid2 = store.add(type="fact", content="target memory")
+        # This should work fine — path validation only applies to target_type='code'
+        rel_id = store.add_relation(mid1, mid2, "related_to", target_type="memory")
+        assert rel_id is not None
+
 
 class TestStore_TraverseRelationsWithRefs:
     """Test traverse_relations with target_type filter for code refs."""

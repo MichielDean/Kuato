@@ -1023,9 +1023,11 @@ class MemoryStore:
 
         Precondition: source_id must reference an existing memory. If
         target_type='code', target_id must match format
-        'path:start_line:end_line' (e.g. 'src/lib.rs:42:58'). If
-        target_type='memory', target_id must reference an existing memory
-        (existence check is application-level only, not enforced at SQL level).
+        'path:start_line:end_line' (e.g. 'src/lib.rs:42:58') and the path
+        component must be a safe relative path (no leading '/' or '..'
+        traversal). If target_type='memory', target_id must reference an
+        existing memory (existence check is application-level only, not
+        enforced at SQL level).
 
         Args:
             source_id: ID of the source memory.
@@ -1037,7 +1039,31 @@ class MemoryStore:
 
         Returns:
             The relation ID (UUID string).
+
+        Raises:
+            ValueError: If target_type='code' and target_id has an absolute
+                path or contains '..' traversal.
         """
+        if target_type == "code":
+            from .refs import validate_code_ref_path
+
+            # Extract the path component from 'path:start_line:end_line'
+            # and validate it is a safe relative path.
+            colon_count = target_id.count(":")
+            if colon_count < 2:
+                raise ValueError(
+                    f"llmem: store: add_relation: code ref target_id must match "
+                    f"'path:start_line:end_line' format, got: {target_id!r}"
+                )
+            # The path is everything before the last two colon-separated segments
+            path_part = target_id.rsplit(":", 2)[0]
+            validated = validate_code_ref_path(path_part)
+            if validated is None:
+                raise ValueError(
+                    f"llmem: store: add_relation: code ref target_id has unsafe path "
+                    f"(must be relative, no '..' traversal): {target_id!r}"
+                )
+
         rel_id = id or str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         conn = self._connect()

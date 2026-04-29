@@ -1064,12 +1064,13 @@ class TestRetrieve_RefExpansion:
         # Create a test file for the code ref to resolve
         f = tmp_path / "test_code.py"
         f.write_text("def hello():\n    return 'world'\n")
-        code_ref = f"{f}:1:2"
+        # Use relative path for code ref (security requirement)
+        code_ref = "test_code.py:1:2"
 
         mid = store.add(type="fact", content="searchable memory about hello function")
         store.add_relation(mid, code_ref, "references", target_type="code")
 
-        retriever = Retriever(store=store, embedder=None)
+        retriever = Retriever(store=store, embedder=None, allowed_paths=[tmp_path])
         results = retriever.search(
             "hello function", traverse_refs=True, max_ref_depth=1
         )
@@ -1082,12 +1083,12 @@ class TestRetrieve_RefExpansion:
         """When traverse_refs=False (default), search results do NOT include code refs."""
         f = tmp_path / "test_code.py"
         f.write_text("def hello():\n    return 'world'\n")
-        code_ref = f"{f}:1:2"
+        code_ref = "test_code.py:1:2"
 
         mid = store.add(type="fact", content="searchable memory about hello function")
         store.add_relation(mid, code_ref, "references", target_type="code")
 
-        retriever = Retriever(store=store, embedder=None)
+        retriever = Retriever(store=store, embedder=None, allowed_paths=[tmp_path])
         results = retriever.search("hello function")
         code_results = [r for r in results if r.get("_source") == "code"]
         assert len(code_results) == 0
@@ -1096,24 +1097,27 @@ class TestRetrieve_RefExpansion:
         """max_ref_depth=1 only follows one hop."""
         f = tmp_path / "test_code.py"
         f.write_text("def hello():\n    return 'world'\n")
-        code_ref = f"{f}:1:2"
+        code_ref = "test_code.py:1:2"
 
         mid = store.add(type="fact", content="searchable memory")
         store.add_relation(mid, code_ref, "references", target_type="code")
 
-        retriever = Retriever(store=store, embedder=None)
+        retriever = Retriever(store=store, embedder=None, allowed_paths=[tmp_path])
         results = retriever.search("searchable", traverse_refs=True, max_ref_depth=1)
         code_results = [r for r in results if r.get("_source") == "code"]
         assert len(code_results) >= 1
 
-    def test_search_traverse_refs_missing_file_skipped(self, store, caplog):
+    def test_search_traverse_refs_missing_file_skipped(self, store, tmp_path, caplog):
         """A code ref pointing to a missing file is silently skipped (logged, not raised)."""
-        code_ref = "/tmp/nonexistent_ref_file_xyz:1:5"
+        # Use a relative path that doesn't exist — add_relation accepts it
+        # (the file doesn't have to exist at insertion time), but resolve_code_ref
+        # will return None when the file can't be found
+        code_ref = "nonexistent_ref_file_xyz:1:5"
 
         mid = store.add(type="fact", content="memory pointing to missing code")
         store.add_relation(mid, code_ref, "references", target_type="code")
 
-        retriever = Retriever(store=store, embedder=None)
+        retriever = Retriever(store=store, embedder=None, allowed_paths=[tmp_path])
         with caplog.at_level(logging.DEBUG, logger="llmem.refs"):
             results = retriever.search(
                 "missing code", traverse_refs=True, max_ref_depth=1
@@ -1153,3 +1157,60 @@ class TestRetrieve_TraverseRelationsFiltersCodeRefs:
         assert code_ref not in result_ids
         # Memory B should appear in the expanded results
         assert mid_b in result_ids
+
+
+class TestRetrieve_AllowedPathsSecurity:
+    """Security tests for Retriever.allowed_paths — code ref resolution must be
+    restricted to allowed directories to prevent arbitrary file reads."""
+
+    def test_retriever_allows_code_ref_under_allowed_paths(self, store, tmp_path):
+        """Code refs under allowed_paths are resolved successfully."""
+        f = tmp_path / "safe_code.py"
+        f.write_text("safe_function = True\n")
+        code_ref = "safe_code.py:1:1"
+
+        mid = store.add(type="fact", content="memory referencing safe code")
+        store.add_relation(mid, code_ref, "references", target_type="code")
+
+        retriever = Retriever(store=store, embedder=None, allowed_paths=[tmp_path])
+        results = retriever.search("safe code", traverse_refs=True, max_ref_depth=1)
+        code_results = [r for r in results if r.get("_source") == "code"]
+        assert len(code_results) >= 1
+        assert "safe_function" in code_results[0]["content"]
+
+    def test_retriever_blocks_code_ref_outside_allowed_paths(self, store, tmp_path):
+        """Code refs resolving outside allowed_paths are blocked."""
+        # Create a file but set allowed_paths to a different directory
+        f = tmp_path / "secret.py"
+        f.write_text("secret = True\n")
+        code_ref = "secret.py:1:1"
+
+        mid = store.add(type="fact", content="memory referencing secret code")
+        store.add_relation(mid, code_ref, "references", target_type="code")
+
+        # Use a different directory as allowed_paths
+        other_dir = tmp_path / "other"
+        other_dir.mkdir()
+        retriever = Retriever(store=store, embedder=None, allowed_paths=[other_dir])
+        results = retriever.search("secret code", traverse_refs=True, max_ref_depth=1)
+        code_results = [r for r in results if r.get("_source") == "code"]
+        assert len(code_results) == 0
+
+    def test_retriever_default_allowed_paths_uses_cwd(
+        self, store, tmp_path, monkeypatch
+    ):
+        """When allowed_paths is not specified, defaults to [Path.cwd()]."""
+        f = tmp_path / "local_code.py"
+        f.write_text("local_var = 1\n")
+        code_ref = "local_code.py:1:1"
+
+        mid = store.add(type="fact", content="memory referencing local code")
+        store.add_relation(mid, code_ref, "references", target_type="code")
+
+        # Change cwd to tmp_path so the relative path resolves inside cwd
+        monkeypatch.chdir(tmp_path)
+        retriever = Retriever(store=store, embedder=None)
+        results = retriever.search("local code", traverse_refs=True, max_ref_depth=1)
+        code_results = [r for r in results if r.get("_source") == "code"]
+        assert len(code_results) >= 1
+        assert "local_var" in code_results[0]["content"]

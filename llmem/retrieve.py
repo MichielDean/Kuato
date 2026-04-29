@@ -172,6 +172,7 @@ class Retriever:
         store: MemoryStore,
         embedder: "EmbeddingEngine | EmbedProvider | None" = None,
         blend: float = 0.3,
+        allowed_paths: list | None = None,
     ):
         """Initialize the Retriever.
 
@@ -182,6 +183,10 @@ class Retriever:
                 from the memory.providers module.
             blend: Blend factor for reranking (0.0 = pure RRF, 1.0 = pure
                 signals). Defaults to 0.3.
+            allowed_paths: List of Path objects specifying directories under
+                which code ref file reads are allowed. Defaults to None,
+                which means [Path.cwd()]. Prevents arbitrary file reads
+                via resolve_code_ref().
 
         Raises:
             ValueError: If blend is not in [0.0, 1.0].
@@ -193,6 +198,7 @@ class Retriever:
         self._store = store
         self._embedder = embedder
         self._blend = blend
+        self._allowed_paths = allowed_paths
 
     def search(
         self,
@@ -267,7 +273,7 @@ class Retriever:
                 if ref_id in seen_refs:
                     continue
                 seen_refs.add(ref_id)
-                resolved = resolve_code_ref(ref_id)
+                resolved = resolve_code_ref(ref_id, allowed_paths=self._allowed_paths)
                 if resolved is not None:
                     resolved["_source"] = "code"
                     results.append(resolved)
