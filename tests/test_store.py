@@ -557,6 +557,34 @@ class TestStore_TraverseRelationsWithRefs:
         for r in mem_results:
             assert r["target_type"] == "memory"
 
+    def test_traverse_relations_backward_arm_reports_memory_type(self, store):
+        """When traverse_relations reaches backward through a code-ref edge
+        at depth > 1, the reached memory node must have target_type='memory',
+        not 'code' (the edge's target_type).
+
+        Scenario: memA → references → codeChunk, memB → references → codeChunk.
+        Starting from memA at depth 2, the backward arm reaches memB (source of
+        an edge targeting codeChunk). The reached node is a memory, so its
+        target_type in results must be 'memory'.
+        """
+        mid_a = store.add(type="fact", content="memory A")
+        mid_b = store.add(type="fact", content="memory B")
+        code_ref = "src/lib.rs:42:58"
+        store.add_relation(mid_a, code_ref, "references", target_type="code")
+        store.add_relation(mid_b, code_ref, "references", target_type="code")
+        results = store.traverse_relations([mid_a], max_depth=2)
+        # Find the result for mid_b (reached backward through code-ref edge)
+        b_results = [r for r in results if r["target_id"] == mid_b]
+        assert len(b_results) >= 1, (
+            f"Expected to reach {mid_b} from {mid_a} via code ref {code_ref}, "
+            f"but got results: {results}"
+        )
+        # The reached node is a memory — target_type must be 'memory', not 'code'
+        assert b_results[0]["target_type"] == "memory", (
+            f"Backward-reached memory {mid_b} should have target_type='memory', "
+            f"got '{b_results[0]['target_type']}'"
+        )
+
 
 class TestStore_DeleteOrphanedRelations:
     """Test that deleting a memory cleans up orphaned target_id relations."""

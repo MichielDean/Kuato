@@ -751,8 +751,8 @@ class MemoryStore:
         # Manually clean up orphaned relations where the deleted memory
         # is the target before deleting the memory row itself.
         conn.execute(
-            'DELETE FROM "relations" WHERE "target_id" = ? AND "target_type" = \'memory\'',
-            (mem_id,),
+            'DELETE FROM "relations" WHERE "target_id" = ? AND "target_type" = ?',
+            (mem_id, "memory"),
         )
         cursor = conn.execute('DELETE FROM "memories" WHERE "id" = ?', (mem_id,))
         conn.commit()
@@ -1110,14 +1110,14 @@ class MemoryStore:
             ' SELECT "source_id", "target_id", "relation_type", "target_type", 1 FROM "relations"'
             f' WHERE "source_id" IN ({placeholders}){tt_filter}'
             " UNION ALL"
-            ' SELECT "target_id", "source_id", "relation_type", "target_type", 1 FROM "relations"'
+            ' SELECT "target_id", "source_id", "relation_type", \'memory\', 1 FROM "relations"'
             f' WHERE "target_id" IN ({placeholders}){tt_filter}'
             " UNION ALL"
             ' SELECT r."source_id", r."target_id", r."relation_type", r."target_type", rt."dist" + 1 FROM "relations" r'
             ' INNER JOIN "rel_traverse" rt ON rt."reached_id" = r."source_id"'
             f' WHERE rt."dist" < ?{tt_filter}'
             " UNION ALL"
-            ' SELECT r."target_id", r."source_id", r."relation_type", r."target_type", rt."dist" + 1 FROM "relations" r'
+            ' SELECT r."target_id", r."source_id", r."relation_type", \'memory\', rt."dist" + 1 FROM "relations" r'
             ' INNER JOIN "rel_traverse" rt ON rt."reached_id" = r."target_id"'
             f' WHERE rt."dist" < ?{tt_filter}'
             ")"
