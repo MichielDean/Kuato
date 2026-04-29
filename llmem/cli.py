@@ -245,11 +245,34 @@ def cmd_search(args):
             fts_rank = i + 1
             cr["_rrf_score"] = (1 - 0.0) * (1 / (DEFAULT_RRF_K + fts_rank))
 
+    # Traverse code refs if --traverse-refs is set
+    ref_results: list[dict] = []
+    if getattr(args, "traverse_refs", False):
+        from .refs import resolve_code_ref
+
+        max_ref_depth = getattr(args, "max_ref_depth", 3)
+        # Get code ref edges from result memory IDs
+        mem_ids = [r["id"] for r in results if r.get("id")]
+        if mem_ids:
+            code_refs = store.traverse_relations(
+                mem_ids, max_depth=max_ref_depth, target_type="code"
+            )
+            seen_refs = set()
+            for ref in code_refs:
+                ref_id = ref["target_id"]
+                if ref_id in seen_refs:
+                    continue
+                seen_refs.add(ref_id)
+                resolved = resolve_code_ref(ref_id)
+                if resolved is not None:
+                    resolved["_source"] = "code"
+                    ref_results.append(resolved)
+
     # Mark memory results with source
     for m in results:
         m["_source"] = "memory"
 
-    combined = results + code_results
+    combined = results + code_results + ref_results
     # Sort by score descending, then by source for stability
     combined.sort(key=lambda x: (-x.get("_rrf_score", 0.0), x.get("_source", "")))
 
@@ -866,6 +889,17 @@ def main():
         "--include-code",
         action="store_true",
         help="Include code chunks in search results",
+    )
+    p_search.add_argument(
+        "--traverse-refs",
+        action="store_true",
+        help="Follow code reference edges from search results",
+    )
+    p_search.add_argument(
+        "--max-ref-depth",
+        type=int,
+        default=3,
+        help="Max depth for ref expansion (default: 3)",
     )
     p_search.add_argument(
         "--provider",

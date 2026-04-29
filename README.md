@@ -333,6 +333,7 @@ dream:
   calibration_enabled: true
   stale_procedure_days: 30
   calibration_lookback_days: 90
+  auto_link_threshold: 0.85  # Cosine similarity threshold for auto-linking related memories
 
 opencode:
   context_dir: null           # Auto-resolved from get_context_dir()
@@ -392,7 +393,8 @@ llmem add --type TYPE --content TEXT [--summary TEXT] [--source SOURCE] \
 ### `llmem search`
 
 ```bash
-llmem search QUERY [--type TYPE] [--limit N] [--json] [--include-code] [--fts-only | --semantic-only] [--provider PROVIDER]
+llmem search QUERY [--type TYPE] [--limit N] [--json] [--include-code] \
+  [--traverse-refs] [--max-ref-depth N] [--fts-only | --semantic-only] [--provider PROVIDER]
 ```
 
 Hybrid search combining FTS5 keyword search and vector semantic search via Reciprocal Rank Fusion (RRF), followed by multi-signal reranking. By default, both search modes are merged with `alpha=0.7` (favoring semantic results while keeping keyword relevance), then reranked with `blend=0.3` (70% semantic, 30% confidence/recency/access/type signals).
@@ -401,6 +403,8 @@ Hybrid search combining FTS5 keyword search and vector semantic search via Recip
 - `--fts-only`: Use FTS5 keyword search only (no embedder needed).
 - `--semantic-only`: Use semantic (embedding) search only (requires an embedder). Raises an error if no embedder is available.
 - `--include-code`: Include indexed code chunks in search results alongside memories. Code results are interleaved with memory results using RRF scoring. Code results display with a `[code]` prefix and show `file=` and `lines=` instead of type and confidence. Requires running `llmem learn` first to populate the code index.
+- `--traverse-refs`: Follow code reference edges from search results. When a memory has a `references` relation to a code chunk (`target_type='code'`), the referenced file content is resolved and included in the results. Code ref results have `_source: "code"` and include `file_path`, `start_line`, `end_line`, and `content` keys. Security: code refs must use relative paths (no `/` prefix or `..` traversal) and resolve under the current working directory.
+- `--max-ref-depth N`: Maximum number of hops when traversing code reference edges (1–5, default: 3). Higher values follow ref chains deeper (e.g., depth 2 finds memories sharing a code ref, depth 3 finds their code refs).
 - Without either `--fts-only` / `--semantic-only` flag: hybrid mode — runs both FTS5 and semantic search, fuses results via RRF, then applies reranking. Falls back to FTS5-only if no embedder is configured.
 
 With `--json`, outputs raw JSON (each result includes `_rrf_score` and `_rerank_score` keys, plus a `_source` key of `"memory"` or `"code"` when `--include-code` is used); otherwise, a human-readable table with an `rrf=` score column.
@@ -668,9 +672,20 @@ results = retriever.hybrid_search("query", alpha=0.5)
 # blend=0.3 default: 70% RRF score + 30% weighted signals (confidence, recency, access, type)
 retriever = Retriever(store=store, embedder=embedder, blend=0.5)
 
+# Restrict code ref resolution to specific directories (default: [Path.cwd()])
+retriever = Retriever(store=store, embedder=embedder, allowed_paths=[Path("./project")])
+
 # Skip access tracking (don't increment access_count for this query)
 results = retriever.search("analytics query", limit=10, track_access=False)
 results = retriever.hybrid_search("analytics query", limit=10, track_access=False)
+
+# Follow code reference edges from search results
+# When traverse_refs=True, memories with 'references' relations to code chunks
+# will have the referenced file content resolved and appended to results.
+results = retriever.search("auth logic", limit=10, traverse_refs=True)
+
+# Control ref expansion depth (1-5, default 3)
+results = retriever.search("auth logic", limit=10, traverse_refs=True, max_ref_depth=2)
 
 # Each result dict includes "_rrf_score" (RRF fusion score) and "_rerank_score" (blended final score)
 
@@ -732,10 +747,12 @@ affected = store.touch_batch([id1, id2, id3])
 # List with filters
 memories = store.list_all(type="fact", valid_only=True, limit=50)
 
-# Relations
+# Relations (memory-to-memory and memory-to-code)
 store.add_relation(mem_id_a, mem_id_b, "supersedes")
+store.add_relation(mem_id_a, "src/lib.rs:42:58", "references", target_type="code")
 relations = store.get_relations(mem_id_a)
 related = store.traverse_relations(mem_id_a, relation_type="supersedes", max_depth=3)
+code_refs = store.traverse_relations(mem_id_a, max_depth=2, target_type="code")
 
 # Export / Import
 data = store.export_all()          # default limit: 10,000 memories
@@ -1155,12 +1172,20 @@ When `sqlite-vec` is available, a `code_chunks_vec` virtual table enables semant
 
 The `--include-code` flag on `llmem search` interleaves code chunk results with memory results using the same RRF scoring formula, enabling unified search across both knowledge stores.
 
+### Code Reference Edges
+
+The `relations` table supports two `target_type` values: `'memory'` (the default, linking two memories) and `'code'` (linking a memory to a code chunk). When `target_type='code'`, the `target_id` uses the format `path:start_line:end_line` (e.g., `src/lib.rs:42:58`) referencing a file location rather than a memory UUID.
+
+The `references` relation type (added to the `relation_type` CHECK constraint) creates edges from memories to code chunks. This enables `--traverse-refs` in search, which follows reference edges from result memories and resolves the referenced file content at query time.
+
+Code ref paths must be relative (no leading `/`) and must not contain `..` traversal. Refs are resolved against an `allowed_paths` allowlist that defaults to `[Path.cwd()]`, preventing arbitrary file reads.
+
 ## Dream Cycle
 
 The dream cycle performs automated memory maintenance during idle periods:
 
 - **Light phase:** Sort and deduplicate near-duplicate memories (cosine similarity ≥ threshold).
-- **Deep phase:** Score, promote, decay, and merge memories. Also promotes inbox items to long-term memory (items with attention_score ≥ `dream.min_score` become permanent memories; lower-scored items are evicted). Decays confidence on idle memories. Boosts frequently accessed memories. LLM-assisted merging of similar pairs.
+- **Deep phase:** Score, promote, decay, and merge memories. Also promotes inbox items to long-term memory (items with attention_score ≥ `dream.min_score` become permanent memories; lower-scored items are evicted). Decays confidence on idle memories. Boosts frequently accessed memories. LLM-assisted merging of similar pairs. Auto-links memories with high cosine similarity (≥ `dream.auto_link_threshold`, default 0.85) by creating `related_to` relations between them.
 - **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection).
 
 Configuration is under the `dream:` key in `config.yaml`. Set `dream.enabled: false` to disable.
@@ -1333,6 +1358,8 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 - Embedding and generation inputs are validated against size limits: `MAX_TEXT_LENGTH` (100,000 characters per text) and `MAX_BATCH_SIZE` (2,048 texts per batch) to prevent OOM and resource exhaustion.
 - Embedding dimension validation in `MemoryStore.add()` rejects vectors whose dimension doesn't match `vec_dimensions`, preventing dimension mismatch bugs from silently corrupting the vector index.
 - All SQL queries use parameterized statements (no injection risk).
+- **Code reference path validation**: `validate_code_ref_path()` rejects absolute paths (leading `/`) and directory traversal (`..`) in code ref target_ids. `resolve_code_ref()` enforces an `allowed_paths` allowlist (defaulting to `[Path.cwd()]`) and blocks resolved paths targeting system directories (`/etc`, `/var`, etc.). Code refs must use the relative format `path:start_line:end_line`.
+- `add_relation()` validates code ref `target_id` paths at insertion time — unsafe paths are rejected with `ValueError`.
 - SQLite extension loading is disabled immediately after `sqlite-vec` loads, preventing runtime loading of arbitrary shared libraries.
 - Database files are created with `umask(0o177)` before creation, then `chmod(0o600)` applied to the DB file and its WAL/SHM sidecars (prevents a race window where sensitive memory content is world-readable on multi-user systems). Parent directories use `0o700`.
 - `config.yaml` is written with `0o600` file permissions (owner-only read/write) to protect API keys and secrets from other users on shared systems.
@@ -1372,6 +1399,7 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 | `llmem.metrics` | `compute_metrics()`, `anisotropy()`, `similarity_range()`, `discrimination_gap()`, `cosine_similarity()`, `bytes_to_vec()`, `EmbeddingMetrics` dataclass, warning thresholds, `METRICS_MAX_EMBEDDINGS` |
 | `llmem.store` | `MemoryStore` with `export_all(limit=)`, `import_memories()` validation, brute-force/embedding caps, dimension validation, inbox methods (`add_to_inbox`, `get_from_inbox`, `list_inbox`, `remove_from_inbox`, `update_inbox_attention_score`, `consolidate`), capacity eviction, `get_embeddings_with_types(limit=)`, `count_embeddings()` |
 | `llmem.code_index` | `CodeIndex` — manages `code_chunks` table, FTS5/vec virtual tables, add/search/remove operations |
+| `llmem.refs` | `resolve_code_ref()`, `validate_code_ref_path()` — code reference resolution for memory-to-code-chunk edges |
 | `llmem.chunking` | `ParagraphChunking`, `FixedLineChunking`, `detect_language()`, `walk_code_files()`, `parse_gitignore()`, `is_ignored()` |
 
 ## Running Tests
