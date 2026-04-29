@@ -836,6 +836,229 @@ def cmd_init(args):
     print(f"  Provider: {detection['provider']}")
 
 
+def cmd_context(args):
+    """Inject relevant memory context for a session.
+
+    Used by session hooks (e.g., Copilot CLI, OpenCode plugins) to inject
+    memories into a new or compacting session. Writes a context file and
+    prints its content to stdout.
+
+    Args:
+        args: An argparse Namespace with attributes:
+            - session_id (str): The session ID to inject context for.
+            - compacting (bool): If True, inject key memories for compaction.
+            - db (Path): Database path.
+
+    Prints the context content to stdout on success.
+    Prints to stderr and exits with 1 on validation or coordinator error.
+    """
+    from .session_hooks import create_session_hook_coordinator, SESSION_CREATED_SUCCESS
+    from .session_hooks import (
+        SESSION_COMPACTING_SUCCESS,
+        SESSION_COMPACTING_NO_MEMORIES,
+        SESSION_COMPACTING_ERROR,
+        SESSION_CREATED_ALREADY_PROCESSED,
+        SESSION_CREATED_ERROR,
+    )
+    from .paths import validate_session_id, get_context_dir
+
+    try:
+        validate_session_id(args.session_id)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        coordinator = create_session_hook_coordinator()
+    except Exception as e:
+        log.error("llmem: cli: context: failed to create coordinator: %s", e)
+        print(f"Error: llmem: context: failed to initialize: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.compacting:
+        result_type, context_file = coordinator.on_compacting(args.session_id)
+        if result_type == SESSION_COMPACTING_SUCCESS and context_file:
+            try:
+                print(Path(context_file).read_text())
+            except OSError as e:
+                log.error("llmem: cli: context: failed to read compact context: %s", e)
+                print(
+                    f"Error: llmem: context: failed to read context file: {e}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        elif result_type == SESSION_COMPACTING_NO_MEMORIES:
+            log.debug(
+                "llmem: cli: context: no key memories for session %s",
+                args.session_id,
+            )
+            # Print nothing — no key memories to inject
+        elif result_type == SESSION_COMPACTING_ERROR:
+            print(
+                f"Error: llmem: context: compacting hook failed for session "
+                f"{args.session_id}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        result_type, context_file = coordinator.on_created(args.session_id)
+        if result_type == SESSION_CREATED_SUCCESS and context_file:
+            try:
+                print(Path(context_file).read_text())
+            except OSError as e:
+                log.error("llmem: cli: context: failed to read context: %s", e)
+                print(
+                    f"Error: llmem: context: failed to read context file: {e}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        elif result_type == SESSION_CREATED_ALREADY_PROCESSED:
+            log.debug(
+                "llmem: cli: context: session %s already processed",
+                args.session_id,
+            )
+            # Re-read existing context file from disk if available
+            context_dir = get_context_dir()
+            existing_file = context_dir / f"{args.session_id}.md"
+            if existing_file.exists():
+                try:
+                    print(existing_file.read_text())
+                except OSError:
+                    pass
+        elif result_type == SESSION_CREATED_ERROR:
+            print(
+                f"Error: llmem: context: created hook failed for session "
+                f"{args.session_id}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    try:
+        coordinator = create_session_hook_coordinator()
+    except Exception as e:
+        log.error("llmem: cli: context: failed to create coordinator: %s", e)
+        print(f"Error: llmem: context: failed to initialize: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.compacting:
+        result_type, context_file = coordinator.on_compacting(args.session_id)
+        if result_type == SESSION_COMPACTING_SUCCESS and context_file:
+            try:
+                print(Path(context_file).read_text())
+            except OSError as e:
+                log.error("llmem: cli: context: failed to read compact context: %s", e)
+                print(
+                    f"Error: llmem: context: failed to read context file: {e}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        elif result_type == SESSION_COMPACTING_NO_MEMORIES:
+            log.debug(
+                "llmem: cli: context: no key memories for session %s",
+                args.session_id,
+            )
+            # Print nothing — no key memories to inject
+        elif result_type == SESSION_COMPACTING_ERROR:
+            print(
+                f"Error: llmem: context: compacting hook failed for session {args.session_id}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        result_type, context_file = coordinator.on_created(args.session_id)
+        if result_type == SESSION_CREATED_SUCCESS and context_file:
+            try:
+                print(Path(context_file).read_text())
+            except OSError as e:
+                log.error("llmem: cli: context: failed to read context: %s", e)
+                print(
+                    f"Error: llmem: context: failed to read context file: {e}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        elif result_type == SESSION_CREATED_ALREADY_PROCESSED:
+            log.debug(
+                "llmem: cli: context: session %s already processed",
+                args.session_id,
+            )
+            # Re-read existing context file if it exists
+            if context_file:
+                try:
+                    print(Path(context_file).read_text())
+                except OSError:
+                    pass
+        elif result_type == SESSION_CREATED_ERROR:
+            print(
+                f"Error: llmem: context: created hook failed for session {args.session_id}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+
+def cmd_hook(args):
+    """Handle session lifecycle hook events.
+
+    Delegates to the appropriate session hook handler based on the
+    subcommand (e.g., 'idle' triggers memory extraction and introspection).
+
+    Args:
+        args: An argparse Namespace with attributes:
+            - hook_type (str): The hook type ('idle').
+            - session_id (str): The session ID.
+            - db (Path): Database path.
+
+    Prints extraction summary on stdout for 'idle' hook.
+    Prints to stderr and exits with 1 on validation error.
+    """
+    from .session_hooks import (
+        create_session_hook_coordinator,
+        SESSION_IDLE_DEBOUNCED,
+        SESSION_IDLE_NO_TRANSCRIPT,
+    )
+    from .paths import validate_session_id
+
+    try:
+        validate_session_id(args.session_id)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.hook_type == "idle":
+        try:
+            coordinator = create_session_hook_coordinator()
+        except Exception as e:
+            log.error("llmem: cli: hook: idle: failed to create coordinator: %s", e)
+            print(
+                f"Error: llmem: hook: idle: failed to initialize: {e}", file=sys.stderr
+            )
+            sys.exit(1)
+
+        result_type, count = coordinator.on_idle(args.session_id)
+        if result_type == SESSION_IDLE_DEBOUNCED:
+            log.debug(
+                "llmem: cli: hook: idle: debounced for session %s",
+                args.session_id,
+            )
+        elif result_type == SESSION_IDLE_NO_TRANSCRIPT:
+            log.debug(
+                "llmem: cli: hook: idle: no transcript for session %s",
+                args.session_id,
+            )
+        else:
+            log.info(
+                "llmem: cli: hook: idle: %s (%d memories) for session %s",
+                result_type,
+                count,
+                args.session_id,
+            )
+    else:
+        print(
+            f"Error: unknown hook type '{args.hook_type}'. Supported: idle",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def main():
     """Entry point for the llmem CLI."""
     # Backward-compat: warn when invoked as 'lobmem'
@@ -1078,6 +1301,36 @@ def main():
         help="Ollama base URL (default: http://localhost:11434)",
     )
 
+    # context
+    p_context = subparsers.add_parser(
+        "context",
+        help="Inject relevant memory context for a session",
+    )
+    p_context.add_argument(
+        "session_id",
+        help="Session ID to inject context for",
+    )
+    p_context.add_argument(
+        "--compacting",
+        action="store_true",
+        help="Inject key memories for compaction instead of session start context",
+    )
+
+    # hook
+    p_hook = subparsers.add_parser(
+        "hook",
+        help="Handle session lifecycle hook events",
+    )
+    p_hook.add_argument(
+        "hook_type",
+        choices=["idle"],
+        help="Hook type to dispatch",
+    )
+    p_hook.add_argument(
+        "session_id",
+        help="Session ID for the hook event",
+    )
+
     # Register CLI plugins
     for plugin_name in sorted(get_registered_cli_plugins()):
         from .registry import get_cli_plugin_setup_fn
@@ -1118,6 +1371,8 @@ def main():
         "embed": cmd_embed,
         "consolidate": cmd_consolidate,
         "learn": cmd_learn,
+        "context": cmd_context,
+        "hook": cmd_hook,
     }
 
     handler = commands.get(args.command)
