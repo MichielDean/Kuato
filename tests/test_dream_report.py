@@ -1,5 +1,7 @@
 """Tests for llmem.dream_report module — HTML generation and escaping."""
 
+import pytest
+from pathlib import Path
 
 from llmem.dream import DreamResult, RemPhaseResult, DeepPhaseResult, LightPhaseResult
 from llmem.dream_report import generate_dream_report
@@ -106,3 +108,37 @@ class TestDreamReport_Sections:
         generate_dream_report(result, report_path)
         html = report_path.read_text()
         assert "LLMem Dream Report" in html
+
+
+class TestDreamReport_PathValidation:
+    """Test that generate_dream_report validates paths correctly.
+
+    Regression test for ll-kingr-4lwkp: the docstring previously claimed
+    paths must be within llmem home, but _validate_write_path only blocks
+    system directories and traversal — custom paths outside llmem home
+    are allowed.
+    """
+
+    def test_allows_path_outside_llmem_home(self, tmp_path):
+        """generate_dream_report accepts paths outside the llmem home directory.
+
+        The validation only blocks system dirs and traversal, not arbitrary
+        paths outside llmem home.
+        """
+        # Use a path that is clearly outside llmem home
+        report_path = tmp_path / "custom-output" / "dream-report.html"
+        result = DreamResult()
+        generate_dream_report(result, report_path)
+        assert report_path.exists()
+
+    def test_rejects_system_directory_path(self):
+        """generate_dream_report rejects paths targeting system directories."""
+        result = DreamResult()
+        with pytest.raises(ValueError, match="protected directory"):
+            generate_dream_report(result, Path("/etc/dream-report.html"))
+
+    def test_rejects_traversal_path(self):
+        """generate_dream_report rejects paths with '..' traversal."""
+        result = DreamResult()
+        with pytest.raises(ValueError, match="traversal"):
+            generate_dream_report(result, Path("/tmp/../etc/dream-report.html"))

@@ -68,6 +68,7 @@ DEFAULTS = {
         "calibration_enabled": True,
         "stale_procedure_days": 30,
         "calibration_lookback_days": 90,
+        "auto_link_threshold": 0.85,
     },
     "opencode": {
         "context_dir": None,  # Resolved from get_context_dir()

@@ -274,6 +274,12 @@ llmem inbox
 llmem consolidate --dry-run
 llmem consolidate --min-score 0.5
 
+# Dream cycle (automated memory maintenance)
+llmem dream                   # Dry run — preview changes only
+llmem dream --apply           # Apply changes
+llmem dream --phase deep      # Run only the deep phase
+llmem dream --report dream.html  # Generate HTML dream report
+
 # Check embedding quality
 llmem embed
 llmem consolidate --metrics
@@ -326,7 +332,7 @@ dream:
   boost_on_promote: 0.1
   merge_model: qwen2.5:1.5b
   diary_path: null            # Auto-resolved from get_dream_diary_path()
-  report_path: ~/.agent/diagrams/dream-report.html
+  report_path: ~/.agent/diagrams/dream-report.html  # Must not target system dirs, '..' traversal, or symlinks
   behavioral_threshold: 3
   behavioral_lookback_days: 30
   proposed_changes_path: null # Auto-resolved from get_proposed_changes_path()
@@ -368,6 +374,7 @@ Commands:
   inbox               List items in the working memory inbox
   embed               Report embedding quality metrics
   consolidate         Promote inbox items to long-term memory
+  dream               Run the dream consolidation cycle
   init                Initialize the llmem memory system
   learn               Ingest a codebase into the code index
   context             Inject relevant memory context for a session
@@ -519,6 +526,30 @@ Promote inbox items to long-term memory. Items with attention score ≥ `min_sco
 - `--min-score`: Minimum attention score threshold for promotion. Items below this are evicted. Default: `0.0` (promote everything).
 - `--dry-run`: Show what would happen without making changes. Promoted items won't have a `memory_id`, and no rows are inserted or deleted.
 - `--metrics`: Compute and report embedding quality metrics (anisotropy, similarity range, discrimination gap) after consolidation. Useful for checking embedding health after memories have been promoted.
+
+### `llmem dream`
+
+```bash
+llmem dream [--apply] [--phase light|deep|rem] [--report PATH]
+```
+
+Run the dream consolidation cycle, which performs automated memory maintenance in three phases:
+
+- **Light phase:** Sort and deduplicate near-duplicate memories (cosine similarity ≥ `dream.similarity_threshold`).
+- **Deep phase:** Score, promote, decay, and merge memories. Also promotes inbox items to long-term memory (items with attention_score ≥ `dream.min_score` become permanent; lower-scored items are evicted). Decays confidence on idle memories, boosts frequently accessed memories, performs LLM-assisted merging of similar pairs, and auto-links memories with high cosine similarity (≥ `dream.auto_link_threshold`, default 0.85).
+- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection).
+
+Without `--apply`, the dream cycle runs as a **dry run** — output is prefixed with `[DRY RUN]` and no changes are written to the database.
+
+Flags:
+
+- `--apply`: Apply changes. Without this flag, the dream cycle runs as a dry run (no modifications to the database).
+- `--phase`: Run a specific dream phase only. Choices: `light`, `deep`, `rem`. Default: all phases.
+- `--report PATH`: Write an HTML dream report to the given path. The path is validated — it must not target a protected system directory (e.g. `/etc`, `/var`), contain `..` traversal, or be a symlink. Paths outside the llmem home directory are allowed (e.g. custom report output locations). On validation failure, prints an error to stderr and exits with code 1.
+
+All dream configuration (thresholds, model, schedule, etc.) is read from the `dream:` section of `config.yaml` (see [Configuration](#general-configuration)). The `ollama_url` is read from the `memory:` section, not `dream:`.
+
+Output is printed to stdout. On `--report` path validation errors, the error message is printed to stderr.
 
 ### `llmem register-type` / `llmem types`
 
@@ -1255,7 +1286,7 @@ Code ref paths must be relative (no leading `/`) and must not contain `..` trave
 
 ## Dream Cycle
 
-The dream cycle performs automated memory maintenance during idle periods:
+The dream cycle performs automated memory maintenance during idle periods. It can be invoked manually via `llmem dream` (see [CLI Reference](#llmem-dream)) or run automatically by the `lobsterdog-dream.service` systemd timer.
 
 - **Light phase:** Sort and deduplicate near-duplicate memories (cosine similarity ≥ threshold).
 - **Deep phase:** Score, promote, decay, and merge memories. Also promotes inbox items to long-term memory (items with attention_score ≥ `dream.min_score` become permanent memories; lower-scored items are evicted). Decays confidence on idle memories. Boosts frequently accessed memories. LLM-assisted merging of similar pairs. Auto-links memories with high cosine similarity (≥ `dream.auto_link_threshold`, default 0.85) by creating `related_to` relations between them.

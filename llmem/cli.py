@@ -18,7 +18,7 @@ from .metrics import (
 from .paths import get_db_path, get_config_path, get_llmem_home
 from .paths import _validate_write_path, _is_blocked_path
 from .registry import get_registered_cli_plugins
-from .config import write_config_yaml
+from .config import write_config_yaml, get_dream_config, get_ollama_url
 from .ollama import ProviderDetector
 from .paths import migrate_from_lobsterdog
 from .url_validate import is_safe_url
@@ -724,6 +724,109 @@ def cmd_consolidate(args):
     store.close()
 
 
+def cmd_dream(args):
+    """Run the dream consolidation cycle.
+
+    Args:
+        args: An argparse Namespace with attributes:
+            - db (Path or None): Database path. Resolved via get_db_path() if None.
+            - apply (bool): If True, apply changes. If False, dry run.
+            - phase (str or None): Run a specific phase ('light', 'deep', 'rem'),
+              or None for all phases.
+            - report (str or None): Path to write an HTML dream report.
+
+    Prints a summary of dream phase results to stdout.
+    On --report path validation errors, prints to stderr and exits with 1.
+    """
+    from .dream import Dreamer
+    from .dream_report import generate_dream_report
+
+    # Resolve DB path if not provided
+    if not hasattr(args, "db") or args.db is None:
+        args.db = get_db_path()
+
+    # Resolve dream config
+    dream_config = get_dream_config()
+
+    # Resolve ollama_url from the memory section (not dream section)
+    try:
+        ollama_url = get_ollama_url()
+    except ValueError:
+        ollama_url = "http://localhost:11434"
+
+    store = MemoryStore(args.db, disable_vec=True)
+
+    try:
+        # Construct Dreamer from config
+        dreamer = Dreamer(
+            store=store,
+            similarity_threshold=dream_config.get("similarity_threshold", 0.92),
+            decay_rate=dream_config.get("decay_rate", 0.05),
+            decay_interval_days=dream_config.get("decay_interval_days", 30),
+            decay_floor=dream_config.get("decay_floor", 0.3),
+            confidence_floor=dream_config.get("confidence_floor", 0.3),
+            boost_threshold=dream_config.get("boost_threshold", 5),
+            boost_amount=dream_config.get("boost_amount", 0.05),
+            min_score=dream_config.get("min_score", 0.5),
+            min_recall_count=dream_config.get("min_recall_count", 3),
+            min_unique_queries=dream_config.get("min_unique_queries", 1),
+            boost_on_promote=dream_config.get("boost_on_promote", 0.1),
+            merge_model=dream_config.get("merge_model", "qwen2.5:1.5b"),
+            ollama_url=ollama_url,
+            behavioral_threshold=dream_config.get("behavioral_threshold", 3),
+            behavioral_lookback_days=dream_config.get("behavioral_lookback_days", 30),
+            calibration_enabled=dream_config.get("calibration_enabled", True),
+            stale_procedure_days=dream_config.get("stale_procedure_days", 30),
+            calibration_lookback_days=dream_config.get("calibration_lookback_days", 90),
+            auto_link_threshold=dream_config.get("auto_link_threshold", 0.85),
+            diary_path=Path(dream_config["diary_path"])
+            if dream_config.get("diary_path")
+            else None,
+            proposed_changes_path=Path(dream_config["proposed_changes_path"])
+            if dream_config.get("proposed_changes_path")
+            else None,
+        )
+
+        result = dreamer.run(apply=args.apply, phase=args.phase)
+
+        prefix = "[DRY RUN] " if not args.apply else ""
+
+        # Print phase-specific output
+        if result.light is not None:
+            print(f"{prefix}Light phase:")
+            print(f"{prefix}  Duplicate pairs: {result.light.duplicate_pairs}")
+
+        if result.deep is not None:
+            print(f"{prefix}Deep phase:")
+            print(
+                f"{prefix}  Decayed: {result.deep.decayed_count}  "
+                f"Boosted: {result.deep.boosted_count}  "
+                f"Promoted: {result.deep.promoted_count}  "
+                f"Invalidated: {result.deep.invalidated_count}  "
+                f"Merged: {result.deep.merged_count}  "
+                f"Auto-linked: {result.deep.auto_linked_count}"
+            )
+
+        if result.rem is not None:
+            print(f"{prefix}REM phase:")
+            print(
+                f"{prefix}  Total memories: {result.rem.total_memories}  "
+                f"Active: {result.rem.active_memories}"
+            )
+
+        # Generate report if requested
+        if args.report:
+            try:
+                report_path = Path(args.report)
+                generate_dream_report(result, report_path)
+                print(f"Report written to {report_path}")
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+    finally:
+        store.close()
+
+
 def cmd_init(args):
     """Initialize the llmem memory system: config, database, and provider detection.
 
@@ -1395,6 +1498,25 @@ def main():
         help="Compute and report embedding quality metrics after consolidation",
     )
 
+    # dream
+    p_dream = subparsers.add_parser("dream", help="Run dream consolidation cycle")
+    p_dream.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply changes (default is dry run)",
+    )
+    p_dream.add_argument(
+        "--phase",
+        choices=["light", "deep", "rem"],
+        default=None,
+        help="Run a specific dream phase (default: all phases)",
+    )
+    p_dream.add_argument(
+        "--report",
+        default=None,
+        help="Path to write an HTML dream report",
+    )
+
     # learn
     p_learn = subparsers.add_parser(
         "learn", help="Ingest a codebase into the code index"
@@ -1551,6 +1673,7 @@ def main():
         "inbox": cmd_inbox,
         "embed": cmd_embed,
         "consolidate": cmd_consolidate,
+        "dream": cmd_dream,
         "learn": cmd_learn,
         "context": cmd_context,
         "hook": cmd_hook,
