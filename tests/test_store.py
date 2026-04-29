@@ -556,3 +556,53 @@ class TestStore_TraverseRelationsWithRefs:
         mem_results = store.traverse_relations([mid], max_depth=1, target_type="memory")
         for r in mem_results:
             assert r["target_type"] == "memory"
+
+
+class TestStore_DeleteOrphanedRelations:
+    """Test that deleting a memory cleans up orphaned target_id relations."""
+
+    def test_delete_memory_removes_target_id_relations(self, store):
+        """When a memory is deleted, relations where it is the target_id
+        (target_type='memory') are cleaned up — no orphaned rows remain."""
+        mid1 = store.add(type="fact", content="source memory")
+        mid2 = store.add(type="fact", content="target memory")
+        store.add_relation(mid1, mid2, "related_to", target_type="memory")
+        # mid2 is the target — delete it
+        assert store.delete(mid2)
+        # Relation should be gone (no orphan)
+        relations = store.get_relations(mid1)
+        assert not any(r["target_id"] == mid2 for r in relations)
+
+    def test_delete_memory_removes_source_id_relations_via_cascade(self, store):
+        """When a memory is deleted, relations where it is the source_id
+        are removed by the ON DELETE CASCADE FK constraint."""
+        mid1 = store.add(type="fact", content="source memory")
+        mid2 = store.add(type="fact", content="target memory")
+        store.add_relation(mid1, mid2, "related_to", target_type="memory")
+        # mid1 is the source — delete it
+        assert store.delete(mid1)
+        relations = store.get_relations(mid2)
+        assert not any(r["source_id"] == mid1 for r in relations)
+
+    def test_delete_memory_preserves_code_ref_relations(self, store):
+        """When a memory is deleted, code ref relations (target_type='code')
+        where the memory is the source are cascade-deleted, but code ref
+        relations from other memories are untouched."""
+        mid1 = store.add(type="fact", content="has code ref")
+        store.add_relation(mid1, "src/app.rs:10:20", "references", target_type="code")
+        # Delete mid1 — source_id cascade removes the relation
+        assert store.delete(mid1)
+        # Verify the relation is gone
+        relations = store.get_relations(mid1)
+        assert len(relations) == 0
+
+    def test_delete_memory_no_relations_no_error(self, store):
+        """Deleting a memory with no relations does not raise."""
+        mid = store.add(type="fact", content="lonely memory")
+        # Add an unrelated code ref from another memory
+        mid2 = store.add(type="fact", content="other memory")
+        store.add_relation(mid2, "src/x.rs:1:2", "references", target_type="code")
+        assert store.delete(mid)
+        # Code ref from mid2 is still intact
+        relations = store.get_relations(mid2)
+        assert any(r["target_type"] == "code" for r in relations)

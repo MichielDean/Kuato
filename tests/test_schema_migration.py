@@ -348,3 +348,63 @@ class TestMigration_SplitSqlStatements:
         for s in stmts:
             assert not s.upper().startswith("BEGIN")
             assert not s.upper().startswith("COMMIT")
+
+    def test_split_multiline_trigger_begin_on_own_line(self):
+        """Multi-line trigger with BEGIN on its own line is preserved as
+        a single statement."""
+        sql = (
+            "CREATE TRIGGER my_trigger\n"
+            "AFTER INSERT ON my_table\n"
+            "BEGIN\n"
+            "    INSERT INTO log VALUES (1);\n"
+            "END;\n"
+        )
+        stmts = _split_sql_statements(sql)
+        assert len(stmts) == 1
+        assert "CREATE TRIGGER my_trigger" in stmts[0]
+        assert "BEGIN" in stmts[0]
+        assert "INSERT INTO log" in stmts[0]
+
+    def test_split_single_line_trigger_still_works(self):
+        """Single-line trigger (CREATE TRIGGER ... BEGIN) still works."""
+        sql = (
+            "CREATE TRIGGER t AFTER INSERT ON x BEGIN\n"
+            "    INSERT INTO y VALUES (1);\n"
+            "END;\n"
+        )
+        stmts = _split_sql_statements(sql)
+        assert len(stmts) == 1
+        assert "CREATE TRIGGER t" in stmts[0]
+
+    def test_split_multiline_trigger_with_multiple_statements(self):
+        """Multi-line trigger and other DDL are both parsed correctly."""
+        sql = (
+            "CREATE TABLE t (id TEXT);\n"
+            "CREATE TRIGGER my_trig\n"
+            "AFTER DELETE ON t\n"
+            "BEGIN\n"
+            "    INSERT INTO log VALUES (1);\n"
+            "END;\n"
+            "CREATE INDEX idx ON t(id);\n"
+        )
+        stmts = _split_sql_statements(sql)
+        assert len(stmts) == 3
+        assert "CREATE TABLE t" in stmts[0]
+        assert "CREATE TRIGGER my_trig" in stmts[1]
+        assert "BEGIN" in stmts[1]
+        assert "CREATE INDEX" in stmts[2]
+
+    def test_split_migration_001_preserves_triggers(self):
+        """Migration 001 (which has FTS5 triggers) is split correctly
+        with trigger bodies intact."""
+        import importlib.resources
+
+        migrations_pkg = importlib.resources.files("llmem_migrations")
+        sql_content = migrations_pkg.joinpath("001_initial_schema.sql").read_text()
+        stmts = _split_sql_statements(sql_content)
+        trigger_stmts = [s for s in stmts if "CREATE TRIGGER" in s.upper()]
+        # 001 has 3 FTS triggers
+        assert len(trigger_stmts) == 3
+        for trig in trigger_stmts:
+            assert "BEGIN" in trig
+            assert "INSERT INTO" in trig

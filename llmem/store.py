@@ -116,6 +116,9 @@ def _split_sql_statements(sql: str) -> list[str]:
     semicolon). Does NOT strip BEGIN inside trigger bodies or other
     compound SQL statements.
 
+    Handles both single-line triggers (BEGIN on same line as CREATE TRIGGER)
+    and multi-line triggers (BEGIN on its own line after the trigger header).
+
     Args:
         sql: Raw SQL text from a migration file.
 
@@ -125,6 +128,9 @@ def _split_sql_statements(sql: str) -> list[str]:
     statements: list[str] = []
     current_lines: list[str] = []
     in_trigger_body = False
+    # Tracks whether we've seen CREATE TRIGGER without BEGIN yet —
+    # used for multi-line trigger headers where BEGIN is on its own line.
+    pending_trigger = False
 
     for line in sql.split("\n"):
         stripped = line.strip()
@@ -133,10 +139,27 @@ def _split_sql_statements(sql: str) -> list[str]:
         # trigger-internal BEGIN as a transaction start.
         if not in_trigger_body:
             upper = stripped.upper()
-            if upper.startswith("CREATE TRIGGER") and upper.rstrip(";").endswith(
-                "BEGIN"
-            ):
-                in_trigger_body = True
+            if upper.startswith("CREATE TRIGGER"):
+                if upper.rstrip(";").endswith("BEGIN"):
+                    # Single-line trigger: CREATE TRIGGER ... BEGIN
+                    in_trigger_body = True
+                    current_lines.append(line)
+                    continue
+                else:
+                    # Multi-line trigger header: BEGIN will appear
+                    # on a later line.
+                    pending_trigger = True
+                    current_lines.append(line)
+                    continue
+            if pending_trigger:
+                # We're collecting a multi-line trigger header —
+                # wait for the BEGIN line to enter trigger body mode.
+                if upper.rstrip(";") == "BEGIN":
+                    pending_trigger = False
+                    in_trigger_body = True
+                    current_lines.append(line)
+                    continue
+                # Still in the trigger header (e.g. AFTER INSERT ON ...)
                 current_lines.append(line)
                 continue
         else:
@@ -723,6 +746,14 @@ class MemoryStore:
 
     def delete(self, mem_id: str) -> bool:
         conn = self._connect()
+        # source_id has ON DELETE CASCADE, but target_id no longer has a
+        # foreign key (migration 006 removed it to support code refs).
+        # Manually clean up orphaned relations where the deleted memory
+        # is the target before deleting the memory row itself.
+        conn.execute(
+            'DELETE FROM "relations" WHERE "target_id" = ? AND "target_type" = \'memory\'',
+            (mem_id,),
+        )
         cursor = conn.execute('DELETE FROM "memories" WHERE "id" = ?', (mem_id,))
         conn.commit()
         return cursor.rowcount > 0

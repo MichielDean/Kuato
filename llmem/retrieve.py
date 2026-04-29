@@ -223,7 +223,10 @@ class Retriever:
                 accessed_at for each result. Defaults to True.
 
         Returns:
-            List of memory dicts sorted by relevance.
+            List of dicts sorted by relevance. When traverse_refs is False,
+            all items are memory dicts (with 'id' key). When traverse_refs is
+            True, the list may also include code ref dicts (with '_source':
+            'code' key, lacking 'id' key) appended after memory results.
         """
         results = self._store.search(
             query=query, type=type_filter, limit=limit, _include_rank=True
