@@ -102,6 +102,111 @@ def _reset_global_registry() -> None:
 _global_registry: set[str] = set(_DEFAULT_TYPES)
 
 
+def _split_sql_statements(sql: str) -> list[str]:
+    """Split SQL text into individual executable statements.
+
+    Splits by semicolons, strips comment-only lines and empty lines.
+    Filters out standalone BEGIN TRANSACTION / COMMIT statements because
+    transaction control is managed at the Python level by _run_migrations(),
+    ensuring atomic execution of the entire migration (including table-recreation
+    patterns like DROP TABLE + ALTER TABLE RENAME).
+
+    Only strips BEGIN/BEGIN TRANSACTION/COMMIT when they are standalone
+    statements (the entire trimmed line is just that keyword plus optional
+    semicolon). Does NOT strip BEGIN inside trigger bodies or other
+    compound SQL statements.
+
+    Args:
+        sql: Raw SQL text from a migration file.
+
+    Returns:
+        List of stripped SQL statements (without trailing semicolons).
+    """
+    statements: list[str] = []
+    current_lines: list[str] = []
+    in_trigger_body = False
+
+    for line in sql.split("\n"):
+        stripped = line.strip()
+
+        # Track trigger body boundaries so we don't misinterpret
+        # trigger-internal BEGIN as a transaction start.
+        if not in_trigger_body:
+            upper = stripped.upper()
+            if upper.startswith("CREATE TRIGGER") and upper.rstrip(";").endswith(
+                "BEGIN"
+            ):
+                in_trigger_body = True
+                current_lines.append(line)
+                continue
+        else:
+            if stripped.upper() in ("END;", "END"):
+                in_trigger_body = False
+                current_lines.append(line)
+                stmt = "\n".join(current_lines).rstrip(";").strip()
+                if stmt:
+                    statements.append(stmt)
+                current_lines = []
+                continue
+            current_lines.append(line)
+            continue
+
+        # Outside trigger body: normal statement splitting
+
+        # Check for standalone transaction control statements.
+        # A line is a standalone transaction control if:
+        # 1. The trimmed line is just BEGIN/BEGIN TRANSACTION/COMMIT (with
+        #    optional semicolon), AND
+        # 2. Any previously collected lines are comments or empty
+        upper = stripped.upper().rstrip(";")
+        is_transaction_control = upper in ("BEGIN TRANSACTION", "BEGIN", "COMMIT")
+        if is_transaction_control:
+            # Check if current_lines only has comments/blanks — if so,
+            # this is a standalone transaction control statement
+            all_comments = all(
+                l.strip() == "" or l.strip().startswith("--") for l in current_lines
+            )
+            if all_comments:
+                # Discard the comments before and the transaction control itself
+                current_lines = []
+                continue
+            # If current_lines has real code, this BEGIN/COMMIT is part of
+            # a larger statement — keep collecting
+
+        current_lines.append(line)
+
+        if stripped.endswith(";"):
+            stmt = "\n".join(current_lines).rstrip(";").strip()
+            # Filter out comment-only and _schema_migrations statements
+            if stmt:
+                non_comment_lines = [
+                    l
+                    for l in stmt.split("\n")
+                    if l.strip() and not l.strip().startswith("--")
+                ]
+                if non_comment_lines:
+                    # Skip _schema_migrations inserts — the migration runner
+                    # handles version tracking itself
+                    if 'INSERT INTO "_schema_migrations"' not in stmt:
+                        statements.append(stmt)
+            current_lines = []
+
+    # Handle any trailing statement without a semicolon
+    if current_lines:
+        stmt = "\n".join(current_lines).strip()
+        if stmt:
+            non_comment_lines = [
+                l
+                for l in stmt.split("\n")
+                if l.strip() and not l.strip().startswith("--")
+            ]
+            if non_comment_lines:
+                if 'INSERT INTO "_schema_migrations"' not in stmt:
+                    statements.append(stmt)
+
+    return statements
+
+
 def _run_migrations(conn: sqlite3.Connection) -> None:
     """Run all unapplied SQL migration files from the migrations/ directory.
 
@@ -168,18 +273,28 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             logger.warning("llmem: migration: could not read %s: %s", filename, e)
             continue
 
-        # Execute the migration
+        # Execute the migration using individual statements for proper
+        # transaction control. conn.executescript() issues an implicit
+        # COMMIT before running, which breaks atomicity for migrations
+        # that recreate tables (e.g. 006_add_ref_types.sql — DROP TABLE
+        # + ALTER TABLE RENAME must be in one transaction so a crash
+        # mid-migration rolls back to the original table state).
         try:
-            conn.executescript(sql_content)
+            conn.execute("BEGIN")
+            for stmt in _split_sql_statements(sql_content):
+                conn.execute(stmt)
             conn.execute(
                 'INSERT OR IGNORE INTO "_schema_migrations" ("version") VALUES (?)',
                 (version,),
             )
-            conn.commit()
+            conn.execute("COMMIT")
             logger.info("llmem: migration: applied %s", filename)
         except sqlite3.Error as e:
             logger.error("llmem: migration: failed to apply %s: %s", filename, e)
-            conn.rollback()
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
             raise
 
 

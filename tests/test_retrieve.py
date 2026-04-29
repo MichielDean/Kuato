@@ -1122,3 +1122,34 @@ class TestRetrieve_RefExpansion:
         code_results = [r for r in results if r.get("_source") == "code"]
         assert len(code_results) == 0
         # Should not raise
+
+
+class TestRetrieve_TraverseRelationsFiltersCodeRefs:
+    """Regression test: traverse_relations=True in Retriever.search() must
+    only follow memory-type edges (target_type='memory'), not code-type
+    edges that would mix non-memory IDs into the related_ids list."""
+
+    def test_traverse_relations_excludes_code_ref_ids(self, store, tmp_path):
+        """When a memory has both memory and code relations,
+        traverse_relations=True only expands memory relations (not code refs).
+
+        Without the target_type='memory' filter, code ref target_ids (e.g.
+        'src/lib.rs:42:58') would appear in related_ids and displace real
+        memory IDs from the limit.
+        """
+        # Set up: memory A relates to memory B and code ref
+        mid_a = store.add(type="fact", content="memory A about caching")
+        mid_b = store.add(type="fact", content="memory B about caching strategies")
+        code_ref = "src/lib.rs:42:58"
+        store.add_relation(mid_a, mid_b, "related_to", target_type="memory")
+        store.add_relation(mid_a, code_ref, "references", target_type="code")
+
+        retriever = Retriever(store=store, embedder=None)
+        results = retriever.search("caching", traverse_relations=True, limit=20)
+
+        # All results with an 'id' key should be valid memory IDs,
+        # not code ref strings like 'src/lib.rs:42:58'
+        result_ids = [r["id"] for r in results if "id" in r]
+        assert code_ref not in result_ids
+        # Memory B should appear in the expanded results
+        assert mid_b in result_ids

@@ -16,8 +16,6 @@ log = logging.getLogger(__name__)
 # Pattern: path:start_line:end_line (1-based, inclusive)
 _CODE_REF_PATTERN = re.compile(r"^([^:]+):(\d+):(\d+)$")
 
-DEFAULT_MAX_REF_DEPTH = 3
-
 
 def resolve_code_ref(target_id: str) -> dict | None:
     """Resolve a code reference string to actual file content.

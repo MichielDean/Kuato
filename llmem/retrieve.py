@@ -234,7 +234,9 @@ class Retriever:
 
         if traverse_relations and results:
             mem_ids = [r["id"] for r in results]
-            related = self._store.traverse_relations(mem_ids, max_depth=relation_depth)
+            related = self._store.traverse_relations(
+                mem_ids, max_depth=relation_depth, target_type="memory"
+            )
             related_ids = [
                 r["target_id"]
                 for r in related

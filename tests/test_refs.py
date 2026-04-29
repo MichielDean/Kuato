@@ -7,6 +7,17 @@ import pytest
 from llmem.refs import resolve_code_ref
 
 
+class TestRefs_NoDefaultMaxRefDepth:
+    """Regression test: DEFAULT_MAX_REF_DEPTH was dead code in refs.py and
+    has been removed. Verify it no longer exists."""
+
+    def test_default_max_ref_depth_not_in_module(self):
+        """refs.py must not export DEFAULT_MAX_REF_DEPTH — it was dead code."""
+        import llmem.refs as refs_module
+
+        assert not hasattr(refs_module, "DEFAULT_MAX_REF_DEPTH")
+
+
 class TestRefs_ResolveCodeRef:
     """Test resolve_code_ref() — parses code reference strings and reads file content."""
 

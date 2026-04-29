@@ -2,10 +2,9 @@
 -- Add target_type column to relations table (default 'memory') and extend
 -- relation_type CHECK to include 'references'. SQLite does not support
 -- ALTER TABLE DROP CONSTRAINT, so the relations table must be recreated.
--- Wrapped in a transaction so a crash mid-migration rolls back to the
--- original table state rather than leaving no relations table at all.
-
-BEGIN TRANSACTION;
+-- Transaction control is handled by the Python migration runner (_run_migrations),
+-- which wraps the entire migration in BEGIN/COMMIT for crash safety — a crash
+-- mid-migration rolls back to the original table state.
 
 -- Step 1: Create new relations table with target_type column and extended CHECK
 CREATE TABLE IF NOT EXISTS "relations_new" (
@@ -36,5 +35,3 @@ CREATE INDEX IF NOT EXISTS "idx_relations_target" ON "relations"("target_id");
 
 -- Step 6: Add new index for target_type
 CREATE INDEX IF NOT EXISTS "idx_relations_target_type" ON "relations"("target_type");
-
-COMMIT;
