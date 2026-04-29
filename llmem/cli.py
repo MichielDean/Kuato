@@ -1125,7 +1125,8 @@ def cmd_track_review(args):
             content_lines.append(f"What_happened: {what_happened}")
             if severity:
                 content_lines.append(f"Outcomes: {severity} finding")
-            content_lines.append("What_caught_it: self-review")
+            caught_by = args.caught_by or finding.get("caughtBy", "self-review")
+            content_lines.append(f"What_caught_it: {caught_by}")
             content_lines.append("Recurring: no")
             content = "\n".join(content_lines)
 
@@ -1144,7 +1145,8 @@ def cmd_track_review(args):
             content_lines.append(f"Context: {args.context}")
         content_lines.append("What_happened: clean review — no findings")
         content_lines.append("Outcomes: all clear")
-        content_lines.append("What_caught_it: self-review")
+        caught_by = args.caught_by or "self-review"
+        content_lines.append(f"What_caught_it: {caught_by}")
         content_lines.append("Recurring: no")
         content = "\n".join(content_lines)
 

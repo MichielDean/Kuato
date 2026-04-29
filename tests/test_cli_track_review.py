@@ -157,6 +157,25 @@ class TestTrackReview_CleanReview:
         store.close()
         assert any("handler.py:42" in r.get("content", "") for r in results)
 
+    def test_clean_review_respects_caught_by(self, tmp_path, capsys):
+        """track-review clean review respects --caught-by flag."""
+        db = tmp_path / "test.db"
+        args = argparse.Namespace(
+            context="handler.py",
+            category=None,
+            what_happened=None,
+            severity=None,
+            caught_by="CI",
+            finding_file=None,
+            db=db,
+        )
+        cmd_track_review(args)
+        store = MemoryStore(db_path=db)
+        results = store.search("REVIEW_PASSED", limit=10)
+        store.close()
+        content = results[0]["content"]
+        assert "What_caught_it: CI" in content
+
 
 # ── track-review: single finding mode ───────────────────────────────────
 
@@ -515,6 +534,117 @@ class TestTrackReview_BatchMode:
         store.close()
         content = results[0]["content"]
         assert "What_happened: review finding" in content
+
+    def test_batch_mode_caught_by_flag_respected(self, tmp_path, capsys):
+        """track-review --finding-file --caught-by uses the CLI flag value."""
+        db = tmp_path / "test.db"
+        findings = [
+            {"category": "NULL_SAFETY", "what_happened": "null dereference"},
+        ]
+        finding_path = tmp_path / "findings.json"
+        finding_path.write_text(json.dumps(findings))
+
+        args = argparse.Namespace(
+            context="app.py",
+            category=None,
+            what_happened=None,
+            severity=None,
+            caught_by="CI",
+            finding_file=str(finding_path),
+            db=db,
+        )
+        cmd_track_review(args)
+        store = MemoryStore(db_path=db)
+        results = store.search("null dereference", limit=10)
+        store.close()
+        content = results[0]["content"]
+        assert "What_caught_it: CI" in content
+
+    def test_batch_mode_per_finding_caught_by_used(self, tmp_path, capsys):
+        """track-review --finding-file without --caught-by uses per-finding caughtBy field."""
+        db = tmp_path / "test.db"
+        findings = [
+            {
+                "category": "NULL_SAFETY",
+                "what_happened": "null dereference",
+                "caughtBy": "lint",
+            },
+        ]
+        finding_path = tmp_path / "findings.json"
+        finding_path.write_text(json.dumps(findings))
+
+        args = argparse.Namespace(
+            context="app.py",
+            category=None,
+            what_happened=None,
+            severity=None,
+            caught_by=None,
+            finding_file=str(finding_path),
+            db=db,
+        )
+        cmd_track_review(args)
+        store = MemoryStore(db_path=db)
+        results = store.search("null dereference", limit=10)
+        store.close()
+        content = results[0]["content"]
+        assert "What_caught_it: lint" in content
+
+    def test_batch_mode_cli_flag_overrides_per_finding_caught_by(
+        self, tmp_path, capsys
+    ):
+        """track-review --caught-by overrides per-finding caughtBy field."""
+        db = tmp_path / "test.db"
+        findings = [
+            {
+                "category": "NULL_SAFETY",
+                "what_happened": "null dereference",
+                "caughtBy": "lint",
+            },
+        ]
+        finding_path = tmp_path / "findings.json"
+        finding_path.write_text(json.dumps(findings))
+
+        args = argparse.Namespace(
+            context="app.py",
+            category=None,
+            what_happened=None,
+            severity=None,
+            caught_by="CI",
+            finding_file=str(finding_path),
+            db=db,
+        )
+        cmd_track_review(args)
+        store = MemoryStore(db_path=db)
+        results = store.search("null dereference", limit=10)
+        store.close()
+        content = results[0]["content"]
+        assert "What_caught_it: CI" in content
+        assert "What_caught_it: lint" not in content
+
+    def test_batch_mode_default_caught_by_self_review(self, tmp_path, capsys):
+        """track-review --finding-file defaults to 'self-review' when --caught-by and caughtBy absent."""
+        db = tmp_path / "test.db"
+        findings = [
+            {"category": "NULL_SAFETY", "what_happened": "null dereference"},
+        ]
+        finding_path = tmp_path / "findings.json"
+        finding_path.write_text(json.dumps(findings))
+
+        args = argparse.Namespace(
+            context="app.py",
+            category=None,
+            what_happened=None,
+            severity=None,
+            caught_by=None,
+            finding_file=str(finding_path),
+            db=db,
+        )
+        cmd_track_review(args)
+        store = MemoryStore(db_path=db)
+        results = store.search("null dereference", limit=10)
+        store.close()
+        content = results[0]["content"]
+        assert "What_caught_it: self-review" in content
 
 
 # ── track-review: mutual exclusivity ─────────────────────────────────────
