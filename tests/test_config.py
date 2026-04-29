@@ -253,3 +253,57 @@ class TestConfig_WriteConfigYaml_Permissions:
         assert not (dir_mode & stat.S_IXOTH), (
             "Config dir should not be others-accessible"
         )
+
+
+class TestWriteConfigYaml_FilePermissions:
+    """Test that write_config_yaml creates files with 0o600 permissions."""
+
+    def test_file_created_with_0600_permissions(self, tmp_path):
+        """write_config_yaml must create config files with 0o600 to protect API keys."""
+        import os
+        import stat
+
+        from llmem.config import write_config_yaml
+
+        config_path = tmp_path / "config.yaml"
+        config = {"memory": {"db": "/tmp/test.db"}}
+        result = write_config_yaml(config_path, config)
+        assert result is True
+
+        file_mode = stat.S_IMODE(os.stat(config_path).st_mode)
+        assert file_mode == 0o600, (
+            f"Expected file permissions 0o600, got {oct(file_mode)}"
+        )
+
+    def test_file_overwritten_preserves_0600_permissions(self, tmp_path):
+        """write_config_yaml with force=True must still use 0o600 permissions."""
+        import os
+        import stat
+
+        from llmem.config import write_config_yaml
+
+        config_path = tmp_path / "config.yaml"
+        config = {"memory": {"db": "/tmp/test.db"}}
+
+        # Initial write
+        write_config_yaml(config_path, config)
+
+        # Overwrite with force=True
+        updated_config = {"memory": {"db": "/tmp/updated.db"}}
+        write_config_yaml(config_path, updated_config, force=True)
+
+        file_mode = stat.S_IMODE(os.stat(config_path).st_mode)
+        assert file_mode == 0o600, (
+            f"Expected file permissions 0o600 after force overwrite, got {oct(file_mode)}"
+        )
+
+    def test_existing_file_not_overwritten_without_force(self, tmp_path):
+        """write_config_yaml returns False when file exists and force=False."""
+        from llmem.config import write_config_yaml
+
+        config_path = tmp_path / "config.yaml"
+        config = {"memory": {"db": "/tmp/test.db"}}
+
+        write_config_yaml(config_path, config)
+        result = write_config_yaml(config_path, config, force=False)
+        assert result is False

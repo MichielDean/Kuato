@@ -3168,3 +3168,193 @@ class TestStoreDimensionValidation:
         """add() with embedding=None should not trigger dimension validation."""
         mid = store.add(type="fact", content="test", embedding=None)
         assert mid is not None
+
+
+# ---------------------------------------------------------------------------
+# Input validation tests: _validate_embed_inputs and prompt length checks
+# ---------------------------------------------------------------------------
+
+
+class TestValidateEmbedInputs:
+    """Test _validate_embed_inputs for batch size and text length limits."""
+
+    def test_batch_exceeds_max_size_raises_value_error(self):
+        """embed_batch with > MAX_BATCH_SIZE texts raises ValueError."""
+        from memory.providers import _validate_embed_inputs, MAX_BATCH_SIZE
+
+        texts = ["x"] * (MAX_BATCH_SIZE + 1)
+        with pytest.raises(ValueError, match="batch size .* exceeds maximum"):
+            _validate_embed_inputs(texts)
+
+    def test_text_exceeds_max_length_raises_value_error(self):
+        """embed_batch with a text > MAX_TEXT_LENGTH chars raises ValueError."""
+        from memory.providers import _validate_embed_inputs, MAX_TEXT_LENGTH
+
+        long_text = "a" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="text at index .* exceeds maximum length"):
+            _validate_embed_inputs([long_text])
+
+    def test_text_exceeds_max_length_reports_index(self):
+        """embed_batch reports the offending index in the ValueError."""
+        from memory.providers import _validate_embed_inputs, MAX_TEXT_LENGTH
+
+        long_text = "b" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="text at index 3"):
+            _validate_embed_inputs(["short", "also short", "ok", long_text])
+
+    def test_valid_inputs_pass(self):
+        """_validate_embed_inputs returns None for valid inputs (no exception)."""
+        from memory.providers import _validate_embed_inputs
+
+        result = _validate_embed_inputs(["hello", "world"])
+        assert result is None
+
+    def test_empty_list_passes(self):
+        """_validate_embed_inputs([]) returns None — empty batch is valid."""
+        from memory.providers import _validate_embed_inputs
+
+        result = _validate_embed_inputs([])
+        assert result is None
+
+    def test_exact_max_batch_size_passes(self):
+        """Batch of exactly MAX_BATCH_SIZE texts should not raise."""
+        from memory.providers import _validate_embed_inputs, MAX_BATCH_SIZE
+
+        texts = ["x"] * MAX_BATCH_SIZE
+        result = _validate_embed_inputs(texts)
+        assert result is None
+
+    def test_exact_max_text_length_passes(self):
+        """A text of exactly MAX_TEXT_LENGTH chars should not raise."""
+        from memory.providers import _validate_embed_inputs, MAX_TEXT_LENGTH
+
+        text = "a" * MAX_TEXT_LENGTH
+        result = _validate_embed_inputs([text])
+        assert result is None
+
+
+class TestOllamaProvider_PromptLengthValidation:
+    """Test OllamaProvider.generate() prompt length limit."""
+
+    def test_generate_rejects_oversized_prompt(self):
+        """OllamaProvider.generate() raises ValueError for prompt > MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = OllamaProvider()
+        long_prompt = "x" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="prompt exceeds maximum length"):
+            provider.generate(long_prompt)
+
+    def test_generate_accepts_max_length_prompt(self):
+        """OllamaProvider.generate() accepts a prompt at exactly MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = OllamaProvider()
+        prompt = "x" * MAX_TEXT_LENGTH
+        with patch(
+            "memory.providers._call_ollama_generate", return_value="ok"
+        ) as mock_gen:
+            result = provider.generate(prompt)
+        assert result == "ok"
+        mock_gen.assert_called_once()
+
+
+class TestOpenAIProvider_PromptLengthValidation:
+    """Test OpenAIProvider.generate() prompt length limit."""
+
+    def test_generate_rejects_oversized_prompt(self):
+        """OpenAIProvider.generate() raises ValueError for prompt > MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = OpenAIProvider(api_key="test-key")
+        long_prompt = "y" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="prompt exceeds maximum length"):
+            provider.generate(long_prompt)
+
+    def test_generate_accepts_max_length_prompt(self):
+        """OpenAIProvider.generate() accepts a prompt at exactly MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = OpenAIProvider(api_key="test-key")
+        prompt = "y" * MAX_TEXT_LENGTH
+        with patch.object(
+            provider,
+            "_make_request",
+            return_value={"choices": [{"message": {"content": "ok"}}]},
+        ):
+            result = provider.generate(prompt)
+        assert result == "ok"
+
+
+class TestAnthropicProvider_PromptLengthValidation:
+    """Test AnthropicProvider.generate() prompt length limit."""
+
+    def test_generate_rejects_oversized_prompt(self):
+        """AnthropicProvider.generate() raises ValueError for prompt > MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = AnthropicProvider(api_key="test-key")
+        long_prompt = "z" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="prompt exceeds maximum length"):
+            provider.generate(long_prompt)
+
+    def test_generate_accepts_max_length_prompt(self):
+        """AnthropicProvider.generate() accepts a prompt at exactly MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = AnthropicProvider(api_key="test-key")
+        prompt = "z" * MAX_TEXT_LENGTH
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(
+                {"content": [{"text": "ok"}]}
+            ).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+            result = provider.generate(prompt)
+        assert result == "ok"
+
+
+class TestOllamaProvider_EmbedBatchInputValidation:
+    """Test OllamaProvider.embed_batch() input validation."""
+
+    def test_embed_batch_rejects_oversized_batch(self):
+        """OllamaProvider.embed_batch() raises ValueError for batch > MAX_BATCH_SIZE."""
+        from memory.providers import MAX_BATCH_SIZE
+
+        provider = OllamaProvider()
+        texts = ["x"] * (MAX_BATCH_SIZE + 1)
+        with pytest.raises(ValueError, match="batch size .* exceeds maximum"):
+            provider.embed_batch(texts)
+
+    def test_embed_batch_rejects_oversized_text(self):
+        """OllamaProvider.embed_batch() raises ValueError for text > MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = OllamaProvider()
+        long_text = "a" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="text at index .* exceeds maximum length"):
+            provider.embed_batch([long_text])
+
+
+class TestOpenAIProvider_EmbedBatchInputValidation:
+    """Test OpenAIProvider.embed_batch() input validation."""
+
+    def test_embed_batch_rejects_oversized_batch(self):
+        """OpenAIProvider.embed_batch() raises ValueError for batch > MAX_BATCH_SIZE."""
+        from memory.providers import MAX_BATCH_SIZE
+
+        provider = OpenAIProvider(api_key="test-key")
+        texts = ["x"] * (MAX_BATCH_SIZE + 1)
+        with pytest.raises(ValueError, match="batch size .* exceeds maximum"):
+            provider.embed_batch(texts)
+
+    def test_embed_batch_rejects_oversized_text(self):
+        """OpenAIProvider.embed_batch() raises ValueError for text > MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = OpenAIProvider(api_key="test-key")
+        long_text = "a" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="text at index .* exceeds maximum length"):
+            provider.embed_batch([long_text])
