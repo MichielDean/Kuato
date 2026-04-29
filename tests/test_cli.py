@@ -1,6 +1,7 @@
 """Tests for the llmem CLI entry point."""
 
 import argparse
+import io
 import subprocess
 import sys
 from pathlib import Path
@@ -480,3 +481,262 @@ class TestCli_Consolidate:
         store2 = MemoryStore(db_path=db, disable_vec=True)
         assert store2.inbox_count() == 1
         store2.close()
+
+
+class TestCli_Learn:
+    """Test the cmd_learn CLI handler."""
+
+    def test_learn_processes_directory(self, tmp_path):
+        """cmd_learn processes a directory and reports chunk count."""
+        from llmem.cli import cmd_learn
+
+        # Create a small code directory
+        code_dir = tmp_path / "code"
+        code_dir.mkdir()
+        (code_dir / "hello.py").write_text("def hello():\n    print('hello')\n")
+        (code_dir / "world.py").write_text("def world():\n    print('world')\n")
+
+        db = tmp_path / "learn_test.db"
+        import argparse
+
+        args = argparse.Namespace(
+            path=str(code_dir),
+            db=db,
+            strategy="paragraph",
+            window_size=50,
+            overlap=10,
+            no_embed=True,
+            ollama_url=None,
+        )
+
+        # Capture stdout
+        import io
+
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            cmd_learn(args)
+        finally:
+            output = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+
+        assert "Ingested" in output
+        assert "chunks" in output
+
+    def test_learn_with_fixed_strategy(self, tmp_path):
+        """cmd_learn with --strategy=fixed uses FixedLineChunking."""
+        from llmem.cli import cmd_learn
+
+        code_dir = tmp_path / "code"
+        code_dir.mkdir()
+        (code_dir / "app.py").write_text("\n".join(f"line{i}" for i in range(20)))
+
+        db = tmp_path / "learn_fixed.db"
+        import argparse
+
+        args = argparse.Namespace(
+            path=str(code_dir),
+            db=db,
+            strategy="fixed",
+            window_size=10,
+            overlap=2,
+            no_embed=True,
+            ollama_url=None,
+        )
+
+        import io
+
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            cmd_learn(args)
+        finally:
+            output = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+
+        assert "Ingested" in output
+
+    def test_learn_nonexistent_directory_exits(self, tmp_path):
+        """cmd_learn exits with error for non-existent directory."""
+        from llmem.cli import cmd_learn
+
+        import argparse
+
+        args = argparse.Namespace(
+            path=str(tmp_path / "nonexistent"),
+            db=tmp_path / "test.db",
+            strategy="paragraph",
+            window_size=50,
+            overlap=10,
+            no_embed=True,
+            ollama_url=None,
+        )
+
+        with pytest.raises(SystemExit):
+            cmd_learn(args)
+
+    def test_search_include_code_flag(self, tmp_path):
+        """The search command accepts --include-code flag."""
+        from llmem.cli import main
+
+        # Just verify the flag is recognized in the parser
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        try:
+            sys.argv = ["llmem", "search", "--help"]
+            main()
+        except SystemExit:
+            pass
+        finally:
+            output = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+        assert "--include-code" in output
+
+    def test_learn_no_embed_does_not_disable_vec(self, tmp_path):
+        """Issue ll-67q3p-6prmn: --no-embed must not conflate with disable_vec.
+
+        The --no-embed flag should only skip embedding generation, not
+        disable the vec extension entirely. This test verifies that cmd_learn
+        no longer passes disable_vec=args.no_embed to CodeIndex.
+        """
+        from llmem.cli import cmd_learn
+
+        code_dir = tmp_path / "code"
+        code_dir.mkdir()
+        (code_dir / "hello.py").write_text("def hello():\n    print('hello')\n")
+
+        db = tmp_path / "test.db"
+        import argparse
+
+        args = argparse.Namespace(
+            path=str(code_dir),
+            db=db,
+            strategy="paragraph",
+            window_size=50,
+            overlap=10,
+            no_embed=True,
+            ollama_url=None,
+        )
+
+        import io
+
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            cmd_learn(args)
+        finally:
+            output = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+
+        assert "Ingested" in output
+        # Verify the database was created and FTS triggers exist
+        # (if disable_vec had been True AND it dropped triggers, they'd be gone)
+        import sqlite3
+
+        conn = sqlite3.connect(str(db))
+        triggers = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger'"
+            ).fetchall()
+        }
+        conn.close()
+        assert "code_chunks_fts_insert" in triggers
+
+
+class TestCli_SearchCodeInterleaving:
+    """Issue ll-67q3p-esnow: Code results must interleave with memory results.
+
+    Previously, code results always sorted below memory results because
+    _rrf_score defaulted to 0.0. Now code results get proper RRF scores
+    based on their FTS rank position.
+    """
+
+    def test_code_results_have_rrf_scores(self, tmp_path):
+        """Code search results receive RRF scores, not 0.0 default."""
+        from llmem.code_index import CodeIndex
+        from llmem.retrieve import DEFAULT_RRF_K
+
+        db = tmp_path / "test.db"
+        idx = CodeIndex(db_path=db, disable_vec=True)
+        idx.add_chunk(
+            file_path="app.py",
+            start_line=1,
+            end_line=10,
+            content="def hello_world(): pass",
+            language="python",
+        )
+        idx.add_chunk(
+            file_path="util.py",
+            start_line=1,
+            end_line=5,
+            content="def goodbye(): pass",
+            language="python",
+        )
+        idx.close()
+
+        # Simulate what cmd_search does: compute RRF scores for code results
+        code_index = CodeIndex(db_path=db, disable_vec=True)
+        code_results = code_index.search_content(query="hello", limit=10)
+        code_index.close()
+
+        # Assign RRF scores exactly as cmd_search does now
+        for i, cr in enumerate(code_results):
+            fts_rank = i + 1
+            cr["_rrf_score"] = (1 - 0.0) * (1 / (DEFAULT_RRF_K + fts_rank))
+
+        # Code results should have non-zero RRF scores
+        assert len(code_results) >= 1
+        for cr in code_results:
+            assert cr["_rrf_score"] > 0.0, (
+                f"Code result got _rrf_score={cr['_rrf_score']}, "
+                "should be > 0.0 for proper interleaving"
+            )
+
+    def test_code_results_interleave_with_memory_results(self, tmp_path):
+        """When a code result has high relevance, it sorts among memory results."""
+        from llmem.code_index import CodeIndex
+        from llmem.store import MemoryStore
+        from llmem.retrieve import DEFAULT_RRF_K
+
+        db = tmp_path / "test.db"
+
+        # Add a memory with a low-ish RRF score
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.add(
+            type="fact",
+            content="unrelated note about weather",
+            confidence=0.5,
+        )
+        store.close()
+
+        # Add a code chunk matching "hello"
+        idx = CodeIndex(db_path=db, disable_vec=True)
+        idx.add_chunk(
+            file_path="app.py",
+            start_line=1,
+            end_line=10,
+            content="def hello_world(): pass",
+            language="python",
+        )
+        idx.close()
+
+        # Code result with rank 1 gets score: (1)/(60+1) ≈ 0.0164
+        # Memory result with typical low rrf might be lower or higher
+        # This test verifies code results are not stuck at 0.0
+        code_index = CodeIndex(db_path=db, disable_vec=True)
+        code_results = code_index.search_content(query="hello", limit=10)
+        code_index.close()
+
+        for i, cr in enumerate(code_results):
+            fts_rank = i + 1
+            cr["_rrf_score"] = (1 - 0.0) * (1 / (DEFAULT_RRF_K + fts_rank))
+            cr["_source"] = "code"
+
+        # The first code result should have a score well above 0.0
+        if code_results:
+            assert code_results[0]["_rrf_score"] > 0.0

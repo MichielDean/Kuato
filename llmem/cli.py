@@ -18,6 +18,15 @@ from .config import write_config_yaml
 from .ollama import ProviderDetector
 from .paths import migrate_from_lobsterdog
 from .url_validate import is_safe_url
+from .chunking import (
+    ParagraphChunking,
+    FixedLineChunking,
+    detect_language,
+    walk_code_files,
+    _DEFAULT_MAX_FILE_SIZE,
+    _DEFAULT_MAX_DEPTH,
+)
+from .code_index import CodeIndex
 
 
 VALID_SOURCES = ["manual", "session", "heartbeat", "extraction", "import"]
@@ -123,15 +132,55 @@ def cmd_search(args):
         store.close()
         sys.exit(1)
 
+    # Interleave code chunk results if --include-code is set
+    code_results: list[dict] = []
+    if getattr(args, "include_code", False):
+        from .code_index import CodeIndex
+        from .retrieve import DEFAULT_RRF_K
+
+        code_index = CodeIndex(db_path=args.db)
+        try:
+            code_results = code_index.search_content(query=args.query, limit=args.limit)
+        except Exception as e:
+            log.warning("llmem: cli: search: code search failed: %s", e)
+        finally:
+            code_index.close()
+
+        # Merge with code results, assigning RRF scores based on FTS rank
+        for i, cr in enumerate(code_results):
+            cr["_source"] = "code"
+            # Assign RRF score based on FTS rank position (1-based).
+            # Using alpha=0.0 (pure FTS) and default k to match the FTS-only
+            # scoring pattern used by the Retriever for consistency.
+            fts_rank = i + 1
+            cr["_rrf_score"] = (1 - 0.0) * (1 / (DEFAULT_RRF_K + fts_rank))
+
+    # Mark memory results with source
+    for m in results:
+        m["_source"] = "memory"
+
+    combined = results + code_results
+    # Sort by score descending, then by source for stability
+    combined.sort(key=lambda x: (-x.get("_rrf_score", 0.0), x.get("_source", "")))
+
     if args.json:
-        print(json.dumps(results, indent=2, default=str))
+        print(json.dumps(combined, indent=2, default=str))
     else:
-        for m in results:
+        for m in combined:
+            source = m.get("_source", "memory")
+            prefix = "[code]" if source == "code" else f"[{m.get('type', '?')}]"
             score = m.get("_rrf_score", 0.0)
-            print(
-                f"  {m['id']}  [{m['type']}]  conf={m.get('confidence', 0):.2f}  rrf={score:.4f}"
-            )
-            print(f"    {m['content'][:120]}")
+            if source == "code":
+                print(
+                    f"  {m.get('id', '?')}  {prefix}  file={m.get('file_path', '?')}  "
+                    f"lines={m.get('start_line', '?')}-{m.get('end_line', '?')}  rrf={score:.4f}"
+                )
+                print(f"    {m.get('content', '')[:120]}")
+            else:
+                print(
+                    f"  {m['id']}  {prefix}  conf={m.get('confidence', 0):.2f}  rrf={score:.4f}"
+                )
+                print(f"    {m['content'][:120]}")
 
     store.close()
 
@@ -285,6 +334,124 @@ def cmd_import(args):
     count = store.import_memories(data)
     print(f"Imported {count} memories.")
     store.close()
+
+
+def cmd_learn(args):
+    """Ingest a codebase directory into the code index.
+
+    Walks the directory at <path> respecting .gitignore, chunks files
+    using the selected strategy, embeds each chunk, and stores them
+    in the code_chunks table.
+
+    Args:
+        args: An argparse Namespace with attributes:
+            - path (str): Root directory to ingest.
+            - db (Path): Database path.
+            - strategy (str): "paragraph" or "fixed".
+            - window_size (int): Window size for fixed strategy.
+            - overlap (int): Overlap for fixed strategy.
+            - no_embed (bool): If True, skip embedding step.
+            - ollama_url (str): Ollama base URL for embedding.
+    """
+    root_path = Path(args.path).resolve()
+    if not root_path.is_dir():
+        print(f"Error: {args.path} is not a directory", file=sys.stderr)
+        sys.exit(1)
+
+    # Select chunking strategy
+    if args.strategy == "fixed":
+        chunker = FixedLineChunking(window_size=args.window_size, overlap=args.overlap)
+    else:
+        chunker = ParagraphChunking()
+
+    # Walk directory for files to index (symlinks are always skipped to
+    # prevent path traversal; size and depth limits prevent resource exhaustion)
+    max_file_size = getattr(args, "max_file_size", None)
+    if max_file_size is None:
+        max_file_size = _DEFAULT_MAX_FILE_SIZE
+    max_depth = getattr(args, "max_depth", None)
+    if max_depth is None:
+        max_depth = _DEFAULT_MAX_DEPTH
+
+    code_files = walk_code_files(
+        root_path, max_file_size=max_file_size, max_depth=max_depth
+    )
+    if not code_files:
+        print("No code files found to index.")
+        return
+
+    # Initialize code index (shares the same database as MemoryStore)
+    # NOTE: disable_vec controls sqlite-vec extension loading only.
+    # --no-embed skips embedding generation but should NOT disable vec,
+    # since vec triggers are needed for existing embedding searches.
+    code_index = CodeIndex(db_path=args.db)
+    total_chunks = 0
+    total_files = 0
+    embedder = None
+
+    # Create embedder for embedding chunks
+    if not hasattr(args, "no_embed") or not args.no_embed:
+        try:
+            from .embed import EmbeddingEngine
+
+            ollama_url = getattr(args, "ollama_url", None) or "http://localhost:11434"
+            embedder = EmbeddingEngine(base_url=ollama_url)
+        except Exception as e:
+            log.warning("llmem: cli: learn: embedding engine unavailable: %s", e)
+            embedder = None
+
+    try:
+        for file_path in code_files:
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                log.debug("llmem: cli: learn: cannot read %s: %s", file_path, e)
+                continue
+
+            if not content.strip():
+                continue
+
+            # Chunk the file
+            rel_path = str(file_path.relative_to(root_path))
+            language = detect_language(rel_path)
+            chunks = chunker.chunk(rel_path, content, language=language)
+
+            if not chunks:
+                continue
+
+            # Remove stale chunks for this file before re-inserting,
+            # making cmd_learn idempotent for re-indexing.
+            code_index.remove_by_path(rel_path)
+
+            # Add chunks to the index (without embeddings first)
+            chunk_ids = code_index.add_chunks(chunks)
+
+            # Embed and update each chunk if embedder is available
+            if embedder is not None:
+                conn = code_index._connect()
+                for chunk, chunk_id in zip(chunks, chunk_ids):
+                    try:
+                        vec = embedder.embed(chunk.content)
+
+                        embedding_bytes = EmbeddingEngine.vec_to_bytes(vec)
+                        conn.execute(
+                            'UPDATE "code_chunks" SET "embedding" = ? WHERE "id" = ?',
+                            (embedding_bytes, chunk_id),
+                        )
+                    except Exception as e:
+                        log.warning(
+                            "llmem: cli: learn: failed to embed chunk %s: %s",
+                            chunk_id,
+                            e,
+                        )
+                conn.commit()
+
+            total_chunks += len(chunks)
+            total_files += 1
+
+        print(f"Ingested {total_chunks} chunks from {total_files} files")
+    finally:
+        code_index.close()
 
 
 def cmd_register_type(args):
@@ -576,6 +743,11 @@ def main():
     p_search.add_argument("--type", help="Filter by type")
     p_search.add_argument("--limit", type=int, default=20, help="Max results")
     p_search.add_argument("--json", action="store_true", help="JSON output")
+    p_search.add_argument(
+        "--include-code",
+        action="store_true",
+        help="Include code chunks in search results",
+    )
     search_mode_group = p_search.add_mutually_exclusive_group()
     search_mode_group.add_argument(
         "--fts-only", action="store_true", help="FTS5 keyword search only"
@@ -694,6 +866,52 @@ def main():
         help="Show what would happen without making changes",
     )
 
+    # learn
+    p_learn = subparsers.add_parser(
+        "learn", help="Ingest a codebase into the code index"
+    )
+    p_learn.add_argument("path", help="Root directory to ingest")
+    p_learn.add_argument(
+        "--strategy",
+        choices=["paragraph", "fixed"],
+        default="paragraph",
+        help="Chunking strategy (default: paragraph)",
+    )
+    p_learn.add_argument(
+        "--window-size",
+        type=int,
+        default=50,
+        help="Window size for fixed-line chunking (default: 50)",
+    )
+    p_learn.add_argument(
+        "--overlap",
+        type=int,
+        default=10,
+        help="Overlap for fixed-line chunking (default: 10)",
+    )
+    p_learn.add_argument(
+        "--no-embed",
+        action="store_true",
+        help="Skip embedding generation (store chunks only)",
+    )
+    p_learn.add_argument(
+        "--max-file-size",
+        type=int,
+        default=None,
+        help="Maximum file size in bytes to index (default: 1048576 = 1 MiB)",
+    )
+    p_learn.add_argument(
+        "--max-depth",
+        type=int,
+        default=None,
+        help="Maximum directory recursion depth (default: 50)",
+    )
+    p_learn.add_argument(
+        "--ollama-url",
+        default=None,
+        help="Ollama base URL (default: http://localhost:11434)",
+    )
+
     # Register CLI plugins
     for plugin_name in sorted(get_registered_cli_plugins()):
         from .registry import get_cli_plugin_setup_fn
@@ -732,6 +950,7 @@ def main():
         "note": cmd_note,
         "inbox": cmd_inbox,
         "consolidate": cmd_consolidate,
+        "learn": cmd_learn,
     }
 
     handler = commands.get(args.command)
