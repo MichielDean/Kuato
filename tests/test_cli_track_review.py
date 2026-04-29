@@ -258,6 +258,70 @@ class TestTrackReview_SingleFinding:
         content = results[0]["content"]
         assert "What_caught_it: self-review" in content
 
+    def test_single_finding_without_severity_outcomes_not_all_clear(
+        self, tmp_path, capsys
+    ):
+        """track-review single finding without --severity must not produce 'Outcomes: all clear'.
+
+        A finding is never 'all clear' — that phrase is reserved for zero-finding
+        clean reviews. Without a severity tier, the outcome should be 'Outcomes: finding'.
+        """
+        db = tmp_path / "test.db"
+        args = argparse.Namespace(
+            context="handler.py",
+            category="NULL_SAFETY",
+            what_happened="missing null check",
+            severity=None,
+            caught_by=None,
+            finding_file=None,
+            db=db,
+        )
+        cmd_track_review(args)
+        store = MemoryStore(db_path=db)
+        results = store.search("missing null check", limit=10)
+        store.close()
+        content = results[0]["content"]
+        assert "Outcomes: finding" in content
+        assert "Outcomes: all clear" not in content
+
+    def test_clean_review_outcomes_all_clear(self, tmp_path, capsys):
+        """track-review clean review produces 'Outcomes: all clear'."""
+        db = tmp_path / "test.db"
+        args = argparse.Namespace(
+            context="handler.py",
+            category=None,
+            what_happened=None,
+            severity=None,
+            caught_by=None,
+            finding_file=None,
+            db=db,
+        )
+        cmd_track_review(args)
+        store = MemoryStore(db_path=db)
+        results = store.search("REVIEW_PASSED", limit=10)
+        store.close()
+        content = results[0]["content"]
+        assert "Outcomes: all clear" in content
+
+    def test_single_finding_with_severity_outcomes(self, tmp_path, capsys):
+        """track-review single finding with --severity produces 'Outcomes: <tier> finding'."""
+        db = tmp_path / "test.db"
+        args = argparse.Namespace(
+            context="handler.py:10",
+            category="ERROR_HANDLING",
+            what_happened="swallowed exception",
+            severity="Required",
+            caught_by="CI",
+            finding_file=None,
+            db=db,
+        )
+        cmd_track_review(args)
+        store = MemoryStore(db_path=db)
+        results = store.search("swallowed exception", limit=10)
+        store.close()
+        content = results[0]["content"]
+        assert "Outcomes: Required finding" in content
+
 
 # ── track-review: batch mode ─────────────────────────────────────────────
 
@@ -371,6 +435,86 @@ class TestTrackReview_BatchMode:
         cmd_track_review(args)
         captured = capsys.readouterr()
         assert "MISSING_VERIFICATION" in captured.out
+
+    def test_batch_mode_camel_case_fallback(self, tmp_path, capsys):
+        """track-review --finding-file falls back to 'whatHappened' when 'what_happened' is absent."""
+        db = tmp_path / "test.db"
+        findings = [
+            {"category": "NULL_SAFETY", "whatHappened": "camelCase null issue"},
+        ]
+        finding_path = tmp_path / "findings.json"
+        finding_path.write_text(json.dumps(findings))
+
+        args = argparse.Namespace(
+            context="app.py",
+            category=None,
+            what_happened=None,
+            severity=None,
+            caught_by=None,
+            finding_file=str(finding_path),
+            db=db,
+        )
+        cmd_track_review(args)
+        store = MemoryStore(db_path=db)
+        results = store.search("camelCase null issue", limit=10)
+        store.close()
+        content = results[0]["content"]
+        assert "What_happened: camelCase null issue" in content
+
+    def test_batch_mode_snake_case_takes_precedence_over_camel(self, tmp_path, capsys):
+        """track-review --finding-file prefers 'what_happened' over 'whatHappened'."""
+        db = tmp_path / "test.db"
+        findings = [
+            {
+                "category": "NULL_SAFETY",
+                "what_happened": "snake_case value",
+                "whatHappened": "camelCase value",
+            },
+        ]
+        finding_path = tmp_path / "findings.json"
+        finding_path.write_text(json.dumps(findings))
+
+        args = argparse.Namespace(
+            context="app.py",
+            category=None,
+            what_happened=None,
+            severity=None,
+            caught_by=None,
+            finding_file=str(finding_path),
+            db=db,
+        )
+        cmd_track_review(args)
+        store = MemoryStore(db_path=db)
+        results = store.search("snake_case value", limit=10)
+        store.close()
+        content = results[0]["content"]
+        assert "What_happened: snake_case value" in content
+        assert "What_happened: camelCase value" not in content
+
+    def test_batch_mode_missing_what_happened_defaults(self, tmp_path, capsys):
+        """track-review --finding-file defaults to 'review finding' when neither key is present."""
+        db = tmp_path / "test.db"
+        findings = [
+            {"category": "DESIGN"},
+        ]
+        finding_path = tmp_path / "findings.json"
+        finding_path.write_text(json.dumps(findings))
+
+        args = argparse.Namespace(
+            context="app.py",
+            category=None,
+            what_happened=None,
+            severity=None,
+            caught_by=None,
+            finding_file=str(finding_path),
+            db=db,
+        )
+        cmd_track_review(args)
+        store = MemoryStore(db_path=db)
+        results = store.search("DESIGN", limit=10)
+        store.close()
+        content = results[0]["content"]
+        assert "What_happened: review finding" in content
 
 
 # ── track-review: mutual exclusivity ─────────────────────────────────────

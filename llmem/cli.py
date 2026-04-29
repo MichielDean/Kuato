@@ -1058,9 +1058,9 @@ def cmd_track_review(args):
             content_lines.append(f"Context: {args.context}")
         content_lines.append(f"What_happened: {args.what_happened}")
         content_lines.append(
-            "Outcomes: all clear"
-            if not args.severity
-            else f"Outcomes: {args.severity} finding"
+            f"Outcomes: {args.severity} finding"
+            if args.severity
+            else "Outcomes: finding"
         )
         if args.caught_by:
             content_lines.append(f"What_caught_it: {args.caught_by}")
@@ -1116,7 +1116,7 @@ def cmd_track_review(args):
                 category = "MISSING_VERIFICATION"
 
             what_happened = finding.get(
-                "what_happened", finding.get("what_happened", "review finding")
+                "what_happened", finding.get("whatHappened", "review finding")
             )
             severity = finding.get("severity", "")
 
