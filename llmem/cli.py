@@ -779,6 +779,12 @@ def cmd_dream(args):
             stale_procedure_days=dream_config.get("stale_procedure_days", 30),
             calibration_lookback_days=dream_config.get("calibration_lookback_days", 90),
             auto_link_threshold=dream_config.get("auto_link_threshold", 0.85),
+            diary_path=Path(dream_config["diary_path"])
+            if dream_config.get("diary_path")
+            else None,
+            proposed_changes_path=Path(dream_config["proposed_changes_path"])
+            if dream_config.get("proposed_changes_path")
+            else None,
         )
 
         result = dreamer.run(apply=args.apply, phase=args.phase)
