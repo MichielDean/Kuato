@@ -15,12 +15,14 @@ def generate_dream_report(result: DreamResult, report_path: Path) -> None:
 
     Args:
         result: DreamResult from a dream run.
-        report_path: Path to write the HTML report to. Must be within the
-            user's llmem home directory.
+        report_path: Path to write the HTML report to. Must not target a
+            protected system directory, contain '..' traversal, or be a symlink.
+            The path does NOT need to be within the llmem home directory —
+            users may configure custom report output paths.
 
     Raises:
-        ValueError: If report_path resolves outside the llmem home directory
-            or targets a protected system directory.
+        ValueError: If report_path contains '..' traversal, targets a
+            protected system directory, or is a symlink.
     """
     from .paths import _validate_write_path
 

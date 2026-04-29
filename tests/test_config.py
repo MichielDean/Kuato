@@ -419,3 +419,44 @@ class TestGetOllamaUrl_SsrfValidation:
             mock_safe.assert_called_once_with(
                 "http://remote-host:11434", allow_remote=True
             )
+
+
+class TestConfig_DreamAutoLinkThreshold:
+    """Test that auto_link_threshold is in DEFAULTS['dream'] and get_dream_config().
+
+    Regression test for ll-kingr-87izo: auto_link_threshold was missing
+    from DEFAULTS['dream'], so user config was silently ignored because
+    get_dream_config() only iterated over keys present in the defaults.
+    """
+
+    def test_auto_link_threshold_in_defaults(self):
+        """auto_link_threshold must exist in DEFAULTS['dream']."""
+        from llmem.config import DEFAULTS
+
+        assert "auto_link_threshold" in DEFAULTS["dream"], (
+            "auto_link_threshold missing from DEFAULTS['dream']"
+        )
+        assert DEFAULTS["dream"]["auto_link_threshold"] == 0.85
+
+    def test_auto_link_threshold_in_resolved_defaults(self):
+        """auto_link_threshold must exist in resolved defaults."""
+        from llmem.config import _resolve_defaults
+
+        resolved = _resolve_defaults()
+        assert "auto_link_threshold" in resolved["dream"]
+        assert resolved["dream"]["auto_link_threshold"] == 0.85
+
+    def test_auto_link_threshold_picked_up_by_get_dream_config(self):
+        """get_dream_config() must include auto_link_threshold even from user config."""
+        from llmem.config import get_dream_config
+
+        config = {"dream": {"auto_link_threshold": 0.75}}
+        result = get_dream_config(config=config)
+        assert result["auto_link_threshold"] == 0.75
+
+    def test_auto_link_threshold_default_via_get_dream_config(self):
+        """get_dream_config() must return default auto_link_threshold when not in user config."""
+        from llmem.config import get_dream_config
+
+        result = get_dream_config(config={})
+        assert result["auto_link_threshold"] == 0.85

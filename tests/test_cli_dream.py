@@ -395,3 +395,136 @@ class TestCliDream_DefaultDbPath:
         captured = capsys.readouterr()
         # Should have run successfully without error
         assert captured.err == "" or "Error" not in captured.err
+
+
+class TestCliDream_OllamaUrlFromMemoryConfig:
+    """Test that cmd_dream reads ollama_url from the memory config section,
+    not from the dream section.
+
+    Regression test for ll-kingr-jywet: cmd_dream previously read
+    ollama_url from dream_config, which always fell back to the
+    hardcoded default since ollama_url is a memory-section key.
+    """
+
+    def test_ollama_url_read_from_memory_section(self, tmp_path, capsys):
+        """cmd_dream calls get_ollama_url() to read from the memory section."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.close()
+
+        args = argparse.Namespace(
+            db=db,
+            apply=False,
+            phase="light",
+            report=None,
+        )
+
+        with patch(
+            "llmem.cli.get_ollama_url", return_value="http://custom-ollama:11434"
+        ) as mock_get_url:
+            with patch(
+                "llmem.cli.MemoryStore",
+                side_effect=lambda db_path, **kw: MemoryStore(
+                    db_path=db_path, disable_vec=True
+                ),
+            ):
+                with patch("llmem.dream.Dreamer") as MockDreamer:
+                    mock_result = DreamResult(light=LightPhaseResult())
+                    MockDreamer.return_value.run.return_value = mock_result
+                    cmd_dream(args)
+                    mock_get_url.assert_called_once()
+                    # Verify the Dreamer was constructed with the URL from get_ollama_url
+                    call_kwargs = MockDreamer.call_args[1]
+                    assert call_kwargs["ollama_url"] == "http://custom-ollama:11434"
+
+    def test_ollama_url_falls_back_on_validation_error(self, tmp_path, capsys):
+        """cmd_dream falls back to default when get_ollama_url() raises ValueError."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.close()
+
+        args = argparse.Namespace(
+            db=db,
+            apply=False,
+            phase="light",
+            report=None,
+        )
+
+        with patch("llmem.cli.get_ollama_url", side_effect=ValueError("unsafe URL")):
+            with patch(
+                "llmem.cli.MemoryStore",
+                side_effect=lambda db_path, **kw: MemoryStore(
+                    db_path=db_path, disable_vec=True
+                ),
+            ):
+                with patch("llmem.dream.Dreamer") as MockDreamer:
+                    mock_result = DreamResult(light=LightPhaseResult())
+                    MockDreamer.return_value.run.return_value = mock_result
+                    cmd_dream(args)
+                    # Verify the Dreamer was constructed with the fallback default
+                    call_kwargs = MockDreamer.call_args[1]
+                    assert call_kwargs["ollama_url"] == "http://localhost:11434"
+
+
+class TestCliDream_AutoLinkThresholdInConfig:
+    """Test that auto_link_threshold is picked up from user config via get_dream_config().
+
+    Regression test for ll-kingr-87izo: auto_link_threshold was missing
+    from DEFAULTS['dream'], so user config was silently ignored because
+    get_dream_config() only iterated over keys present in the defaults.
+    """
+
+    def test_auto_link_threshold_in_dream_config(self, tmp_path, capsys):
+        """cmd_dream passes auto_link_threshold from dream_config to Dreamer."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.close()
+
+        args = argparse.Namespace(
+            db=db,
+            apply=False,
+            phase="light",
+            report=None,
+        )
+
+        custom_threshold = 0.75
+        with patch(
+            "llmem.cli.get_dream_config",
+            return_value={
+                "enabled": True,
+                "schedule": "*-*-* 03:00:00",
+                "similarity_threshold": 0.92,
+                "decay_rate": 0.05,
+                "decay_interval_days": 30,
+                "decay_floor": 0.3,
+                "confidence_floor": 0.3,
+                "boost_threshold": 5,
+                "boost_amount": 0.05,
+                "min_score": 0.5,
+                "min_recall_count": 3,
+                "min_unique_queries": 1,
+                "boost_on_promote": 0.1,
+                "merge_model": "qwen2.5:1.5b",
+                "diary_path": str(tmp_path / "diary.md"),
+                "report_path": str(tmp_path / "report.html"),
+                "behavioral_threshold": 3,
+                "behavioral_lookback_days": 30,
+                "proposed_changes_path": str(tmp_path / "proposed.json"),
+                "calibration_enabled": True,
+                "stale_procedure_days": 30,
+                "calibration_lookback_days": 90,
+                "auto_link_threshold": custom_threshold,
+            },
+        ):
+            with patch(
+                "llmem.cli.MemoryStore",
+                side_effect=lambda db_path, **kw: MemoryStore(
+                    db_path=db_path, disable_vec=True
+                ),
+            ):
+                with patch("llmem.dream.Dreamer") as MockDreamer:
+                    mock_result = DreamResult(light=LightPhaseResult())
+                    MockDreamer.return_value.run.return_value = mock_result
+                    cmd_dream(args)
+                    call_kwargs = MockDreamer.call_args[1]
+                    assert call_kwargs["auto_link_threshold"] == custom_threshold

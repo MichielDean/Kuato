@@ -18,7 +18,7 @@ from .metrics import (
 from .paths import get_db_path, get_config_path, get_llmem_home
 from .paths import _validate_write_path, _is_blocked_path
 from .registry import get_registered_cli_plugins
-from .config import write_config_yaml, get_dream_config
+from .config import write_config_yaml, get_dream_config, get_ollama_url
 from .ollama import ProviderDetector
 from .paths import migrate_from_lobsterdog
 from .url_validate import is_safe_url
@@ -748,6 +748,12 @@ def cmd_dream(args):
     # Resolve dream config
     dream_config = get_dream_config()
 
+    # Resolve ollama_url from the memory section (not dream section)
+    try:
+        ollama_url = get_ollama_url()
+    except ValueError:
+        ollama_url = "http://localhost:11434"
+
     store = MemoryStore(args.db, disable_vec=True)
 
     try:
@@ -766,7 +772,7 @@ def cmd_dream(args):
             min_unique_queries=dream_config.get("min_unique_queries", 1),
             boost_on_promote=dream_config.get("boost_on_promote", 0.1),
             merge_model=dream_config.get("merge_model", "qwen2.5:1.5b"),
-            ollama_url=dream_config.get("ollama_url", "http://localhost:11434"),
+            ollama_url=ollama_url,
             behavioral_threshold=dream_config.get("behavioral_threshold", 3),
             behavioral_lookback_days=dream_config.get("behavioral_lookback_days", 30),
             calibration_enabled=dream_config.get("calibration_enabled", True),
