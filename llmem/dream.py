@@ -223,7 +223,9 @@ class Dreamer:
 
     def _light_phase(self, apply: bool = False) -> LightPhaseResult:
         """Find near-duplicate pairs."""
-        pairs = self._store.consolidate(similarity_threshold=self._similarity_threshold)
+        pairs = self._store.consolidate_duplicates(
+            similarity_threshold=self._similarity_threshold
+        )
         return LightPhaseResult(
             duplicate_pairs=len(pairs),
             merge_candidates=pairs[:20],
@@ -268,6 +270,14 @@ class Dreamer:
                 if apply:
                     self._store.update(m["id"], confidence=new_conf)
                 result.boosted_count += 1
+
+        # Promote inbox items to long-term memory
+        inbox_count = self._store.inbox_count()
+        if inbox_count > 0:
+            consolidate_result = self._store.consolidate(
+                min_score=self._min_score, dry_run=not apply
+            )
+            result.promoted_count += len(consolidate_result["promoted"])
 
         return result
 

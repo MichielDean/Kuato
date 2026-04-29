@@ -44,6 +44,7 @@ DEFAULTS = {
         "context_budget": 4000,
         "auto_extract": True,
         "max_file_size": 10 * 1024 * 1024,
+        "inbox_capacity": 7,
     },
     "dream": {
         "enabled": True,
@@ -232,6 +233,26 @@ def get_max_file_size(
     if size is None:
         return defaults["memory"]["max_file_size"]
     return int(size)
+
+
+def get_inbox_capacity(
+    config_path: Path | None = None, config: dict | None = None
+) -> int:
+    """Return the inbox capacity from config, defaulting to 7.
+
+    Args:
+        config_path: Optional path to config.yaml.
+        config: Optional pre-loaded config dict.
+
+    Returns:
+        Inbox capacity as a positive integer.
+    """
+    config = _resolve_config(config_path, config)
+    defaults = _resolve_defaults()
+    capacity = config.get("memory", {}).get("inbox_capacity")
+    if capacity is None:
+        return defaults["memory"]["inbox_capacity"]
+    return int(capacity)
 
 
 def get_prospective_model(
