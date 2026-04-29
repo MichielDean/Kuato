@@ -146,6 +146,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             (1, "001_initial_schema.sql"),
             (2, "002_add_hints.sql"),
             (3, "003_register_default_types.sql"),
+            (4, "004_add_inbox.sql"),
         ]
 
     migration_files.sort()
