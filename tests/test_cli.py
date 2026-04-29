@@ -255,8 +255,8 @@ class TestCli_PluginsLoadedViaRegistry:
         # argparse should not recognize session-start
         assert "invalid choice" in stderr.lower() or "unknown" in stderr.lower()
 
-    def test_core_cli_has_no_track_review_subcommand(self):
-        """Core CLI must not have a 'track-review' subcommand."""
+    def test_core_cli_has_track_review_subcommand(self):
+        """Core CLI now has a 'track-review' subcommand."""
         from llmem.cli import main
         from llmem.registry import _reset_registries
 
@@ -268,15 +268,15 @@ class TestCli_PluginsLoadedViaRegistry:
         sys.stdout = io.StringIO()
         sys.stderr = io.StringIO()
         try:
-            sys.argv = ["llmem", "track-review"]
+            sys.argv = ["llmem", "--help"]
             main()
         except SystemExit:
             pass
         finally:
-            stderr = sys.stderr.getvalue()
+            output = sys.stdout.getvalue()
             sys.stdout = old_stdout
             sys.stderr = old_stderr
-        assert "invalid choice" in stderr.lower() or "unknown" in stderr.lower()
+        assert "track-review" in output
 
     def test_core_cli_has_no_track_test_subcommand(self):
         """Core CLI must not have a 'track-test' subcommand."""

@@ -744,6 +744,54 @@ function testLlmemInstallScript() {
   assert(fs.existsSync(installPath), 'opencode-llmem/install.js exists');
 }
 
+// ── copilot-llmem Package Validation Tests ─────────────────────────────
+
+var COPILOT_LLMEM_PKG_DIR = path.join(__dirname, 'copilot-llmem');
+
+function testCopilotLlmemPackageJsonExists() {
+  var pkgPath = path.join(COPILOT_LLMEM_PKG_DIR, 'package.json');
+  if (!fs.existsSync(pkgPath)) {
+    assert(false, 'copilot-llmem/package.json exists');
+    return;
+  }
+  var pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  assert(pkg.name === 'copilot-llmem', 'copilot-llmem package name is copilot-llmem');
+}
+
+function testCopilotLlmemNoForbiddenRefs() {
+  if (!fs.existsSync(COPILOT_LLMEM_PKG_DIR)) {
+    return; // skip if directory doesn't exist
+  }
+  // Check the src/ directory if it exists — test files contain pattern strings used for detection
+  var srcDir = path.join(COPILOT_LLMEM_PKG_DIR, 'src');
+  if (fs.existsSync(srcDir)) {
+    checkNoPersonalReferences(srcDir, 'copilot-llmem/src');
+  }
+  // Also check the declarative config files
+  var configFiles = ['plugin.json', 'hooks.json', 'install.js'];
+  for (var i = 0; i < configFiles.length; i++) {
+    var filePath = path.join(COPILOT_LLMEM_PKG_DIR, configFiles[i]);
+    if (fs.existsSync(filePath)) {
+      checkNoPersonalReferences(filePath, 'copilot-llmem/' + configFiles[i]);
+    }
+  }
+  // Check agents directory
+  var agentsDir = path.join(COPILOT_LLMEM_PKG_DIR, 'agents');
+  if (fs.existsSync(agentsDir)) {
+    checkNoPersonalReferences(agentsDir, 'copilot-llmem/agents');
+  }
+  // Check bundled skills directory
+  var skillsDir = path.join(COPILOT_LLMEM_PKG_DIR, 'skills');
+  if (fs.existsSync(skillsDir)) {
+    checkNoPersonalReferences(skillsDir, 'copilot-llmem/skills');
+  }
+}
+
+function testCopilotLlmemInstallScript() {
+  var installPath = path.join(COPILOT_LLMEM_PKG_DIR, 'install.js');
+  assert(fs.existsSync(installPath), 'copilot-llmem/install.js exists');
+}
+
 // ── Main ──────────────────────────────────────────────────────────────
 
 console.log('\n=== Validation Tests ===\n');
@@ -814,6 +862,12 @@ console.log('\n=== opencode-llmem Package Validation Tests ===\n');
 testLlmemPackageJsonExists();
 testLlmemNoForbiddenRefs();
 testLlmemInstallScript();
+
+console.log('\n=== copilot-llmem Package Validation Tests ===\n');
+
+testCopilotLlmemPackageJsonExists();
+testCopilotLlmemNoForbiddenRefs();
+testCopilotLlmemInstallScript();
 
 console.log('\n=== Results ===\n');
 console.log('Passed: ' + passes);
