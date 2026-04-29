@@ -463,25 +463,34 @@ class TestDeadCodeRemoval:
                 f"extract.py should not import _strip_credentials (unused after DRY extraction): {line}"
             )
 
-    def test_session_hooks_no_pathlib_import(self):
-        """session_hooks.py should not import pathlib.Path.
+    def test_session_hooks_pathlib_import_is_used(self):
+        """session_hooks.py imports pathlib.Path and must use it.
 
-        Path was imported but never used in the module body.
-        get_context_dir() already returns a Path object, so the
-        import was dead code.
+        Path is used as a type annotation (db_path: Path | None), so the
+        import is NOT dead code. This test verifies that if Path is imported,
+        it is actually referenced in the module source.
         """
         import llmem.session_hooks as hooks_module
 
         source = inspect.getsource(hooks_module)
-        import_lines = [
-            line
-            for line in source.split("\n")
-            if line.strip().startswith("from pathlib import")
+        has_pathlib_import = any(
+            line.strip().startswith("from pathlib import")
             or line.strip() == "import pathlib"
-        ]
-        assert len(import_lines) == 0, (
-            f"session_hooks.py should not import pathlib (unused): {import_lines}"
+            for line in source.split("\n")
         )
+        if has_pathlib_import:
+            # Path import exists — verify it is actually used (not dead code)
+            # Remove the import line itself, then check if 'Path' appears elsewhere
+            non_import_lines = [
+                line
+                for line in source.split("\n")
+                if not line.strip().startswith("from pathlib import")
+                and line.strip() != "import pathlib"
+            ]
+            path_used = any("Path" in line for line in non_import_lines)
+            assert path_used, (
+                "session_hooks.py imports pathlib.Path but never uses it (dead code)"
+            )
 
     def test_coordinator_has_no_extractor_or_embedder_field(self, coordinator):
         """SessionHookCoordinator should not store self._extractor or self._embedder.
