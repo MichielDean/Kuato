@@ -8,7 +8,7 @@ process_opencode_sessions batch extraction pipeline.
 
 import logging
 import time
-from pathlib import Path
+
 
 from .store import MemoryStore
 from .retrieve import Retriever
@@ -420,7 +420,7 @@ def process_opencode_sessions(
     store: MemoryStore,
     extractor: ExtractionEngine,
     embedder: EmbeddingEngine | None = None,
-    db_path: Path | None = None,
+    db_path: str | None = None,
     force: bool = False,
     limit: int = 50,
 ) -> dict[str, int]:
