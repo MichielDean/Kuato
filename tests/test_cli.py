@@ -1,5 +1,6 @@
 """Tests for the llmem CLI entry point."""
 
+import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -353,3 +354,129 @@ class TestCli_PluginsLoadedViaRegistry:
             pass
         finally:
             sys.stdout = old_stdout
+
+
+class TestCli_Note:
+    """Test cmd_note adds content to the inbox."""
+
+    def test_cmd_note_adds_to_inbox(self, tmp_path):
+        """cmd_note with content adds an item to the inbox."""
+        from llmem.cli import cmd_note
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        args = argparse.Namespace(
+            db=db,
+            content="test note content",
+            source="note",
+            attention_score=0.5,
+            metadata=None,
+        )
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_note(args)
+
+        # Verify the note was added
+        store = MemoryStore(db_path=db, disable_vec=True)
+        items = store.list_inbox()
+        assert len(items) == 1
+        assert items[0]["content"] == "test note content"
+        assert items[0]["source"] == "note"
+        store.close()
+
+
+class TestCli_Inbox:
+    """Test cmd_inbox lists inbox items."""
+
+    def test_cmd_inbox_lists_items(self, tmp_path, capsys):
+        """cmd_inbox lists inbox items to stdout."""
+        from llmem.cli import cmd_inbox
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        # Pre-populate inbox
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.add_to_inbox(content="test note", source="note", attention_score=0.7)
+        store.close()
+
+        args = argparse.Namespace(
+            db=db,
+            limit=20,
+            json=False,
+        )
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_inbox(args)
+
+        captured = capsys.readouterr()
+        assert "test note" in captured.out
+
+
+class TestCli_Consolidate:
+    """Test cmd_consolidate promotes inbox items."""
+
+    def test_cmd_consolidate_promotes(self, tmp_path, capsys):
+        """cmd_consolidate consolidates inbox items."""
+        from llmem.cli import cmd_consolidate
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        # Pre-populate inbox
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.add_to_inbox(content="promote me", attention_score=0.8)
+        store.close()
+
+        args = argparse.Namespace(
+            db=db,
+            min_score=0.0,
+            dry_run=False,
+        )
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_consolidate(args)
+
+        captured = capsys.readouterr()
+        assert "Promoted: 1 items" in captured.out
+
+    def test_cmd_consolidate_dry_run(self, tmp_path, capsys):
+        """cmd_consolidate --dry-run shows plan without changes."""
+        from llmem.cli import cmd_consolidate
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        # Pre-populate inbox
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.add_to_inbox(content="maybe later", attention_score=0.6)
+        store.close()
+
+        args = argparse.Namespace(
+            db=db,
+            min_score=0.0,
+            dry_run=True,
+        )
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_consolidate(args)
+
+        captured = capsys.readouterr()
+        assert "[DRY RUN]" in captured.out
+        # Inbox should still have the item (dry run)
+        store2 = MemoryStore(db_path=db, disable_vec=True)
+        assert store2.inbox_count() == 1
+        store2.close()

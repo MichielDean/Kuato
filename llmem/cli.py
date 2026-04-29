@@ -304,6 +304,117 @@ def cmd_types(args):
         print(f"  {t}")
 
 
+def cmd_note(args):
+    """Add content to the working memory inbox.
+
+    Args:
+        args: argparse Namespace with attributes:
+            - content (str): The note content text.
+            - source (str): Source of the note. Default: 'note'.
+            - attention_score (float): Attention score 0-1. Default: 0.5.
+            - metadata (str or None): JSON metadata string.
+
+    Prints the new inbox item ID and exits with 0 on success.
+    Prints to stderr and exits with 1 on validation error.
+    """
+    store = MemoryStore(args.db)
+    src = args.source
+    score = args.attention_score
+    metadata = json.loads(args.metadata) if args.metadata else None
+
+    if src not in ("note", "learn", "extract", "consolidation"):
+        print(
+            f"Error: invalid source '{src}'. Must be note, learn, extract, or consolidation",
+            file=sys.stderr,
+        )
+        store.close()
+        sys.exit(1)
+
+    if score < 0.0 or score > 1.0:
+        print(
+            f"Error: attention-score must be between 0.0 and 1.0, got {score}",
+            file=sys.stderr,
+        )
+        store.close()
+        sys.exit(1)
+
+    try:
+        inbox_id = store.add_to_inbox(
+            content=args.content,
+            source=src,
+            attention_score=score,
+            metadata=metadata,
+        )
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    print(f"Added to inbox {inbox_id} [source={src}] score={score}")
+    store.close()
+
+
+def cmd_inbox(args):
+    """List items in the working memory inbox.
+
+    Args:
+        args: argparse Namespace with attributes:
+            - limit (int): Maximum items to show. Default: 20.
+            - json (bool): If True, output full JSON.
+
+    Prints each inbox item's id, source, attention_score, content (truncated),
+    and created_at. With --json, outputs full JSON.
+    """
+    store = MemoryStore(args.db)
+    items = store.list_inbox(limit=args.limit)
+    if args.json:
+        print(json.dumps(items, indent=2, default=str))
+    else:
+        if not items:
+            print("Inbox is empty.")
+        else:
+            for item in items:
+                content_preview = item["content"][:120]
+                print(
+                    f"  {item['id']}  [source={item['source']}]  "
+                    f"score={item['attention_score']:.2f}  "
+                    f"{content_preview}  {item['created_at']}"
+                )
+    store.close()
+
+
+def cmd_consolidate(args):
+    """Promote inbox items to long-term memory.
+
+    Args:
+        args: argparse Namespace with attributes:
+            - min_score (float): Minimum attention_score for promotion. Default: 0.0.
+            - dry_run (bool): If True, show what would happen without making changes.
+
+    Prints the number of promoted and evicted items.
+    """
+    store = MemoryStore(args.db)
+    result = store.consolidate(min_score=args.min_score, dry_run=args.dry_run)
+
+    prefix = "[DRY RUN] " if args.dry_run else ""
+    promoted = result["promoted"]
+    evicted = result["evicted"]
+
+    print(f"{prefix}Promoted: {len(promoted)} items")
+    print(f"{prefix}Evicted: {len(evicted)} items")
+
+    for item in promoted:
+        content_preview = item["content"][:80]
+        mem_id = item.get("memory_id", "?")
+        print(f"{prefix}  promoted: {item['id']} -> {mem_id}  {content_preview}")
+
+    for item in evicted:
+        content_preview = item["content"][:80]
+        print(f"{prefix}  evicted: {item['id']}  {content_preview}")
+
+    store.close()
+
+
 def cmd_init(args):
     """Initialize the llmem memory system: config, database, and provider detection.
 
@@ -533,6 +644,56 @@ def main():
         help="Overwrite existing config.yaml",
     )
 
+    # note
+    p_note = subparsers.add_parser(
+        "note", help="Add a note to the working memory inbox"
+    )
+    p_note.add_argument("content", help="Note content text")
+    p_note.add_argument(
+        "--source",
+        default="note",
+        help="Source of the note (default: note)",
+    )
+    p_note.add_argument(
+        "--attention-score",
+        type=float,
+        default=0.5,
+        help="Attention score 0-1 (default: 0.5)",
+    )
+    p_note.add_argument("--metadata", help="JSON metadata")
+
+    # inbox
+    p_inbox = subparsers.add_parser(
+        "inbox", help="List items in the working memory inbox"
+    )
+    p_inbox.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum items to show (default: 20)",
+    )
+    p_inbox.add_argument(
+        "--json",
+        action="store_true",
+        help="Output as JSON",
+    )
+
+    # consolidate
+    p_consolidate = subparsers.add_parser(
+        "consolidate", help="Promote inbox items to long-term memory"
+    )
+    p_consolidate.add_argument(
+        "--min-score",
+        type=float,
+        default=0.0,
+        help="Minimum attention score for promotion (default: 0.0)",
+    )
+    p_consolidate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would happen without making changes",
+    )
+
     # Register CLI plugins
     for plugin_name in sorted(get_registered_cli_plugins()):
         from .registry import get_cli_plugin_setup_fn
@@ -568,6 +729,9 @@ def main():
         "register-type": cmd_register_type,
         "types": cmd_types,
         "init": cmd_init,
+        "note": cmd_note,
+        "inbox": cmd_inbox,
+        "consolidate": cmd_consolidate,
     }
 
     handler = commands.get(args.command)
