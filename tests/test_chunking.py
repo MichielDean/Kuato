@@ -1,11 +1,9 @@
 """Tests for llmem.chunking module — ParagraphChunking, FixedLineChunking, gitignore."""
 
-from pathlib import Path
 
 import pytest
 
 from llmem.chunking import (
-    CodeChunk,
     ParagraphChunking,
     FixedLineChunking,
     detect_language,
@@ -403,7 +401,6 @@ class TestChunking_GitignoreParser:
 
     def test_is_ignored_does_not_match_other(self, tmp_path):
         """*.pyc pattern does not match .py files."""
-        patterns = [("* .pyc", False, False)]
         test_file = tmp_path / "test.py"
         test_file.touch()
         assert not is_ignored(test_file, tmp_path, [])

@@ -1,11 +1,9 @@
 """Tests for the working memory inbox feature — add, get, list, remove, consolidate."""
 
-import json
-from pathlib import Path
 
 import pytest
 
-from llmem.store import MemoryStore, DEFAULT_INBOX_CAPACITY, _VALID_INBOX_SOURCES
+from llmem.store import MemoryStore
 
 
 class TestInbox_Add_ReturnsId:

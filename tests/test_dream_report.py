@@ -1,6 +1,5 @@
 """Tests for llmem.dream_report module — HTML generation and escaping."""
 
-from pathlib import Path
 
 from llmem.dream import DreamResult, RemPhaseResult, DeepPhaseResult, LightPhaseResult
 from llmem.dream_report import generate_dream_report

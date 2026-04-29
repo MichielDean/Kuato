@@ -1,6 +1,5 @@
 """Tests for the llmem.registry module — extension point registry."""
 
-import argparse
 
 import pytest
 
@@ -132,7 +131,8 @@ class TestRegistry_RegisterDreamHook:
     """Tests for register_dream_hook()."""
 
     def test_register_hook_adds_to_registry(self):
-        hook_fn = lambda dreamer, result, apply: None
+        def hook_fn(dreamer, result, apply):
+            return None
         register_dream_hook("light", hook_fn)
         hooks = get_registered_dream_hooks()
         assert "light" in hooks
@@ -185,7 +185,8 @@ class TestRegistry_RegisterCliPlugin:
     """Tests for register_cli_plugin()."""
 
     def test_register_plugin_adds_to_registry(self):
-        setup_fn = lambda subparsers: None
+        def setup_fn(subparsers):
+            return None
         register_cli_plugin("my_plugin", setup_fn)
         assert "my_plugin" in get_registered_cli_plugins()
 
@@ -213,7 +214,8 @@ class TestRegistry_RegisterCliPlugin:
             register_cli_plugin("bad", "not_callable")
 
     def test_get_cli_plugin_setup_fn(self):
-        setup_fn = lambda subparsers: None
+        def setup_fn(subparsers):
+            return None
         register_cli_plugin("my_plugin", setup_fn)
         assert get_cli_plugin_setup_fn("my_plugin") is setup_fn
 

@@ -22,7 +22,6 @@ from memory.providers import (
     DEFAULT_NONE_EMBED_DIMENSIONS,
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OLLAMA_BASE_URL,
-    DEFAULT_LOCAL_MODEL,
 )
 from memory.config import get_provider_config, DEFAULTS, load_config
 
@@ -2484,7 +2483,7 @@ class TestConfigGetNoneValueSafety:
         Note: bool(None) is False, so 'or' correctly treats None as
         falsy and returns the default True.
         """
-        from memory.config import get_dream_config, DEFAULTS
+        from memory.config import get_dream_config
 
         config = {"dream": {"enabled": None}}
         result = get_dream_config(config=config)
@@ -2516,7 +2515,7 @@ class TestConfigGetNoneValueSafety:
 
     def test_get_provider_config_with_none_embed(self):
         """provider.embed=None should fall back to default empty dict."""
-        from memory.config import get_provider_config, DEFAULTS
+        from memory.config import get_provider_config
 
         config = {"provider": {"embed": None}}
         result = get_provider_config(config=config)
@@ -2908,7 +2907,6 @@ class TestSentenceTransformersProvider:
         """check_available() caches its result — second call doesn't reload model."""
         provider = SentenceTransformersProvider()
         call_count = 0
-        original_load = provider._load_model
 
         def counting_load():
             nonlocal call_count
@@ -3120,7 +3118,7 @@ class TestStoreDimensionValidation:
 
         from llmem.store import MemoryStore
 
-        sqlite_vec = pytest.importorskip("sqlite_vec")
+        pytest.importorskip("sqlite_vec")
         db = tmp_path / "test_dim.db"
         store = MemoryStore(db_path=db, vec_dimensions=768, disable_vec=False)
         # Create a 4-float embedding (4 dimensions), but store expects 768
@@ -3137,7 +3135,7 @@ class TestStoreDimensionValidation:
 
         from llmem.store import MemoryStore
 
-        sqlite_vec = pytest.importorskip("sqlite_vec")
+        pytest.importorskip("sqlite_vec")
         db = tmp_path / "test_dim_accept.db"
         vec_store = MemoryStore(db_path=db, vec_dimensions=768, disable_vec=False)
         correct_embedding = struct.pack(f"{768}f", *([0.0] * 768))
@@ -3154,7 +3152,6 @@ class TestStoreDimensionValidation:
         import struct
 
         from llmem.store import MemoryStore
-        from pathlib import Path
 
         db = tmp_path / "test_dim_validation_disabled.db"
         store = MemoryStore(db_path=db, vec_dimensions=4, disable_vec=True)

@@ -1,6 +1,5 @@
 """Retrieval and ranking engine for memory search."""
 
-import json
 import logging
 import math
 from datetime import datetime, timezone

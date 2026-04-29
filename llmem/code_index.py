@@ -92,8 +92,17 @@ class CodeIndex:
 
             self._conn.enable_load_extension(True)
             sqlite_vec.load(self._conn)
+            # Disable extension loading immediately after use to prevent
+            # runtime loading of arbitrary shared libraries via SQLite.
+            self._conn.enable_load_extension(False)
             self._vec_available = True
         except Exception as e:
+            # Ensure extension loading is disabled even on failure
+            if self._conn:
+                try:
+                    self._conn.enable_load_extension(False)
+                except Exception:
+                    pass
             log.warning("llmem: code_index: sqlite-vec extension unavailable: %s", e)
             self._vec_available = False
 

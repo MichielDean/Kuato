@@ -1,7 +1,6 @@
 """Tests for llmem.config module."""
 
 import copy
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -328,7 +327,6 @@ class TestGetOllamaUrl_SsrfValidation:
     def test_valid_remote_url_passes_with_allow_remote(self):
         """is_safe_url is called with allow_remote=True; remote URLs should pass
         when they resolve to public IPs (not private/link-local/etc)."""
-        from unittest.mock import patch
 
         from llmem.config import get_ollama_url
 
@@ -354,7 +352,6 @@ class TestGetOllamaUrl_SsrfValidation:
 
     def test_private_ip_blocked(self):
         """URLs pointing to private IPs (10.x.x.x) must be blocked."""
-        from unittest.mock import patch
 
         from llmem.config import get_ollama_url
 
@@ -393,7 +390,6 @@ class TestGetOllamaUrl_SsrfValidation:
 
     def test_credentials_stripped_from_ssrf_error_message(self):
         """Error messages from is_safe_url rejection must not contain credentials."""
-        from unittest.mock import patch
 
         from llmem.config import get_ollama_url
 
@@ -413,7 +409,6 @@ class TestGetOllamaUrl_SsrfValidation:
     def test_is_safe_url_called_with_allow_remote_true(self):
         """get_ollama_url must call is_safe_url with allow_remote=True
         because Ollama can legitimately run on remote hosts."""
-        from unittest.mock import patch
 
         from llmem.config import get_ollama_url
 

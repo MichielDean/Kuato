@@ -8,7 +8,6 @@ from pathlib import Path
 import yaml
 
 from .paths import (
-    get_llmem_home,
     get_config_path as _get_config_path,
     _validate_home_path,
 )
@@ -132,7 +131,6 @@ def load_config(config_path: Path | None = None) -> dict:
         A config dict. Returns empty dict if file doesn't exist.
         Logs a warning if file exists but can't be parsed.
     """
-    from .paths import get_config_path as _get_config_path
 
     path = Path(config_path) if config_path else _get_config_path()
     if not path.exists():
@@ -217,10 +215,6 @@ def get_ollama_url(config_path: Path | None = None, config: dict | None = None) 
     if not is_safe_url(url, allow_remote=True):
         raise ValueError(
             f"llmem: config: Ollama URL blocked (unsafe address): {_strip_credentials(url)!r}"
-        )
-    if not is_safe_url(url, allow_remote=True):
-        raise ValueError(
-            f"llmem: config: unsafe Ollama URL (rejected by URL validation): {url!r}"
         )
     return url
 

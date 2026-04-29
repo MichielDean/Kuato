@@ -7,10 +7,7 @@ Three phases:
   REM   — reflect + cluster: extract themes, write dream diary (read-only)
 """
 
-import json
 import logging
-import re
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -22,10 +19,7 @@ try:
 except ImportError:
     _HAS_FCNTL = False
 
-from .ollama import _call_ollama_generate
 from .store import MemoryStore
-from .taxonomy import ERROR_TAXONOMY, ERROR_TAXONOMY_KEYS, _parse_self_assessment
-from .url_validate import is_safe_url
 from .paths import get_dream_diary_path, get_proposed_changes_path, _is_blocked_path
 from .registry import get_registered_dream_hooks
 

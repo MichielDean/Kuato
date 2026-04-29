@@ -47,7 +47,6 @@ class TestStore_AddRegisteredType:
         register_memory_type(test_type)
         # Store created before registration won't know about it,
         # so create a new store that picks up the registration.
-        from llmem.store import _global_registry
 
         new_store = MemoryStore(
             db_path=store.db_path.parent / "test2.db", disable_vec=True

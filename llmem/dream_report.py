@@ -1,7 +1,6 @@
 """Dream report HTML generator for llmem."""
 
 import html
-import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,7 +22,7 @@ def generate_dream_report(result: DreamResult, report_path: Path) -> None:
         ValueError: If report_path resolves outside the llmem home directory
             or targets a protected system directory.
     """
-    from .paths import get_llmem_home, _validate_write_path
+    from .paths import _validate_write_path
 
     _validate_write_path(report_path, "dream report")
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
