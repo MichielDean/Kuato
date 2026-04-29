@@ -12,6 +12,7 @@ from llmem.chunking import (
     parse_gitignore,
     is_ignored,
     walk_code_files,
+    _matches_pattern,
 )
 
 
@@ -629,3 +630,142 @@ class TestChunking_WalkCodeFiles_Security:
         assert "private.key" not in file_names
         assert "id_rsa.key" not in file_names
         assert "cert.pem" not in file_names
+
+    def test_walk_skips_credential_filenames(self, tmp_path):
+        """walk_code_files skips SSH private keys and credential files.
+
+        Files like id_rsa, id_ed25519, .netrc, .htpasswd, .npmrc, and
+        .pypirc contain secrets (SSH keys, network passwords, package
+        manager tokens) and must never be indexed.
+        """
+        (tmp_path / "id_rsa").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n...")
+        (tmp_path / "id_dsa").write_text("-----BEGIN DSA PRIVATE KEY-----\n...")
+        (tmp_path / "id_ed25519").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n...")
+        (tmp_path / "id_ecdsa").write_text("-----BEGIN EC PRIVATE KEY-----\n...")
+        (tmp_path / ".netrc").write_text("machine example.com login user password pass")
+        (tmp_path / ".htpasswd").write_text("user:$apr1$hash$salt\n")
+        (tmp_path / ".npmrc").write_text("//registry.npmjs.org/:_authToken=secret\n")
+        (tmp_path / ".pypirc").write_text(
+            "[pypi]\n  username = user\n  password = pass\n"
+        )
+        (tmp_path / "main.py").write_text("print('hello')")
+
+        files = walk_code_files(tmp_path)
+        file_names = {f.name for f in files}
+        assert "main.py" in file_names
+        for secret_name in [
+            "id_rsa",
+            "id_dsa",
+            "id_ed25519",
+            "id_ecdsa",
+            ".netrc",
+            ".htpasswd",
+            ".npmrc",
+            ".pypirc",
+        ]:
+            assert secret_name not in file_names, f"{secret_name} should be skipped"
+
+
+class TestChunking_DirOnlyGitignorePattern:
+    """Test that gitignore patterns ending with / only match directories, not files.
+
+    Issue ll-67q3p-cokil: _matches_pattern computes a dir_only flag from
+    patterns ending in '/' but previously never used it, causing patterns
+    like 'build/' to incorrectly match a file named 'build'.
+    """
+
+    def test_matches_pattern_dir_only_skips_file(self):
+        """Issue ll-67q3p-cokil: patterns ending in / must not match files.
+
+        A gitignore pattern like 'build/' should only match directories.
+        A regular file named 'build' must NOT be ignored by this pattern.
+        """
+        # 'build/' should match directories only
+        assert not _matches_pattern("build", "build/", is_dir=False)
+
+    def test_matches_pattern_dir_only_matches_directory(self):
+        """Patterns ending in / must match directories.
+
+        A gitignore pattern like 'build/' should match a directory named
+        'build'.
+        """
+        assert _matches_pattern("build", "build/", is_dir=True)
+
+    def test_matches_pattern_without_slash_matches_both(self):
+        """Patterns without trailing / match both files and directories.
+
+        A pattern like 'build' (no trailing /) matches both a file and
+        a directory named 'build'.
+        """
+        assert _matches_pattern("build", "build", is_dir=False)
+        assert _matches_pattern("build", "build", is_dir=True)
+
+    def test_is_ignored_dir_pattern_does_not_ignore_file(self, tmp_path):
+        """is_ignored with a dir-only pattern does not ignore a file.
+
+        A .gitignore pattern 'build/' should not cause a file named
+        'build' to be ignored.
+        """
+        patterns = [("build/", False)]
+        build_file = tmp_path / "build"
+        build_file.touch()
+        assert not is_ignored(build_file, tmp_path, patterns, is_dir=False)
+
+    def test_is_ignored_dir_pattern_ignores_directory(self, tmp_path):
+        """is_ignored with a dir-only pattern ignores a directory.
+
+        A .gitignore pattern 'build/' should cause a directory named
+        'build' to be ignored.
+        """
+        patterns = [("build/", False)]
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        assert is_ignored(build_dir, tmp_path, patterns, is_dir=True)
+
+    def test_walk_code_files_dir_pattern_does_not_skip_file(self, tmp_path):
+        """walk_code_files does not skip a file matching a dir-only pattern.
+
+        A .gitignore with 'dist/' should skip a directory named 'dist'
+        but NOT skip a file named 'dist' (if it were a code file).
+        """
+        (tmp_path / ".gitignore").write_text("dist/\n")
+        # dist/ pattern should skip the dist directory
+        (tmp_path / "dist" / "output.py").parent.mkdir(parents=True)
+        (tmp_path / "dist" / "output.py").write_text("print('dist')")
+        # main.py should still be indexed
+        (tmp_path / "main.py").write_text("print('hello')")
+        files = walk_code_files(tmp_path)
+        file_names = {f.name for f in files}
+        assert "main.py" in file_names
+        assert "output.py" not in file_names
+
+    def test_walk_code_files_dir_pattern_preserves_file(self, tmp_path):
+        """A file named like a dir-only gitignore pattern is not skipped.
+
+        When .gitignore contains 'logs/', a file named 'logs' should
+        still be indexed if it has a recognized extension, while a
+        'logs/' directory should be skipped.
+        """
+        (tmp_path / ".gitignore").write_text("logs/\n")
+        # Create a logs directory (should be skipped)
+        (tmp_path / "logs").mkdir()
+        (tmp_path / "logs" / "app.py").write_text("app code")
+        # Create a main.py (should not be skipped)
+        (tmp_path / "main.py").write_text("print('hello')")
+
+        files = walk_code_files(tmp_path)
+        file_names = {f.name for f in files}
+        assert "main.py" in file_names
+        assert "app.py" not in file_names  # Inside skipped logs/ directory
+
+    def test_is_ignored_negation_with_dir_only(self, tmp_path):
+        """Negation patterns can override dir-only patterns in is_ignored.
+
+        A pattern '!build/' combined with 'build/' should un-ignore
+        the build directory.
+        """
+        patterns = [("build/", False), ("build/", True)]
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        # First pattern ignores build/, second negation un-ignores it
+        assert not is_ignored(build_dir, tmp_path, patterns, is_dir=True)

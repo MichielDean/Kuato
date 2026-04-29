@@ -340,7 +340,7 @@ def parse_gitignore(gitignore_path: Path) -> list[tuple[str, bool]]:
     return patterns
 
 
-def _matches_pattern(path: str, pattern: str) -> bool:
+def _matches_pattern(path: str, pattern: str, is_dir: bool = False) -> bool:
     """Check if a relative path matches a single gitignore pattern.
 
     Supports:
@@ -353,6 +353,8 @@ def _matches_pattern(path: str, pattern: str) -> bool:
     Args:
         path: Relative path from the repo root (using / as separator).
         pattern: A single gitignore pattern (not a negation).
+        is_dir: Whether the path is a directory. When False, patterns
+            that end with ``/`` (directory-only patterns) will not match.
 
     Returns:
         True if the path matches the pattern.
@@ -360,6 +362,8 @@ def _matches_pattern(path: str, pattern: str) -> bool:
     # Handle directory-only patterns (ending with /)
     dir_only = pattern.endswith("/")
     if dir_only:
+        if not is_dir:
+            return False
         pattern = pattern[:-1]
 
     # Determine if pattern is anchored (contains /)
@@ -413,13 +417,18 @@ def _matches_pattern(path: str, pattern: str) -> bool:
     return False
 
 
-def is_ignored(path: Path, root: Path, patterns: list[tuple[str, bool]]) -> bool:
+def is_ignored(
+    path: Path, root: Path, patterns: list[tuple[str, bool]], is_dir: bool = False
+) -> bool:
     """Check if a file path should be ignored based on gitignore patterns.
 
     Args:
         path: Absolute path to the file or directory.
         root: Absolute path to the repository root (where .gitignore lives).
         patterns: List of (pattern, is_negation) tuples from parse_gitignore.
+        is_dir: Whether the path is a directory. When True, directory-only
+            patterns (those ending in ``/``) can match. When False (the
+            default for files), directory-only patterns are skipped.
 
     Returns:
         True if the path should be ignored.
@@ -435,9 +444,10 @@ def is_ignored(path: Path, root: Path, patterns: list[tuple[str, bool]]) -> bool
     ignored = False
     for pattern, is_negation in patterns:
         # Check both the full relative path and just the filename
-        # for unanchored patterns
-        if _matches_pattern(rel_str, pattern) or (
-            "/" not in pattern and _matches_pattern(name, pattern)
+        # for unanchored patterns. Pass is_dir so that directory-only
+        # patterns (ending in /) match directories but not files.
+        if _matches_pattern(rel_str, pattern, is_dir=is_dir) or (
+            "/" not in pattern and _matches_pattern(name, pattern, is_dir=is_dir)
         ):
             if is_negation:
                 ignored = False
@@ -498,9 +508,25 @@ def walk_code_files(
         }
     )
 
-    # File names to always skip (project metadata, build artifacts, and secrets)
+    # File names to always skip (project metadata, build artifacts, and secrets).
+    # Includes credential files that must never be indexed: SSH private keys
+    # (id_rsa, id_dsa, id_ed25519, id_ecdsa), network credentials (.netrc),
+    # web secrets (.htpasswd), and package-manager tokens (.npmrc, .pypirc).
     _SKIP_FILENAMES: frozenset[str] = frozenset(
-        {".gitignore", ".gitattributes", ".gitmodules", ".env"}
+        {
+            ".gitignore",
+            ".gitattributes",
+            ".gitmodules",
+            ".env",
+            "id_rsa",
+            "id_dsa",
+            "id_ed25519",
+            "id_ecdsa",
+            ".netrc",
+            ".htpasswd",
+            ".npmrc",
+            ".pypirc",
+        }
     )
 
     # Filename prefixes that indicate secret-containing files (e.g. .env.local,
@@ -591,7 +617,7 @@ def walk_code_files(
             if entry.is_dir():
                 if entry.name in _SKIP_DIRS:
                     continue
-                if is_ignored(entry, root_path, current_patterns):
+                if is_ignored(entry, root_path, current_patterns, is_dir=True):
                     continue
                 _walk(entry, current_patterns, depth + 1)
             elif entry.is_file():
@@ -601,7 +627,7 @@ def walk_code_files(
                     continue
                 if entry.suffix.lower() in _SKIP_EXTENSIONS:
                     continue
-                if is_ignored(entry, root_path, current_patterns):
+                if is_ignored(entry, root_path, current_patterns, is_dir=False):
                     continue
                 # Skip files exceeding the size limit to prevent memory exhaustion
                 try:
