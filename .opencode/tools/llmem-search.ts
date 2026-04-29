@@ -24,7 +24,10 @@ export default tool({
     ),
   },
   execute: async (args, context) => {
-    const cmdArgs: string[] = ["search", "--", args.query];
+    // Build optional flags before the -- separator so argparse
+    // recognises them. The -- separator prevents the positional
+    // query from being parsed as a flag (argument injection).
+    const cmdArgs: string[] = ["search"];
 
     if (args.type) {
       cmdArgs.push("--type", args.type);
@@ -32,6 +35,7 @@ export default tool({
     if (args.limit !== undefined) {
       cmdArgs.push("--limit", String(args.limit));
     }
+    cmdArgs.push("--", args.query);
 
     const result = await runLlmem(cmdArgs, {
       json: true,
