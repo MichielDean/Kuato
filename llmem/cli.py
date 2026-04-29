@@ -1105,6 +1105,28 @@ def cmd_track_review(args):
             store.close()
             sys.exit(1)
 
+        if len(findings) == 0:
+            # Empty array — semantically equivalent to a clean review.
+            # Satisfies the docstring contract: every invocation MUST produce at
+            # least one memory.
+            content_lines = ["Category: REVIEW_PASSED"]
+            if args.context:
+                content_lines.append(f"Context: {args.context}")
+            content_lines.append("What_happened: clean review — no findings")
+            content_lines.append("Outcomes: all clear")
+            caught_by = args.caught_by or "self-review"
+            content_lines.append(f"What_caught_it: {caught_by}")
+            content_lines.append("Recurring: no")
+            content = "\n".join(content_lines)
+
+            mid = store.add(
+                type="self_assessment",
+                content=content,
+                source="review_tracker",
+                confidence=0.9,
+            )
+            print(f"Added self_assessment memory {mid} [REVIEW_PASSED]")
+
         for finding in findings:
             category = finding.get("category", "MISSING_VERIFICATION")
             if category not in ERROR_TAXONOMY:

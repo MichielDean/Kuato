@@ -646,6 +646,79 @@ class TestTrackReview_BatchMode:
         content = results[0]["content"]
         assert "What_caught_it: self-review" in content
 
+    def test_batch_mode_empty_array_creates_review_passed(self, tmp_path, capsys):
+        """track-review --finding-file with empty JSON array creates REVIEW_PASSED memory.
+
+        An empty findings array means no findings were found, which is semantically
+        equivalent to a clean review. The docstring contract requires every invocation
+        to produce at least one memory.
+        """
+        db = tmp_path / "test.db"
+        finding_path = tmp_path / "findings.json"
+        finding_path.write_text("[]")
+
+        args = argparse.Namespace(
+            context="handler.py:42",
+            category=None,
+            what_happened=None,
+            severity=None,
+            caught_by=None,
+            finding_file=str(finding_path),
+            db=db,
+        )
+        cmd_track_review(args)
+        captured = capsys.readouterr()
+        assert "REVIEW_PASSED" in captured.out
+
+        store = MemoryStore(db_path=db)
+        results = store.search("REVIEW_PASSED", limit=10)
+        store.close()
+        assert any("REVIEW_PASSED" in r.get("content", "") for r in results)
+
+    def test_batch_mode_empty_array_includes_context(self, tmp_path, capsys):
+        """track-review --finding-file with empty array includes context in REVIEW_PASSED."""
+        db = tmp_path / "test.db"
+        finding_path = tmp_path / "findings.json"
+        finding_path.write_text("[]")
+
+        args = argparse.Namespace(
+            context="handler.py:42",
+            category=None,
+            what_happened=None,
+            severity=None,
+            caught_by=None,
+            finding_file=str(finding_path),
+            db=db,
+        )
+        cmd_track_review(args)
+        store = MemoryStore(db_path=db)
+        results = store.search("REVIEW_PASSED", limit=10)
+        store.close()
+        content = results[0]["content"]
+        assert "Context: handler.py:42" in content
+
+    def test_batch_mode_empty_array_respects_caught_by(self, tmp_path, capsys):
+        """track-review --finding-file with empty array respects --caught-by flag."""
+        db = tmp_path / "test.db"
+        finding_path = tmp_path / "findings.json"
+        finding_path.write_text("[]")
+
+        args = argparse.Namespace(
+            context="handler.py",
+            category=None,
+            what_happened=None,
+            severity=None,
+            caught_by="CI",
+            finding_file=str(finding_path),
+            db=db,
+        )
+        cmd_track_review(args)
+        store = MemoryStore(db_path=db)
+        results = store.search("REVIEW_PASSED", limit=10)
+        store.close()
+        content = results[0]["content"]
+        assert "What_caught_it: CI" in content
+
 
 # ── track-review: mutual exclusivity ─────────────────────────────────────
 
