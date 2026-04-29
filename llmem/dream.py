@@ -8,6 +8,7 @@ Three phases:
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -316,7 +317,12 @@ class Dreamer:
         )
 
     def _write_diary(self, result: DreamResult) -> None:
-        """Append to the dream diary."""
+        """Append to the dream diary.
+
+        Skips writing if the last diary entry has the same timestamp
+        (to the minute), preventing duplicate entries from rapid-fire
+        invocations or parallel dream runs.
+        """
         try:
             diary_path = _validate_output_path(self._diary_path, "diary")
         except ValueError as e:
@@ -325,6 +331,26 @@ class Dreamer:
 
         diary_path.parent.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).isoformat()
+        timestamp_minute = timestamp[:16]
+
+        if diary_path.exists():
+            try:
+                existing = diary_path.read_text()
+                for m in re.finditer(
+                    r"^## Dream — (.+)$", existing, re.MULTILINE
+                ):
+                    existing_ts = m.group(1).strip()
+                    existing_minute = re.sub(r"[T ]", " ", existing_ts)[:16]
+                    if existing_minute == timestamp_minute:
+                        log.info(
+                            "llmem: dream: skipping diary entry, "
+                            "entry for %s already exists",
+                            timestamp_minute,
+                        )
+                        return
+            except Exception:
+                log.debug("llmem: dream: could not check existing diary, writing anyway")
+
         entry = f"\n## Dream — {timestamp}\n\n"
 
         if result.deep:
@@ -336,10 +362,6 @@ class Dreamer:
             entry += f"- Auto-linked: {result.deep.auto_linked_count}\n"
 
         with open(diary_path, "a") as f:
-            # Acquire an exclusive lock to prevent concurrent writes
-            # from corrupting the diary during parallel dream cycles.
-            # On Windows (no fcntl), the write proceeds without locking
-            # but is still append-mode atomic for small writes.
             if _HAS_FCNTL:
                 try:
                     fcntl.flock(f, fcntl.LOCK_EX)
