@@ -10,11 +10,8 @@ import pytest
 
 from llmem.cli import cmd_dream, main
 from llmem.dream import (
-    Dreamer,
     DreamResult,
     LightPhaseResult,
-    DeepPhaseResult,
-    RemPhaseResult,
 )
 from llmem.store import MemoryStore
 
