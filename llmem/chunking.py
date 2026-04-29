@@ -498,12 +498,17 @@ def walk_code_files(
         }
     )
 
-    # File names to always skip (project metadata and build artifacts)
+    # File names to always skip (project metadata, build artifacts, and secrets)
     _SKIP_FILENAMES: frozenset[str] = frozenset(
-        {".gitignore", ".gitattributes", ".gitmodules"}
+        {".gitignore", ".gitattributes", ".gitmodules", ".env"}
     )
 
-    # Extensions to skip (binary/cached/generated files)
+    # Filename prefixes that indicate secret-containing files (e.g. .env.local,
+    # .env.production).  Any file whose name starts with one of these prefixes
+    # is excluded from indexing to prevent credential leakage.
+    _SECRET_FILENAME_PREFIXES: tuple[str, ...] = (".env",)
+
+    # Extensions to skip (binary/cached/generated files and secrets)
     _SKIP_EXTENSIONS: frozenset[str] = frozenset(
         {
             ".pyc",
@@ -543,6 +548,8 @@ def walk_code_files(
             ".db",
             ".sqlite",
             ".pyd",
+            ".pem",
+            ".key",
         }
     )
 
@@ -589,6 +596,8 @@ def walk_code_files(
                 _walk(entry, current_patterns, depth + 1)
             elif entry.is_file():
                 if entry.name in _SKIP_FILENAMES:
+                    continue
+                if any(entry.name.startswith(p) for p in _SECRET_FILENAME_PREFIXES):
                     continue
                 if entry.suffix.lower() in _SKIP_EXTENSIONS:
                     continue

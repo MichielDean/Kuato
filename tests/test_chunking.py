@@ -590,3 +590,42 @@ class TestChunking_WalkCodeFiles_Security:
 
         files = walk_code_files(tmp_path, max_file_size=0)
         assert len(files) == 0
+
+    def test_walk_skips_env_files(self, tmp_path):
+        """walk_code_files skips .env files to prevent indexing secrets.
+
+        .env files and their variants (.env.local, .env.production, etc.)
+        typically contain API keys, passwords, and database credentials.
+        Indexing them would expose secrets via search.
+        """
+        (tmp_path / ".env").write_text("API_KEY=sk-12345\nDB_PASSWORD=secret")
+        (tmp_path / ".env.local").write_text("DEBUG=true")
+        (tmp_path / ".env.production").write_text("DATABASE_URL=postgres://...")
+        (tmp_path / "main.py").write_text("print('hello')")
+
+        files = walk_code_files(tmp_path)
+        file_names = {f.name for f in files}
+        assert "main.py" in file_names
+        assert ".env" not in file_names
+        assert ".env.local" not in file_names
+        assert ".env.production" not in file_names
+
+    def test_walk_skips_pem_key_files(self, tmp_path):
+        """walk_code_files skips .pem and .key files to prevent indexing private keys.
+
+        .pem and .key files contain private cryptographic keys that must
+        never be indexed into searchable code chunks.
+        """
+        (tmp_path / "server.pem").write_text("-----BEGIN PRIVATE KEY-----\n...")
+        (tmp_path / "private.key").write_text("-----BEGIN RSA PRIVATE KEY-----\n...")
+        (tmp_path / "id_rsa.key").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n...")
+        (tmp_path / "cert.pem").write_text("-----BEGIN CERTIFICATE-----\n...")
+        (tmp_path / "main.py").write_text("print('hello')")
+
+        files = walk_code_files(tmp_path)
+        file_names = {f.name for f in files}
+        assert "main.py" in file_names
+        assert "server.pem" not in file_names
+        assert "private.key" not in file_names
+        assert "id_rsa.key" not in file_names
+        assert "cert.pem" not in file_names
