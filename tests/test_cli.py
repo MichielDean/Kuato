@@ -2,7 +2,6 @@
 
 import argparse
 import io
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -67,7 +66,7 @@ class TestCli_LobmemCompat:
             pass
         finally:
             stderr = sys.stderr.getvalue()
-            stdout = sys.stdout.getvalue()
+            sys.stdout.getvalue()
             sys.stdout = old_stdout
             sys.stderr = old_stderr
 
@@ -307,7 +306,6 @@ class TestCli_PluginsLoadedViaRegistry:
         from llmem.cli import main
         from llmem.registry import (
             register_cli_plugin,
-            get_cli_plugin_setup_fn,
             _reset_registries,
         )
         import io
@@ -1009,7 +1007,6 @@ class TestCli_EmbedMetricsCapping:
         """_report_embedding_metrics shows capped vector count when total > limit."""
         from llmem.cli import _report_embedding_metrics
         from llmem.embed import EmbeddingEngine
-        from llmem.metrics import METRICS_MAX_EMBEDDINGS
         from llmem.store import MemoryStore
 
         db = tmp_path / "test.db"

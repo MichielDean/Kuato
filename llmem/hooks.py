@@ -3,19 +3,12 @@
 import hashlib
 import json
 import logging
-import re
 from pathlib import Path
 
 from .store import MemoryStore
 from .extract import ExtractionEngine, DEFAULT_MODEL, OLLAMA_BASE
 from .embed import EmbeddingEngine
-from .config import (
-    get_db_path,
-    get_ollama_url,
-    is_correction_detection_enabled,
-)
 from .taxonomy import (
-    ERROR_TAXONOMY_KEYS,
     INTROSPECT_FIELD_LINES,
 )
 
@@ -157,7 +150,7 @@ class SessionHook:
                     embedding = self._embedder.vec_to_bytes(vec)
                 except Exception:
                     pass
-            mid = self._store.add(
+            self._store.add(
                 type=m["type"],
                 content=m["content"],
                 confidence=m.get("confidence", 0.8),

@@ -1,6 +1,5 @@
 """Correction detection for session transcripts."""
 
-import json
 import logging
 import re
 

@@ -5,11 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from llmem.dream import Dreamer, DreamResult
+from llmem.dream import Dreamer
 from llmem.store import MemoryStore
 from llmem.registry import (
     register_dream_hook,
-    get_registered_dream_hooks,
     _reset_registries,
 )
 
@@ -62,7 +61,7 @@ class TestDream_HookIntegration:
             calls.append(("light", a))
 
         register_dream_hook("light", hook_fn)
-        result = dreamer.run(apply=False, phase="light")
+        dreamer.run(apply=False, phase="light")
         assert len(calls) == 1
         assert calls[0] == ("light", False)
         store.close()
@@ -119,7 +118,7 @@ class TestDream_DeepPhasePromotesInbox:
         store.add_to_inbox(content="tentative note", attention_score=0.7)
 
         dreamer = Dreamer(store=store)
-        result = dreamer.run(apply=False, phase="deep")
+        dreamer.run(apply=False, phase="deep")
 
         # dry_run=True should not clear the inbox
         assert store.inbox_count() == 1

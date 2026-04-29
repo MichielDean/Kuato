@@ -4,11 +4,8 @@ import argparse
 import json
 import logging
 import os
-import sqlite3
 import sys
 from pathlib import Path
-
-log = logging.getLogger(__name__)
 
 from .store import MemoryStore, register_memory_type, get_registered_types
 from .metrics import (
@@ -34,6 +31,8 @@ from .chunking import (
     _DEFAULT_MAX_DEPTH,
 )
 from .code_index import CodeIndex
+
+log = logging.getLogger(__name__)
 
 
 def _report_embedding_metrics(store: MemoryStore) -> None:
@@ -976,7 +975,7 @@ def main():
     )
 
     # embed
-    p_embed = subparsers.add_parser("embed", help="Report embedding quality metrics")
+    subparsers.add_parser("embed", help="Report embedding quality metrics")
 
     # consolidate
     p_consolidate = subparsers.add_parser(

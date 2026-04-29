@@ -2,7 +2,6 @@
 
 import json
 import logging
-from pathlib import Path
 
 from .store import MemoryStore
 from .ollama import _call_ollama_generate

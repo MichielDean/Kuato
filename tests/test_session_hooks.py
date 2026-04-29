@@ -4,7 +4,6 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from llmem.adapters.opencode import (
     OpenCodeAdapter,
@@ -22,7 +21,6 @@ from llmem.session_hooks import (
     _generate_opencode_source_id,
     process_opencode_sessions,
 )
-from llmem.store import MemoryStore
 
 
 def _create_populated_opencode_db(db_path: Path) -> None:
@@ -622,7 +620,7 @@ class TestOpenCodeSessionHook_AdapterLifecycle:
         mock_extractor.extract.side_effect = RuntimeError("Test error")
 
         with patch.object(OpenCodeAdapter, "close") as mock_close:
-            results = process_opencode_sessions(
+            process_opencode_sessions(
                 store=store,
                 extractor=mock_extractor,
                 db_path=db_path,
