@@ -297,6 +297,65 @@ class TestMetrics_StoreGetEmbeddingsWithTypes:
         assert "decision" in types
         store.close()
 
+    def test_excludes_expired_memories(self, tmp_path):
+        """get_embeddings_with_types excludes memories with valid_until set."""
+        from llmem.store import MemoryStore
+        from llmem.embed import EmbeddingEngine
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        # Add a valid memory with embedding
+        store.add(
+            type="fact",
+            content="valid fact",
+            embedding=EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0]),
+        )
+        # Add a memory, then invalidate it (which nulls the embedding)
+        mem_id = store.add(
+            type="decision",
+            content="will be invalidated",
+            embedding=EmbeddingEngine.vec_to_bytes([0.0, 1.0, 0.0]),
+        )
+        store.invalidate(mem_id)
+
+        rows = store.get_embeddings_with_types()
+        # Only the valid memory should appear; the invalidated one has embedding=NULL
+        assert len(rows) == 1
+        assert rows[0][1] == "fact"
+        store.close()
+
+    def test_excludes_memories_expired_via_update(self, tmp_path):
+        """get_embeddings_with_types excludes memories with valid_until set via update().
+
+        update() can set valid_until without clearing embedding, so this tests
+        that the valid_until IS NULL filter works even when embedding is non-null.
+        """
+        from llmem.store import MemoryStore
+        from llmem.embed import EmbeddingEngine
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        # Add a valid memory with embedding
+        store.add(
+            type="fact",
+            content="valid fact",
+            embedding=EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0]),
+        )
+        # Add a memory, then set valid_until via update (keeps embedding)
+        mem_id = store.add(
+            type="decision",
+            content="will be expired via update",
+            embedding=EmbeddingEngine.vec_to_bytes([0.0, 1.0, 0.0]),
+        )
+        store.update(mem_id, valid_until="2025-01-01T00:00:00+00:00")
+
+        rows = store.get_embeddings_with_types()
+        # Only the valid memory should appear, even though the expired
+        # one still has a non-null embedding in the database
+        assert len(rows) == 1
+        assert rows[0][1] == "fact"
+        store.close()
+
     def test_returns_empty_when_no_embeddings(self, tmp_path):
         """get_embeddings_with_types returns empty list when no embeddings exist."""
         from llmem.store import MemoryStore

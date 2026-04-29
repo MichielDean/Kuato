@@ -1599,9 +1599,12 @@ class MemoryStore:
     def get_embeddings_with_types(self) -> list[tuple[bytes, str]]:
         """Return all non-null embeddings with their memory type.
 
-        Returns a list of (embedding_bytes, type) tuples for each memory
-        that has an embedding. Used by the CLI metrics reporter to compute
-        embedding quality metrics without accessing private store internals.
+        Returns a list of (embedding_bytes, type) tuples for each valid
+        (non-expired) memory that has an embedding. Used by the CLI metrics
+        reporter to compute embedding quality metrics without accessing
+        private store internals. Only returns embeddings for memories where
+        valid_until IS NULL, consistent with other embedding queries in the
+        store.
 
         Returns:
             List of (embedding, type) tuples. Empty list if no embeddings
@@ -1609,7 +1612,7 @@ class MemoryStore:
         """
         conn = self._connect()
         rows = conn.execute(
-            'SELECT "embedding", "type" FROM "memories" WHERE "embedding" IS NOT NULL'
+            'SELECT "embedding", "type" FROM "memories" WHERE "embedding" IS NOT NULL AND "valid_until" IS NULL'
         ).fetchall()
         return [(row["embedding"], row["type"]) for row in rows]
 
