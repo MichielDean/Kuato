@@ -11,6 +11,12 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 from .store import MemoryStore, register_memory_type, get_registered_types
+from .metrics import (
+    compute_metrics,
+    bytes_to_vec,
+    ANISOTROPY_WARNING_THRESHOLD,
+    SIMILARITY_RANGE_WARNING_THRESHOLD,
+)
 from .paths import get_db_path, get_config_path, get_llmem_home
 from .paths import _validate_write_path, _is_blocked_path
 from .registry import get_registered_cli_plugins
@@ -566,6 +572,79 @@ def cmd_inbox(args):
     store.close()
 
 
+def cmd_embed(args):
+    """Embed memories and optionally report quality metrics.
+
+    Reads all memories from the store and computes embedding quality
+    metrics (anisotropy, similarity range, discrimination gap).
+
+    Args:
+        args: argparse Namespace with attributes:
+            - db (Path): Database path.
+            - metrics (bool): If True, compute and report embedding metrics.
+
+    Prints metric values to stdout. Emits warnings if anisotropy
+    exceeds the threshold or similarity range is below the threshold.
+    """
+    from .embed import EmbeddingEngine
+
+    store = MemoryStore(args.db)
+
+    conn = store._connect()
+    rows = conn.execute(
+        'SELECT "id", "type", "embedding" FROM "memories" WHERE "embedding" IS NOT NULL'
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        print("No embedded memories found.")
+        store.close()
+        return
+
+    embeddings = []
+    labels = []
+    for row in rows:
+        vec = bytes_to_vec(row["embedding"])
+        if vec:
+            embeddings.append(vec)
+            labels.append(row["type"])
+
+    if not embeddings:
+        print("No valid embeddings found.")
+        store.close()
+        return
+
+    metrics = compute_metrics(embeddings, labels=labels)
+
+    print(f"Embedding metrics ({len(embeddings)} vectors):")
+    print(f"  Anisotropy:        {metrics.anisotropy:.4f}")
+    print(f"  Similarity range:  {metrics.similarity_range:.4f}")
+    if metrics.discrimination_gap is not None:
+        print(f"  Discrimination gap: {metrics.discrimination_gap:.4f}")
+
+    warnings = []
+    if metrics.anisotropy > ANISOTROPY_WARNING_THRESHOLD:
+        warnings.append(
+            f"Anisotropy ({metrics.anisotropy:.4f}) exceeds threshold "
+            f"({ANISOTROPY_WARNING_THRESHOLD})."
+        )
+    if metrics.similarity_range < SIMILARITY_RANGE_WARNING_THRESHOLD:
+        warnings.append(
+            f"Similarity range ({metrics.similarity_range:.4f}) is below threshold "
+            f"({SIMILARITY_RANGE_WARNING_THRESHOLD})."
+        )
+    if warnings:
+        print()
+        for w in warnings:
+            print(f"WARNING: {w}", file=sys.stderr)
+        print(
+            "Embeddings may be poor quality, consider using a different model.",
+            file=sys.stderr,
+        )
+
+    store.close()
+
+
 def cmd_consolidate(args):
     """Promote inbox items to long-term memory.
 
@@ -573,6 +652,8 @@ def cmd_consolidate(args):
         args: argparse Namespace with attributes:
             - min_score (float): Minimum attention_score for promotion. Default: 0.0.
             - dry_run (bool): If True, show what would happen without making changes.
+            - metrics (bool): If True, compute and report embedding metrics after
+              consolidation.
 
     Prints the number of promoted and evicted items.
     """
@@ -594,6 +675,50 @@ def cmd_consolidate(args):
     for item in evicted:
         content_preview = item["content"][:80]
         print(f"{prefix}  evicted: {item['id']}  {content_preview}")
+
+    # Report embedding metrics if requested
+    if getattr(args, "metrics", False):
+        conn = store._connect()
+        rows = conn.execute(
+            'SELECT "id", "type", "embedding" FROM "memories" WHERE "embedding" IS NOT NULL'
+        ).fetchall()
+        conn.close()
+
+        if rows:
+            embeddings = []
+            labels = []
+            for row in rows:
+                vec = bytes_to_vec(row["embedding"])
+                if vec:
+                    embeddings.append(vec)
+                    labels.append(row["type"])
+
+            if embeddings:
+                m = compute_metrics(embeddings, labels=labels)
+                print(f"\nEmbedding metrics ({len(embeddings)} vectors):")
+                print(f"  Anisotropy:         {m.anisotropy:.4f}")
+                print(f"  Similarity range:   {m.similarity_range:.4f}")
+                if m.discrimination_gap is not None:
+                    print(f"  Discrimination gap: {m.discrimination_gap:.4f}")
+
+                warnings = []
+                if m.anisotropy > ANISOTROPY_WARNING_THRESHOLD:
+                    warnings.append(
+                        f"Anisotropy ({m.anisotropy:.4f}) exceeds threshold "
+                        f"({ANISOTROPY_WARNING_THRESHOLD})."
+                    )
+                if m.similarity_range < SIMILARITY_RANGE_WARNING_THRESHOLD:
+                    warnings.append(
+                        f"Similarity range ({m.similarity_range:.4f}) is below threshold "
+                        f"({SIMILARITY_RANGE_WARNING_THRESHOLD})."
+                    )
+                if warnings:
+                    for w in warnings:
+                        print(f"WARNING: {w}", file=sys.stderr)
+                    print(
+                        "Embeddings may be poor quality, consider using a different model.",
+                        file=sys.stderr,
+                    )
 
     store.close()
 
@@ -871,6 +996,14 @@ def main():
         help="Output as JSON",
     )
 
+    # embed
+    p_embed = subparsers.add_parser("embed", help="Report embedding quality metrics")
+    p_embed.add_argument(
+        "--metrics",
+        action="store_true",
+        help="Compute and report embedding quality metrics (anisotropy, similarity range, discrimination gap)",
+    )
+
     # consolidate
     p_consolidate = subparsers.add_parser(
         "consolidate", help="Promote inbox items to long-term memory"
@@ -885,6 +1018,11 @@ def main():
         "--dry-run",
         action="store_true",
         help="Show what would happen without making changes",
+    )
+    p_consolidate.add_argument(
+        "--metrics",
+        action="store_true",
+        help="Compute and report embedding quality metrics after consolidation",
     )
 
     # learn
@@ -970,6 +1108,7 @@ def main():
         "init": cmd_init,
         "note": cmd_note,
         "inbox": cmd_inbox,
+        "embed": cmd_embed,
         "consolidate": cmd_consolidate,
         "learn": cmd_learn,
     }

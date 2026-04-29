@@ -740,3 +740,199 @@ class TestCli_SearchCodeInterleaving:
         # The first code result should have a score well above 0.0
         if code_results:
             assert code_results[0]["_rrf_score"] > 0.0
+
+
+class TestCli_EmbedMetrics:
+    """Test cmd_embed --metrics reports anisotropy and similarity range."""
+
+    def test_embed_metrics_reports_anisotropy_and_similarity_range(
+        self, tmp_path, capsys
+    ):
+        """cmd_embed --metrics reports anisotropy and similarity range values."""
+        from llmem.cli import cmd_embed
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.add(
+            type="fact",
+            content="test fact 1",
+            embedding=EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0]),
+        )
+        store.add(
+            type="fact",
+            content="test fact 2",
+            embedding=EmbeddingEngine.vec_to_bytes([0.0, 1.0, 0.0]),
+        )
+        store.add(
+            type="decision",
+            content="test decision",
+            embedding=EmbeddingEngine.vec_to_bytes([0.0, 0.0, 1.0]),
+        )
+        store.close()
+
+        args = argparse.Namespace(db=db, metrics=True)
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_embed(args)
+
+        captured = capsys.readouterr()
+        assert "Anisotropy" in captured.out
+        assert "Similarity range" in captured.out
+        assert "Discrimination gap" in captured.out
+        assert "3 vectors" in captured.out
+
+    def test_embed_metrics_warns_on_high_anisotropy(self, tmp_path, capsys):
+        """cmd_embed --metrics warns when anisotropy exceeds 0.5."""
+        from llmem.cli import cmd_embed
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+
+        # Identical vectors → anisotropy = 1.0, which exceeds threshold
+        emb = EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0])
+        store.add(type="fact", content="test1", embedding=emb)
+        store.add(type="fact", content="test2", embedding=emb)
+        store.add(type="fact", content="test3", embedding=emb)
+        store.close()
+
+        args = argparse.Namespace(db=db, metrics=True)
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_embed(args)
+
+        captured = capsys.readouterr()
+        assert "Anisotropy" in captured.out
+        assert "WARNING" in captured.err
+        assert "anisotropy" in captured.err.lower() or "Anisotropy" in captured.err
+
+    def test_embed_metrics_warns_on_low_similarity_range(self, tmp_path, capsys):
+        """cmd_embed --metrics warns when similarity_range is below 0.1."""
+        from llmem.cli import cmd_embed
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+
+        # Identical vectors → similarity_range = 0.0, below threshold
+        emb = EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0])
+        store.add(type="fact", content="test1", embedding=emb)
+        store.add(type="fact", content="test2", embedding=emb)
+        store.close()
+
+        args = argparse.Namespace(db=db, metrics=True)
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_embed(args)
+
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        # Both high anisotropy and low similarity range should warn
+        assert "poor quality" in captured.err
+
+    def test_embed_metrics_no_warning_on_good_embeddings(self, tmp_path, capsys):
+        """cmd_embed --metrics does not warn when metrics are within thresholds."""
+        from llmem.cli import cmd_embed
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+
+        # Vectors with diverse orientations and non-zero spread:
+        # [1,0,0], [1,1,0], [0,1,0] → pairwise cosines are 0.707, 0.0, 0.707
+        # anisotropy ≈ avg(0.707, 0.0, 0.707) / 3 ≈ 0.47 < 0.5
+        # similarity_range = 0.707 - 0.0 = 0.707 > 0.1
+        store.add(
+            type="fact",
+            content="test fact",
+            embedding=EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0]),
+        )
+        store.add(
+            type="decision",
+            content="test decision",
+            embedding=EmbeddingEngine.vec_to_bytes([1.0, 1.0, 0.0]),
+        )
+        store.add(
+            type="preference",
+            content="test preference",
+            embedding=EmbeddingEngine.vec_to_bytes([0.0, 1.0, 0.0]),
+        )
+        store.close()
+
+        args = argparse.Namespace(db=db, metrics=True)
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_embed(args)
+
+        captured = capsys.readouterr()
+        assert "Anisotropy" in captured.out
+        assert "Similarity range" in captured.out
+        assert "WARNING" not in captured.err
+
+
+class TestCli_ConsolidateMetrics:
+    """Test cmd_consolidate --metrics reports embedding quality metrics."""
+
+    def test_consolidate_with_metrics_reports_metrics(self, tmp_path, capsys):
+        """cmd_consolidate --metrics reports anisotropy and similarity range."""
+        from llmem.cli import cmd_consolidate
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        # Pre-populate inbox and embeddings
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.add_to_inbox(content="promote me", attention_score=0.8)
+
+        # Add memories with embeddings for metrics
+        store.add(
+            type="fact",
+            content="embedded fact 1",
+            embedding=EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0]),
+        )
+        store.add(
+            type="fact",
+            content="embedded fact 2",
+            embedding=EmbeddingEngine.vec_to_bytes([0.0, 1.0, 0.0]),
+        )
+        store.close()
+
+        args = argparse.Namespace(
+            db=db,
+            min_score=0.0,
+            dry_run=False,
+            metrics=True,
+        )
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_consolidate(args)
+
+        captured = capsys.readouterr()
+        assert "Promoted" in captured.out
+        assert "Anisotropy" in captured.out
+        assert "Similarity range" in captured.out

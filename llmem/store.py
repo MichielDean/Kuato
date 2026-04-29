@@ -11,6 +11,10 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .metrics import (
+    cosine_similarity as _cosine_similarity,
+    bytes_to_vec as _bytes_to_vec,
+)
 from .paths import get_db_path
 
 logger = logging.getLogger(__name__)
@@ -785,8 +789,6 @@ class MemoryStore:
         limit: int,
         threshold: float,
     ) -> list[tuple[dict, float]]:
-        import struct
-
         # Cap the number of rows loaded to prevent unbounded memory usage
         # on very large stores. 10000 is generous for brute-force search.
         _BRUTE_FORCE_ROW_LIMIT = 10000
@@ -802,9 +804,7 @@ class MemoryStore:
             return []
         scored = []
         for row in rows:
-            emb_bytes = row["embedding"]
-            dim = len(emb_bytes) // 4
-            vec = list(struct.unpack(f"{dim}f", emb_bytes))
+            vec = _bytes_to_vec(row["embedding"])
             if len(vec) != len(query_vec):
                 continue
             score = self._cosine_sim(query_vec, vec)
@@ -1024,8 +1024,6 @@ class MemoryStore:
         Returns:
             List of dicts with ``source``, ``target``, and ``score`` keys.
         """
-        import struct
-
         conn = self._connect()
         rows = conn.execute(
             'SELECT "id", "content", "embedding" FROM "memories" WHERE "embedding" IS NOT NULL AND "valid_until" IS NULL LIMIT ?',
@@ -1040,14 +1038,14 @@ class MemoryStore:
                 continue
             emb1 = r1["embedding"]
             dim = len(emb1) // 4
-            vec1 = list(struct.unpack(f"{dim}f", emb1))
+            vec1 = _bytes_to_vec(emb1)
             for r2 in rows[i + 1 :]:
                 if r2["id"] in seen or r2["id"] == r1["id"]:
                     continue
                 dim2 = len(r2["embedding"]) // 4
                 if dim2 != dim:
                     continue
-                vec2 = list(struct.unpack(f"{dim2}f", r2["embedding"]))
+                vec2 = _bytes_to_vec(r2["embedding"])
                 score = self._cosine_sim(vec1, vec2)
                 if score >= similarity_threshold:
                     pairs.append(
@@ -1600,9 +1598,5 @@ class MemoryStore:
 
     @staticmethod
     def _cosine_sim(a: list[float], b: list[float]) -> float:
-        dot = sum(x * y for x, y in zip(a, b))
-        mag_a = sum(x * x for x in a) ** 0.5
-        mag_b = sum(x * x for x in b) ** 0.5
-        if mag_a == 0 or mag_b == 0:
-            return 0.0
-        return dot / (mag_a * mag_b)
+        """Compute cosine similarity. Delegates to metrics.cosine_similarity."""
+        return _cosine_similarity(a, b)
