@@ -631,11 +631,14 @@ def cmd_inbox(args):
 
 
 def cmd_embed(args):
-    """Embed memories and optionally report quality metrics.
+    """Report embedding quality metrics for existing embeddings.
 
-    Reads all memories from the store and computes embedding quality
-    metrics (anisotropy, similarity range, discrimination gap) only
-    when the --metrics flag is provided.
+    Computes anisotropy, similarity range, and discrimination gap
+    from the embeddings already stored in the database. Does NOT
+    generate new embeddings — only analyses existing ones.
+
+    Metrics are reported only when the --metrics flag is provided;
+    without it, the command exits silently.
 
     Args:
         args: argparse Namespace with attributes:

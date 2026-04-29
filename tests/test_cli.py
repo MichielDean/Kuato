@@ -918,6 +918,43 @@ class TestCli_EmbedMetrics:
         assert "Anisotropy" not in captured.out
         assert "Similarity range" not in captured.out
 
+    def test_embed_does_not_generate_new_embeddings(self, tmp_path, capsys):
+        """cmd_embed only analyses existing embeddings — it never creates new ones.
+
+        Verifies that calling cmd_embed on memories without embeddings
+        does not add embeddings, and that the function merely reads
+        what is already stored.
+        """
+        from llmem.cli import cmd_embed
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        # Add memories WITHOUT embeddings
+        mid = store.add(type="fact", content="unembedded fact")
+        assert store.get(mid)["embedding"] is None
+        store.close()
+
+        args = argparse.Namespace(db=db, metrics=True)
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_embed(args)
+
+        # Verify no embeddings were generated — the memory still has none
+        store2 = MemoryStore(db_path=db, disable_vec=True)
+        mem = store2.get(mid)
+        assert mem["embedding"] is None, (
+            "cmd_embed should not generate embeddings, but embedding was created"
+        )
+        store2.close()
+
+        captured = capsys.readouterr()
+        assert "No embedded memories found" in captured.out
+
 
 class TestCli_ConsolidateMetrics:
     """Test cmd_consolidate --metrics reports embedding quality metrics."""
