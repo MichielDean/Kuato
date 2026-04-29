@@ -98,7 +98,12 @@ function main() {
       process.exit(1);
     }
 
-    copyDirRecursive(AGENTS_SRC_DIR, TARGET_AGENTS_DIR);
+    try {
+      copyDirRecursive(AGENTS_SRC_DIR, TARGET_AGENTS_DIR);
+    } catch (err) {
+      console.error('copilot-llmem: failed to copy agents: ' + err.message);
+      process.exit(1);
+    }
     console.log('copilot-llmem: installed agents to ' + TARGET_AGENTS_DIR);
   }
 }

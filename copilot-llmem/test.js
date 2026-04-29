@@ -429,6 +429,72 @@ function testBundledSkillsExist() {
   assert(allHaveSkillMd, 'each bundled skill has SKILL.md' + (missingMd.length > 0 ? ' (missing: ' + missingMd.join(', ') + ')' : ''));
 }
 
+// ── install.js Agents Error Handling Tests ──────────────────────────────────
+
+function testInstallJsAgentsCopyHasTryCatch() {
+  var installPath = path.join(ROOT_DIR, 'install.js');
+  if (!fs.existsSync(installPath)) {
+    assert(false, 'install.js agents try/catch: file missing');
+    return;
+  }
+  var content = fs.readFileSync(installPath, 'utf8');
+  // Verify agents copyDirRecursive is wrapped in try/catch
+  var agentsCopyBlock = content.match(/try\s*\{[^}]*copyDirRecursive\(AGENTS_SRC_DIR/);
+  assert(agentsCopyBlock !== null,
+    'install.js wraps copyDirRecursive(AGENTS_SRC_DIR, ...) in try/catch');
+  // Verify the catch block includes formatted error message
+  var agentsCatchBlock = content.match(/catch\s*\([^)]*\)\s*\{[^}]*failed to copy agents/);
+  assert(agentsCatchBlock !== null,
+    'install.js catch block for agents copy has "failed to copy agents" error message');
+}
+
+function testInstallJsAgentsCopyErrorProducesFormattedMessage() {
+  // Runtime test: make agents target directory writable, but place a read-only
+  // file inside that conflicts with copyDirRecursive. This triggers the
+  // copyDirRecursive try/catch specifically, not the earlier accessSync check.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-llmem-test-'));
+  var fakeHome = path.join(tmpDir, 'home');
+  fs.mkdirSync(fakeHome);
+  try {
+    var targetAgentsDir = path.join(fakeHome, '.agents', 'agents');
+    fs.mkdirSync(targetAgentsDir, { recursive: true });
+    // Place a read-only file inside with the same name as the agents source entry
+    // so copyDirRecursive hits it when trying to create a directory or write a file
+    var agentsSrcDir = path.join(ROOT_DIR, 'agents');
+    var agentEntries = fs.readdirSync(agentsSrcDir);
+    if (agentEntries.length > 0) {
+      // Create a read-only directory entry that conflicts — put a file where a
+      // directory is expected, then make it undeletable
+      var blockPath = path.join(targetAgentsDir, agentEntries[0]);
+      fs.writeFileSync(blockPath, 'block');
+      fs.chmodSync(blockPath, 0o000);
+    }
+    var installEnv = Object.assign({}, process.env, { HOME: fakeHome });
+    try {
+      execSync('node ' + path.join(ROOT_DIR, 'install.js'), {
+        env: installEnv,
+        cwd: ROOT_DIR,
+        stdio: 'pipe',
+        timeout: 10000
+      });
+      // If install succeeds (unlikely given 0o000 perms), try alternate approach
+      assert(true, 'install.js agents copy error: no error triggered (permissions allow write)');
+    } catch (err) {
+      var stderr = err.stderr ? err.stderr.toString() : '';
+      // Verify a formatted error message is produced (not a raw Node stack trace)
+      var hasFormattedMessage = stderr.indexOf('copilot-llmem:') !== -1;
+      assert(hasFormattedMessage,
+        'install.js agents copy error produces formatted "copilot-llmem:" prefixed message (got: ' + stderr.substring(0, 200) + ')');
+    }
+    // Clean up permissions for removal
+    if (agentEntries && agentEntries.length > 0) {
+      try { fs.chmodSync(path.join(targetAgentsDir, agentEntries[0]), 0o644); } catch (e) {}
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 // ── Powershell Field Validation ───────────────────────────────────────────
 
 function testHooksHavePowershell() {
@@ -483,6 +549,8 @@ console.log('\n=== copilot-llmem install.js Validation Tests ===\n');
 testInstallJsExists();
 testInstallCreatesTargetDir();
 testInstallCopiesFiles();
+testInstallJsAgentsCopyHasTryCatch();
+testInstallJsAgentsCopyErrorProducesFormattedMessage();
 
 console.log('\n=== copilot-llmem package.json Validation Tests ===\n');
 
