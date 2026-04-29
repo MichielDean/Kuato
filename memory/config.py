@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+from .url_validate import is_safe_url, _strip_credentials
+
 log = logging.getLogger(__name__)
 
 CONFIG_PATH = Path("~/.lobsterdog/config.yaml").expanduser()
@@ -113,6 +115,10 @@ def get_ollama_url(config_path: Path | None = None, config: dict | None = None) 
     ]
     if not url.startswith(("http://", "https://")):
         raise ValueError("config: Ollama URL must be http/https")
+    if not is_safe_url(url, allow_remote=True):
+        raise ValueError(
+            f"config: Ollama URL blocked (unsafe address): {_strip_credentials(url)!r}"
+        )
     return url
 
 

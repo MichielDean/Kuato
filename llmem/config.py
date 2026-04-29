@@ -440,7 +440,12 @@ def write_config_yaml(path: Path, config: dict, force: bool = False) -> bool:
     os.chmod(str(path.parent), 0o700)
 
     content = yaml.dump(config, default_flow_style=False, sort_keys=False)
-    path.write_text(content)
-    # Set file permissions to owner-only (matching the directory permission model)
-    os.chmod(str(path), 0o600)
+    # Write with 0o600 permissions to protect API keys and secrets from
+    # other users on shared systems. Config files may contain OPENAI_API_KEY,
+    # ANTHROPIC_API_KEY, and other credentials.
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, content.encode())
+    finally:
+        os.close(fd)
     return True

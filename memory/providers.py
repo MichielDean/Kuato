@@ -6,6 +6,7 @@ Provides resolve_provider for graceful degradation across providers.
 """
 
 import abc
+import ipaddress
 import json
 import logging
 import os
@@ -14,9 +15,37 @@ import urllib.error
 from urllib.parse import urlparse
 
 from .ollama import check_ollama_model, _call_ollama_generate
-from .url_validate import is_safe_url, safe_urlopen
+from .url_validate import is_safe_url, safe_urlopen, _strip_credentials
 
 log = logging.getLogger(__name__)
+
+# Input size limits to prevent abuse (OOM, resource exhaustion).
+# Individual text inputs longer than MAX_TEXT_LENGTH are rejected.
+# Batch requests larger than MAX_BATCH_SIZE are rejected.
+MAX_TEXT_LENGTH = 100_000  # 100K characters per text
+MAX_BATCH_SIZE = 2048  # max texts per batch request
+
+
+def _validate_embed_inputs(texts: list[str]) -> None:
+    """Validate embed/embed_batch inputs against size limits.
+
+    Args:
+        texts: List of texts to validate.
+
+    Raises:
+        ValueError: If batch size exceeds MAX_BATCH_SIZE or any text
+            exceeds MAX_TEXT_LENGTH.
+    """
+    if len(texts) > MAX_BATCH_SIZE:
+        raise ValueError(
+            f"providers: batch size {len(texts)} exceeds maximum {MAX_BATCH_SIZE}"
+        )
+    for i, text in enumerate(texts):
+        if len(text) > MAX_TEXT_LENGTH:
+            raise ValueError(
+                f"providers: text at index {i} exceeds maximum length "
+                f"{MAX_TEXT_LENGTH} (got {len(text)} characters)"
+            )
 
 
 # Loopback hostnames that are safe for HTTP (non-HTTPS) API key delivery.
@@ -26,22 +55,38 @@ _LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def _is_loopback_hostname(url: str) -> bool:
-    """Check whether a URL's hostname is an exact loopback address.
+    """Check whether a URL's hostname is a loopback address.
 
-    Uses urlparse to extract the hostname and compares it against known
-    loopback identifiers. This prevents substring-matching bypasses where
-    a URL like http://localhost.evil.com contains 'localhost' as a
-    substring but actually resolves to a remote host.
+    Uses urlparse to extract the hostname and checks it against known
+    loopback identifiers (string match) and also validates via ipaddress
+    for IPv6-mapped IPv4 addresses (e.g. ::ffff:127.0.0.1).
+
+    This prevents substring-matching bypasses where a URL like
+    http://localhost.evil.com contains 'localhost' as a substring but
+    actually resolves to a remote host.
 
     Args:
         url: The URL to check.
 
     Returns:
-        True if the hostname is exactly 'localhost', '127.0.0.1', or '::1'.
+        True if the hostname is a loopback address.
     """
     parsed = urlparse(url)
     hostname = parsed.hostname
-    return hostname in _LOOPBACK_HOSTNAMES if hostname else False
+    if not hostname:
+        return False
+    if hostname in _LOOPBACK_HOSTNAMES:
+        return True
+    # Also check via ipaddress for IPv6-mapped loopback addresses
+    # (e.g. ::ffff:127.0.0.1, ::ffff:7f00:1) that urlparse extracts
+    # without brackets.
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_loopback:
+            return True
+    except ValueError:
+        pass
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +251,7 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
         return self._embed_batch_internal(texts)
 
     def _embed_batch_internal(self, texts: list[str]) -> list[list[float]]:
+        _validate_embed_inputs(texts)
         results: list[list[float]] = []
         for text in texts:
             payload = json.dumps(
@@ -263,6 +309,11 @@ class OllamaProvider(EmbedProvider, GenerateProvider):
             RuntimeError: On HTTP errors or connection failures.
             ValueError: On URL validation failures.
         """
+        if len(prompt) > MAX_TEXT_LENGTH:
+            raise ValueError(
+                f"providers: prompt exceeds maximum length {MAX_TEXT_LENGTH} "
+                f"(got {len(prompt)} characters)"
+            )
         effective_timeout = timeout if timeout is not None else self._timeout
         return _call_ollama_generate(
             model=self._generate_model,
@@ -347,13 +398,13 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
         if base_url.startswith("http://") and not _is_loopback_hostname(base_url):
             raise ValueError(
                 "providers: OpenAI API key cannot be sent over non-HTTPS to non-loopback URL "
-                f"— use HTTPS or a localhost base URL, got {base_url!r}"
+                f"— use HTTPS or a localhost base URL, got {_strip_credentials(base_url)!r}"
             )
         if base_url != DEFAULT_OPENAI_BASE_URL:
             log.warning(
                 "providers: OpenAI API key sent to non-default base_url %r "
                 "— verify this is not a credential exfiltration attack",
-                base_url,
+                _strip_credentials(base_url),
             )
         self._embed_model = embed_model
         self._generate_model = generate_model
@@ -440,7 +491,9 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
 
         Raises:
             RuntimeError: On HTTP errors or connection failures.
+            ValueError: If batch size or text length exceeds limits.
         """
+        _validate_embed_inputs(texts)
         result = self._make_request(
             "/v1/embeddings",
             {
@@ -474,7 +527,13 @@ class OpenAIProvider(EmbedProvider, GenerateProvider):
 
         Raises:
             RuntimeError: On HTTP errors or connection failures.
+            ValueError: If prompt length exceeds limit.
         """
+        if len(prompt) > MAX_TEXT_LENGTH:
+            raise ValueError(
+                f"providers: prompt exceeds maximum length {MAX_TEXT_LENGTH} "
+                f"(got {len(prompt)} characters)"
+            )
         result = self._make_request(
             "/v1/chat/completions",
             {
@@ -567,13 +626,13 @@ class AnthropicProvider(GenerateProvider):
         if base_url.startswith("http://") and not _is_loopback_hostname(base_url):
             raise ValueError(
                 "providers: Anthropic API key cannot be sent over non-HTTPS to non-loopback URL "
-                f"— use HTTPS or a localhost base URL, got {base_url!r}"
+                f"— use HTTPS or a localhost base URL, got {_strip_credentials(base_url)!r}"
             )
         if base_url != DEFAULT_ANTHROPIC_BASE_URL:
             log.warning(
                 "providers: Anthropic API key sent to non-default base_url %r "
                 "— verify this is not a credential exfiltration attack",
-                base_url,
+                _strip_credentials(base_url),
             )
         self._model = model
         self._base_url = base_url
@@ -604,7 +663,13 @@ class AnthropicProvider(GenerateProvider):
 
         Raises:
             RuntimeError: On HTTP errors or connection failures.
+            ValueError: If prompt length exceeds limit.
         """
+        if len(prompt) > MAX_TEXT_LENGTH:
+            raise ValueError(
+                f"providers: prompt exceeds maximum length {MAX_TEXT_LENGTH} "
+                f"(got {len(prompt)} characters)"
+            )
         effective_timeout = timeout if timeout is not None else self._timeout
         payload = json.dumps(
             {
@@ -848,9 +913,11 @@ class SentenceTransformersProvider(EmbedProvider):
 
         Raises:
             RuntimeError: If the model failed to load.
+            ValueError: If batch size or text length exceeds limits.
         """
         if not texts:
             return []
+        _validate_embed_inputs(texts)
         try:
             self._load_model()
         except Exception:

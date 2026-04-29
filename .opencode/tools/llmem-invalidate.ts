@@ -21,7 +21,7 @@ export default tool({
     ),
   },
   execute: async (args, context) => {
-    const cmdArgs: string[] = ["invalidate", args.id];
+    const cmdArgs: string[] = ["invalidate", "--", args.id];
 
     if (args.reason) {
       cmdArgs.push("--reason", args.reason);

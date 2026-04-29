@@ -1,4 +1,10 @@
 /**
+ * Default timeout for llmem subprocesses (milliseconds).
+ * Prevents indefinite hangs on unresponsive processes.
+ */
+const DEFAULT_TIMEOUT_MS = 60000;
+
+/**
  * Error message returned when the llmem CLI is not found on PATH.
  */
 export const LLMEM_NOT_FOUND = "Error: llmem CLI not found on PATH";
@@ -26,12 +32,12 @@ export interface RunLlmemResult {
  * with exitCode set to a non-zero value.
  *
  * @param args - Command-line arguments to pass to the llmem CLI (e.g. ["search", "my query", "--json"]).
- * @param options - Optional configuration: json appends --json, worktree sets the cwd.
+ * @param options - Optional configuration: json appends --json, worktree sets the cwd, timeout sets subprocess timeout in ms (default 60000).
  * @returns A promise resolving to { stdout, exitCode }. On success exitCode is 0.
  */
 export async function runLlmem(
   args: string[],
-  options?: { json?: boolean; worktree?: string }
+  options?: { json?: boolean; worktree?: string; timeout?: number }
 ): Promise<RunLlmemResult> {
   const cmdArgs = [...args];
   if (options?.json) {
@@ -42,6 +48,7 @@ export async function runLlmem(
   // User-supplied arguments (query strings, content, IDs) could otherwise
   // be interpreted as CLI flags (e.g. --help, --force).
   const cmd = ["llmem", "--", ...cmdArgs];
+  const timeoutMs = options?.timeout ?? DEFAULT_TIMEOUT_MS;
 
   try {
     const proc = Bun.spawn(cmd, {
@@ -50,10 +57,17 @@ export async function runLlmem(
       stderr: "pipe",
     });
 
-    // Read stdout and stderr concurrently to avoid deadlock when the child
-    // process fills the pipe buffer on one stream while we await the other.
+    // Race the process exit against a timeout to prevent indefinite hangs.
     const [exitCode, stdout, stderr] = await Promise.all([
-      proc.exited,
+      Promise.race([
+        proc.exited,
+        new Promise<number>((_, reject) =>
+          setTimeout(() => {
+            proc.kill();
+            reject(new Error(`llmem subprocess timed out after ${timeoutMs}ms`));
+          }, timeoutMs)
+        ),
+      ]),
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),
     ]);
@@ -78,6 +92,12 @@ export async function runLlmem(
       message.includes("Cannot find")
     ) {
       return { stdout: LLMEM_NOT_FOUND, exitCode: 127 };
+    }
+    if (message.includes("timed out")) {
+      return {
+        stdout: `Error: llmem ${args[0] || ""} timed out after ${timeoutMs}ms`,
+        exitCode: 124,
+      };
     }
     return {
       stdout: `Error: llmem invocation failed: ${message}`,

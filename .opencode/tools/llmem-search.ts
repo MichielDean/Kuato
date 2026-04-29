@@ -24,7 +24,7 @@ export default tool({
     ),
   },
   execute: async (args, context) => {
-    const cmdArgs: string[] = ["search", args.query];
+    const cmdArgs: string[] = ["search", "--", args.query];
 
     if (args.type) {
       cmdArgs.push("--type", args.type);
