@@ -4,9 +4,10 @@ import http.client
 import ipaddress
 import logging
 import socket
-import urllib.request
 import urllib.error
+import urllib.request
 from urllib.parse import urlparse, urlunparse, unquote
+from urllib.request import HTTPRedirectHandler
 
 log = logging.getLogger(__name__)
 
@@ -46,21 +47,26 @@ def _check_ip_access(
 ) -> bool:
     """Check whether a resolved IP is permitted for access.
 
-    Returns True if allowed, False if blocked.
+    When allow_remote is False (the default), only loopback addresses on the
+    Ollama default port are permitted. All other IPs — including public IPs
+    that are not blocked by _ip_is_blocked — are rejected.
 
-    Loopback addresses are only permitted on the Ollama default port,
-    regardless of allow_remote. The allow_remote flag controls whether
-    non-loopback public addresses are allowed — it does NOT open up
-    all loopback ports.
+    When allow_remote is True, any IP that is not blocked (private, link-local,
+    reserved, multicast) is permitted.
+
+    Returns True if allowed, False if blocked.
     """
     if _ip_is_blocked(ip):
         return False
-    if ip.is_loopback:
+    if not allow_remote:
+        # Only loopback on the Ollama default port is allowed.
+        # Public IPs must be explicitly rejected here: _ip_is_blocked
+        # returns False for public IPs, so without this check they would
+        # pass through and violate the allow_remote=False contract.
+        if not ip.is_loopback:
+            return False
         if port != OLLAMA_DEFAULT_PORT:
             return False
-    elif not allow_remote:
-        # Non-loopback addresses require allow_remote=True
-        return False
     return True
 
 
@@ -101,6 +107,7 @@ def is_safe_url(url: str, allow_remote: bool = False) -> bool:
     Checks:
     - Scheme must be http or https (blocks file://, ftp://, data://, etc.)
     - Must have a hostname
+    - URLs with embedded credentials are rejected (prevents credential leaks)
     - Percent-encoded hostnames are decoded before IP checks to prevent
       SSRF bypass (e.g. %31%32%37%2e%30%2e%30%2e%31 → 127.0.0.1).
     - URLs with embedded credentials (user:password@) are rejected
@@ -120,9 +127,12 @@ def is_safe_url(url: str, allow_remote: bool = False) -> bool:
     # Reject URLs with credentials embedded — these should never reach urllib
     if parsed.username or parsed.password:
         return False
-    # Percent-decode the hostname before IP checks to prevent SSRF bypass
-    decoded_hostname = unquote(hostname)
     port = _get_effective_port(parsed)
+    # Percent-decode the hostname before IP checks to prevent SSRF bypass
+    # via encoded IP addresses (e.g. %31%32%37%2e%30%2e%30%2e%31 → 127.0.0.1).
+    # urllib normalizes percent-encoded hostnames, so we must check the
+    # decoded form to match what urllib will actually connect to.
+    decoded_hostname = unquote(hostname)
     try:
         ip = ipaddress.ip_address(decoded_hostname)
         return _check_ip_access(ip, allow_remote, port)
@@ -136,10 +146,7 @@ def is_safe_url(url: str, allow_remote: bool = False) -> bool:
             # may still connect to the decoded private IP.
             try:
                 ip = ipaddress.ip_address(decoded_hostname)
-                if _ip_is_blocked(ip):
-                    return False
-                if ip.is_loopback and port != OLLAMA_DEFAULT_PORT:
-                    return False
+                return _check_ip_access(ip, allow_remote, port)
             except ValueError:
                 pass
         else:
@@ -172,10 +179,20 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _extract_url_string(url: str | urllib.request.Request) -> str:
-    """Extract a URL string from either a str or urllib.request.Request.
+    """Extract the URL string from a Request object or return the string as-is.
 
-    Request objects have a .full_url attribute; using urlparse on a Request
-    directly raises AttributeError because urlparse expects a string.
+    Callers may pass either a URL string or a urllib.request.Request object
+    to safe_urlopen(). This helper normalises the input so that downstream
+    validation functions (which expect str) always receive a string.
+
+    Args:
+        url: A URL string or a urllib.request.Request object.
+
+    Returns:
+        The URL string.
+
+    Raises:
+        ValueError: If url is a Request with no full_url attribute.
     """
     if isinstance(url, urllib.request.Request):
         return url.full_url
@@ -198,17 +215,17 @@ def safe_urlopen(
     5. Strips credentials from error messages
 
     Args:
-        url: The URL to open (string or urllib.request.Request). Must pass
-            is_safe_url() validation.
+        url: The URL to open — either a string or a urllib.request.Request
+            object. Must pass is_safe_url() validation.
         timeout: Request timeout in seconds. Defaults to 30.
         allow_remote: If True, allow non-loopback addresses. Must match the
-            policy used during URL construction (e.g. ExtractionEngine passes
-            allow_remote=True because Ollama can run on remote hosts). Defaults
+            policy used during URL construction (e.g. OpenAIProvider passes
+            allow_remote=True because APIs run on remote hosts). Defaults
             to False for safety.
-        **kwargs: Additional arguments passed to OpenerDirector.open().
+        **kwargs: Additional arguments passed to the opener's open() method.
 
     Returns:
-        The response object from the opener.
+        An http.client.HTTPResponse object (context manager).
 
     Raises:
         ValueError: If the URL fails is_safe_url() validation.
@@ -219,7 +236,7 @@ def safe_urlopen(
 
     if not is_safe_url(url_str, allow_remote=allow_remote):
         raise ValueError(
-            f"url_validate: URL rejected: must be http(s) to a permitted "
+            f"memory: url_validate: URL rejected: must be http(s) to a permitted "
             f"address — got {_strip_credentials(url_str)!r}"
         )
 
@@ -231,7 +248,7 @@ def safe_urlopen(
     parsed = urlparse(url_str)
     hostname = parsed.hostname
     if hostname:
-        # Percent-decode hostname for DNS re-resolution (matches is_safe_url logic)
+        # Use percent-decoded hostname for re-resolution (matches is_safe_url behavior)
         decoded_hostname = unquote(hostname)
         port = _get_effective_port(parsed)
         resolved = _resolve_hostname(decoded_hostname)
@@ -242,13 +259,13 @@ def safe_urlopen(
                 except ValueError:
                     # Unparseable address — treat as blocked.
                     raise ValueError(
-                        f"url_validate: URL rejected after re-resolve: "
+                        f"memory: url_validate: URL rejected after re-resolve: "
                         f"hostname {hostname!r} resolved to unparseable address "
                         f"{addr!r} — got {_strip_credentials(url_str)!r}"
                     )
                 if not _check_ip_access(ip, allow_remote, port):
                     raise ValueError(
-                        f"url_validate: URL rejected after re-resolve: "
+                        f"memory: url_validate: URL rejected after re-resolve: "
                         f"hostname {hostname!r} resolved to blocked address {addr} "
                         f"— got {_strip_credentials(url_str)!r}"
                     )
@@ -268,37 +285,32 @@ def safe_urlopen(
         ) from e
 
 
+# Keep sanitize_url_for_log as a backwards-compatible alias for _strip_credentials.
+# New code should use _strip_credentials directly.
+sanitize_url_for_log = _strip_credentials
+
+
 def validate_url(url: str, allow_remote: bool = False) -> str:
     """Validate URL and return it, or raise ValueError."""
     if not is_safe_url(url, allow_remote=allow_remote):
         raise ValueError(
-            f"URL rejected: must be http(s) to a permitted address — got {_strip_credentials(url)!r}"
+            f"URL rejected: must be http(s) to a permitted address — "
+            f"got {_strip_credentials(url)!r}"
         )
     return url
 
 
-def sanitize_url_for_log(url: str) -> str:
-    """Strip credentials from a URL for safe inclusion in logs and error messages.
-
-    Removes userinfo (user:password@) from URLs like
-    'https://user:pass@host/path' → 'https://host/path'.
-    Returns the scheme and host/path portion only.
-    """
-    parsed = urlparse(url)
-    # Rebuild without netloc credentials
-    safe_netloc = parsed.hostname or ""
-    if parsed.port:
-        safe_netloc = f"{safe_netloc}:{parsed.port}"
-    return parsed._replace(netloc=safe_netloc).geturl()
-
-
-class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+class SafeRedirectHandler(HTTPRedirectHandler):
     """HTTP redirect handler that validates each redirect target URL against
     is_safe_url before following it.
 
     Prevents SSRF via HTTP redirects: an attacker could point a safe-looking URL
     (e.g. https://attacker.com/) to redirect to a private IP (e.g. http://169.254.169.254/).
     Without this handler, urllib would follow the redirect without re-checking the target.
+
+    NOTE: For maximum security, prefer _NoRedirectHandler which blocks all
+    redirects entirely. SafeRedirectHandler is retained for backwards
+    compatibility with existing code that needs to follow safe redirects.
     """
 
     def __init__(self, allow_remote: bool = False):

@@ -60,6 +60,18 @@ pip install llmem[vec]
 
 This pulls in `sqlite-vec>=0.1.6`.
 
+For local embedding without any server (uses `sentence-transformers`), install with the `local` extra:
+
+```bash
+pip install llmem[local]
+```
+
+This pulls in `sentence-transformers>=2.2.0`. You can combine extras:
+
+```bash
+pip install llmem[vec,local]
+```
+
 For development:
 
 ```bash
@@ -69,7 +81,7 @@ pip install ".[dev]"
 ### Requirements
 
 - Python 3.11+
-- [Ollama](https://ollama.com) running locally for extraction, embedding, and dreaming features
+- [Ollama](https://ollama.com) running locally for extraction, embedding, and dreaming features — **or** install `llmem[local]` for local embedding without any server, **or** set `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` for cloud providers
 
 ## Provider Abstraction Layer
 
@@ -77,7 +89,7 @@ LLMem decouples embedding and text generation from any specific LLM backend thro
 
 | Protocol | Methods | Purpose |
 |----------|---------|---------|
-| `EmbedProvider` | `embed()`, `embed_batch()`, `check_available()` | Vector embeddings for semantic search |
+| `EmbedProvider` | `embed()`, `embed_batch()`, `check_available()`, `dimension()` | Vector embeddings for semantic search |
 | `GenerateProvider` | `generate()`, `check_available()` | Text generation from prompts |
 
 ### Concrete Providers
@@ -87,17 +99,34 @@ LLMem decouples embedding and text generation from any specific LLM backend thro
 | `OllamaProvider` | Yes | Yes | None | `http://localhost:11434` |
 | `OpenAIProvider` | Yes | Yes | `OPENAI_API_KEY` or constructor arg | `https://api.openai.com` |
 | `AnthropicProvider` | No | Yes | `ANTHROPIC_API_KEY` or constructor arg | `https://api.anthropic.com` |
+| `SentenceTransformersProvider` | Yes | No | None | N/A (local) |
 | `NoneProvider` | Yes (zeros) | Yes (empty string) | None | N/A |
 
 ### Graceful Degradation
 
 `resolve_provider(config)` returns the best available `(embed_provider, generate_provider)` pair by trying providers in order:
 
-**Embed fallback chain:** Ollama → OpenAI → NoneProvider (zero vectors, FTS5-only mode)
+**Embed fallback chain:** Ollama → OpenAI → SentenceTransformers (local) → NoneProvider (zero vectors, FTS5-only mode)
 
 **Generate fallback chain:** Ollama → OpenAI → Anthropic → NoneProvider (empty string)
 
 Each provider's `check_available()` returns `False` on any error (never raises), so degradation is automatic.
+
+### Dimension Reporting
+
+All `EmbedProvider` subclasses implement `dimension() -> int`, which returns the output vector dimensionality without making API calls or loading models:
+
+| Provider | Default Dimension | Known Model Overrides |
+|----------|-------------------|----------------------|
+| `OllamaProvider` | 768 | `mxbai-embed-large` → 1024, `all-minilm` → 384, `snowflake-arctic-embed` → 1024 |
+| `OpenAIProvider` | 1536 | `text-embedding-3-large` → 3072, `text-embedding-ada-002` → 1536 |
+| `SentenceTransformersProvider` | 384 | `all-mpnet-base-v2` → 768, `all-roberta-large-v1` → 1024, and 6 more (see `_KNOWN_LOCAL_DIMENSIONS`) |
+| `NoneProvider` | 768 | Configurable via `embed_dimensions` constructor arg |
+
+```python
+provider = SentenceTransformersProvider(model_name="all-MiniLM-L6-v2")
+dim = provider.dimension()  # 384 — no model loading, no API call
+```
 
 ### Quick Start
 
@@ -107,16 +136,18 @@ from memory.providers import resolve_provider
 embed, generate = resolve_provider(config={})
 # With Ollama running: OllamaProvider for both
 # Without Ollama, with OPENAI_API_KEY set: OpenAIProvider for both
+# Without any server, with sentence-transformers installed: SentenceTransformersProvider for embed
 # Without any provider: NoneProvider for both
 
 vec = embed.embed("hello world")
+dim = embed.dimension()  # e.g. 768 for nomic-embed-text, 384 for all-MiniLM-L6-v2
 text = generate.generate("Summarize this document")
 ```
 
 ### Direct Construction
 
 ```python
-from memory.providers import OllamaProvider, OpenAIProvider, AnthropicProvider, NoneProvider
+from memory.providers import OllamaProvider, OpenAIProvider, AnthropicProvider, SentenceTransformersProvider, NoneProvider
 
 # Ollama (local, no API key needed)
 ollama = OllamaProvider(
@@ -140,6 +171,13 @@ anthropic = AnthropicProvider(
     api_key="sk-ant-...",  # or set ANTHROPIC_API_KEY env var
 )
 
+# SentenceTransformers (local, no server needed)
+local = SentenceTransformersProvider(
+    model_name="all-MiniLM-L6-v2",  # default, runs locally
+)
+vec = local.embed("hello world")
+dim = local.dimension()  # 384 for all-MiniLM-L6-v2
+
 # NoneProvider (FTS5-only fallback)
 none = NoneProvider(embed_dimensions=768)
 ```
@@ -157,9 +195,11 @@ provider:
   generate:
     provider: anthropic
     model: claude-sonnet-4-20250514
+  local:
+    model: all-MiniLM-L6-v2
 ```
 
-This yields `OpenAIProvider` for embeddings and `AnthropicProvider` for generation.
+This yields `OpenAIProvider` for embeddings and `AnthropicProvider` for generation. Setting `provider: local` for embed uses `SentenceTransformersProvider` for local embedding without any server dependency.
 
 ## Provider Configuration
 
@@ -167,7 +207,7 @@ Provider-related keys in `config.yaml`:
 
 ```yaml
 provider:
-  default: ollama              # ollama | openai | anthropic | none
+  default: ollama              # ollama | openai | anthropic | local | none
   ollama:
     base_url: http://localhost:11434
   openai:
@@ -179,9 +219,13 @@ provider:
     api_key: sk-ant-...         # or set ANTHROPIC_API_KEY env var
     base_url: https://api.anthropic.com
     generate_model: claude-sonnet-4-20250514
+  local:
+    model: all-MiniLM-L6-v2    # sentence-transformers model name (local, no server)
 ```
 
 Both config-based and environment variable API keys are supported; config keys take precedence.
+
+When `provider: local` is selected for embeddings, LLMem uses `SentenceTransformersProvider` which runs models locally via the `sentence-transformers` library — no server required. Install with `pip install llmem[local]`.
 
 ## Quick Start
 
@@ -339,11 +383,12 @@ llmem add --type TYPE --content TEXT [--summary TEXT] [--source SOURCE] \
 ### `llmem search`
 
 ```bash
-llmem search QUERY [--type TYPE] [--limit N] [--json] [--include-code] [--fts-only | --semantic-only]
+llmem search QUERY [--type TYPE] [--limit N] [--json] [--include-code] [--fts-only | --semantic-only] [--provider PROVIDER]
 ```
 
 Hybrid search combining FTS5 keyword search and vector semantic search via Reciprocal Rank Fusion (RRF), followed by multi-signal reranking. By default, both search modes are merged with `alpha=0.7` (favoring semantic results while keeping keyword relevance), then reranked with `blend=0.3` (70% semantic, 30% confidence/recency/access/type signals).
 
+- `--provider PROVIDER`: Override the embedding provider for this search. Choices: `ollama`, `openai`, `local`, `none`. When specified, `resolve_provider` is called with this provider as default, bypassing config-based selection. Falls back to FTS5-only search if the provider fails.
 - `--fts-only`: Use FTS5 keyword search only (no embedder needed).
 - `--semantic-only`: Use semantic (embedding) search only (requires an embedder). Raises an error if no embedder is available.
 - `--include-code`: Include indexed code chunks in search results alongside memories. Code results are interleaved with memory results using RRF scoring. Code results display with a `[code]` prefix and show `file=` and `lines=` instead of type and confidence. Requires running `llmem learn` first to populate the code index.
@@ -452,7 +497,7 @@ The default types are: `fact`, `decision`, `preference`, `event`, `project_state
 llmem init [--ollama-url URL] [--non-interactive] [--force]
 ```
 
-Initialize the llmem memory system. Creates `~/.config/llmem/` (or `LMEM_HOME`) with `config.yaml` and initializes the SQLite database (`memory.db`). Detects available LLM providers in order of precedence: Ollama (if reachable) > OpenAI (if `OPENAI_API_KEY` is set) > Anthropic (if `ANTHROPIC_API_KEY` is set).
+Initialize the llmem memory system. Creates `~/.config/llmem/` (or `LMEM_HOME`) with `config.yaml` and initializes the SQLite database (`memory.db`). Detects available LLM providers in order of precedence: Ollama (if reachable) > OpenAI (if `OPENAI_API_KEY` is set) > Anthropic (if `ANTHROPIC_API_KEY` is set) > local (if `sentence-transformers` is installed) > none.
 
 - `--ollama-url URL`: Override the Ollama base URL (default: `http://localhost:11434`). Must be a valid `http://` or `https://` URL.
 - `--non-interactive`: Skip all prompts and use defaults. Useful for scripting and CI.
@@ -559,6 +604,11 @@ from llmem.embed import EmbeddingEngine
 
 embedder = EmbeddingEngine()
 retriever = Retriever(store=store, embedder=embedder)
+
+# Or use any EmbedProvider (e.g. from resolve_provider):
+from memory.providers import resolve_provider
+embed_provider, _ = resolve_provider({"provider": {"default": "local"}})
+retriever = Retriever(store=store, embedder=embed_provider)
 
 # Default: hybrid mode (alpha=0.7, favors semantic), reranking blend=0.3
 results = retriever.hybrid_search("Python async patterns", limit=10)
@@ -1049,7 +1099,7 @@ The `extract` module uses Ollama (default: `qwen2.5:1.5b`) to extract structured
 
 ## OpenCode Custom Tools
 
-LLMem ships six type-safe OpenCode tools that replace raw `llmem` CLI calls with described, schema-validated tool invocations. Tools run `llmem` as a subprocess and return strings — errors are prefixed with `Error:`.
+LLMem ships six type-safe OpenCode tools that replace raw `llmem` CLI calls with described, schema-validated tool invocations. Tools run `llmem` as a subprocess with a 60-second timeout and return strings — errors are prefixed with `Error:`.
 
 | Tool | CLI Equivalent | Description |
 |------|----------------|-------------|
@@ -1143,6 +1193,7 @@ All tools follow a consistent contract:
 - **Success**: returns the CLI output as a string.
 - **Error**: returns a string starting with `Error:`.
 - **CLI not found**: returns `"Error: llmem CLI not found on PATH"` (exit code 127).
+- **Timeout**: returns `"Error: llmem <cmd> timed out after 60000ms"` (exit code 124).
 - Tools never throw — all errors are returned as strings.
 
 ## OpenCode Integration (npm)
@@ -1171,7 +1222,7 @@ llmem.register(session);
 This registers handlers for the `session.created`, `session.idle`, and `session.compacting` events. Each handler:
 
 - Validates the session ID against path traversal attacks.
-- Rate-limits process spawning to prevent flooding (1-second cooldown).
+- Rate-limits process spawning to prevent flooding (1-second cooldown, max 3 concurrent processes).
 - Calls the `llmem` CLI via `execFileSync` (no shell, no injection risk).
 - Writes the resulting context to the LLMem context directory.
 - Degrades gracefully — errors are logged but never block the session.
@@ -1188,16 +1239,19 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 - `validate_session_id()` rejects session IDs containing `/`, `\`, or `..` to prevent path traversal when constructing context file paths.
 - **CLI path validation**: `llmem add --file`, `llmem import`, and `llmem export --output` block access to protected system directories (e.g. `/etc`, `/bin`, `/usr/bin`, `/sbin`, `/usr/sbin`, `/dev`, `/proc`, `/sys`, `/var`, `/boot`, `/root`). These checks use prefix + `/` matching to avoid false positives (e.g. `/binary_search` is not blocked as `/bin`).
 - **Import file size limit**: `llmem import` rejects files larger than 10 MiB.
-- URL validation (`is_safe_url`) blocks private/reserved IPs, rejects URLs with embedded credentials (`user:password@`), and blocks SSRF vectors including percent-encoded IP hostnames (e.g. `%31%32%37%2e%30%2e%30%2e%31` is decoded before IP checks). `safe_urlopen` enforces URL validation, blocks redirects, mitigates DNS rebinding (re-resolves hostname immediately before the request), sets a 30-second default timeout, and strips credentials from error messages. It accepts both string URLs and `urllib.request.Request` objects, and requires an explicit `allow_remote` parameter (defaults to `False`) for non-loopback addresses. Loopback addresses are only permitted on the Ollama default port (11434), regardless of `allow_remote`. The `_is_remote_allowed` check is fail-closed: unknown or unresolvable hostnames default to blocked.
+- URL validation (`is_safe_url`) blocks private/reserved IPs and SSRF vectors, including percent-encoded IP hostnames (e.g. `%31%32%37%2e%30%2e%30%2e%31` is decoded before IP checks). When `allow_remote=False` (the default), only loopback addresses on the Ollama default port are permitted — all other IPs including public addresses are rejected. `safe_urlopen` enforces URL validation, blocks all redirects (via `_NoRedirectHandler`), mitigates DNS rebinding by re-resolving the hostname immediately before the request, strips credentials from error messages, and requires an explicit `allow_remote` parameter (defaults to `False`) for non-loopback addresses. It accepts both string URLs and `urllib.request.Request` objects, and applies a default 30-second timeout to prevent indefinite hangs.
 - OpenCode session extraction validates the database path: rejects path traversal (`..`), system directories, symlinks, and URI injection (`?` and `#` characters). `get_opencode_db_path()` validates via `_validate_home_path` before returning.
 - API keys are masked in `__repr__` on provider instances (`***masked***`).
-- API keys are refused over plain HTTP to non-loopback hosts. `OpenAIProvider` and `AnthropicProvider` raise `ValueError` if `base_url` is `http://` and the hostname is not an exact loopback address (`localhost`, `127.0.0.1`, or `::1`). Substring matches like `localhost.evil.com` are blocked.
+- API keys are refused over plain HTTP to non-loopback hosts. `OpenAIProvider` and `AnthropicProvider` raise `ValueError` if `base_url` is `http://` and the hostname is not a loopback address (checked via exact string match and `ipaddress` for IPv6-mapped addresses like `::ffff:127.0.0.1`). Substring matches like `localhost.evil.com` are blocked.
 - A warning is logged when API keys are sent to a non-default base URL to alert the user of potential credential exfiltration risk.
-- Validation error messages use generic strings (never embed user-supplied URLs).
+- Validation error messages use `_strip_credentials()` to remove userinfo from URLs — never embed user-supplied URL credentials in error messages or logs.
+- `_strip_credentials()` is used consistently across `is_safe_url()`, `safe_urlopen()`, provider error messages, and config URL validation to prevent credential leaking.
+- Embedding and generation inputs are validated against size limits: `MAX_TEXT_LENGTH` (100,000 characters per text) and `MAX_BATCH_SIZE` (2,048 texts per batch) to prevent OOM and resource exhaustion.
+- Embedding dimension validation in `MemoryStore.add()` rejects vectors whose dimension doesn't match `vec_dimensions`, preventing dimension mismatch bugs from silently corrupting the vector index.
 - All SQL queries use parameterized statements (no injection risk).
 - SQLite extension loading is disabled immediately after `sqlite-vec` loads, preventing runtime loading of arbitrary shared libraries.
 - Database files are created with `umask(0o177)` before creation, then `chmod(0o600)` applied to the DB file and its WAL/SHM sidecars (prevents a race window where sensitive memory content is world-readable on multi-user systems). Parent directories use `0o700`.
-- `config.yaml` is written with `0o600` file permissions (owner-only read/write).
+- `config.yaml` is written with `0o600` file permissions (owner-only read/write) to protect API keys and secrets from other users on shared systems.
 - **Server auth token strength**: `server.auth_token` in `config.yaml` must be at least 16 characters. Short tokens are rejected with a hint to generate a strong token.
 - `import_memories()` validates entry IDs (string, max 256 chars), embeddings (bytes, max 1 MB), and confidence (numeric) before insertion. Invalid entries are skipped with warnings rather than crashing.
 - `export_all()` defaults to a limit of 10,000 memories to prevent unbounded memory consumption; pass `limit=None` to export all.
@@ -1205,7 +1259,8 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 - `process_transcript()` enforces the same size limit as `process_file()` to prevent OOM from large session transcripts.
 - **Dream diary locking**: On platforms with `fcntl` (Linux/macOS), dream diary writes use an exclusive file lock to prevent corruption from concurrent dream cycles.
 - OpenCode tool invocations (`_llmem.ts`) prepend `--` before user arguments to prevent argparse flag injection.
-- JavaScript hooks use `execFileSync` (not shell-based `execSync`) and `validateSessionId()` for path traversal protection, with `canSpawnProcess()` rate limiting.
+- JavaScript hooks use `execFileSync` (not shell-based `execSync`) and `validateSessionId()` for path traversal protection, with `canSpawnProcess()` rate limiting and `MAX_CONCURRENT=3` process cap to prevent resource exhaustion.
+- Prototype pollution protection in `_parseSimpleYaml`: keys `__proto__`, `constructor`, and `prototype` are filtered from parsed YAML to prevent Object prototype mutation.
 - ProviderDetector.detect() only returns `provider` and `ollama_url` — no API key presence is exposed.
 - Migration from `~/.lobsterdog/` skips symlinks (using `follow_symlinks=False`).
 
@@ -1221,15 +1276,15 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 
 | Module | Description |
 |--------|-------------|
-| `memory.providers` | Abstract base classes, concrete providers, `resolve_provider()`, `_is_loopback_hostname()` |
+| `memory.providers` | Abstract base classes, concrete providers (`OllamaProvider`, `OpenAIProvider`, `AnthropicProvider`, `SentenceTransformersProvider`, `NoneProvider`), `resolve_provider()`, `dimension()`, `_is_loopback_hostname()`, `_validate_embed_inputs()`, `_strip_credentials()` |
 | `memory.ollama` | `check_ollama_model()`, `_call_ollama_generate()` |
-| `memory.url_validate` | `is_safe_url()`, `safe_urlopen()`, `sanitize_url_for_log()`, `validate_base_url()` |
-| `memory.config` | Configuration loading, defaults, typed accessors (e.g. `get_provider_config()`) |
-| `llmem.session_hooks` | `SessionHookCoordinator`, `SessionEventManager`, `create_session_hook_coordinator()`, `process_opencode_sessions()`, result constants |
-| `llmem.url_validate` | `is_safe_url()`, `safe_urlopen()`, `validate_base_url()`, `_extract_url_string()` (mirrors `memory.url_validate`), DNS rebinding protection |
+| `memory.url_validate` | `is_safe_url()`, `safe_urlopen()`, `_strip_credentials()`, `_NoRedirectHandler()`, `validate_base_url()`, `SafeRedirectHandler` |
+| `memory.config` | Configuration loading, defaults, typed accessors (e.g. `get_provider_config()`, `get_ollama_url()` with SSRF validation) |
+| `llmem.session_hooks` | `SessionHookCoordinator`, `SessionEventManager`, `create_session_hook_coordinator()`, result constants |
+| `llmem.url_validate` | `is_safe_url()`, `safe_urlopen()`, `_strip_credentials()`, `validate_base_url()`, `_NoRedirectHandler`, `_extract_url_string()` (mirrors `memory.url_validate`), DNS rebinding protection |
 | `llmem.paths` | `validate_session_id()`, `get_context_dir()`, `_validate_write_path()`, `BLOCKED_SYSTEM_PREFIXES`, home/write path checks |
 | `llmem.registry` | `register_session_hook()`, `get_registered_session_hooks()`, `VALID_SESSION_EVENT_TYPES` |
-| `llmem.store` | `MemoryStore` with `export_all(limit=)`, `import_memories()` validation, brute-force/embedding caps, inbox methods (`add_to_inbox`, `get_from_inbox`, `list_inbox`, `remove_from_inbox`, `update_inbox_attention_score`, `consolidate`), capacity eviction |
+| `llmem.store` | `MemoryStore` with `export_all(limit=)`, `import_memories()` validation, brute-force/embedding caps, dimension validation, inbox methods (`add_to_inbox`, `get_from_inbox`, `list_inbox`, `remove_from_inbox`, `update_inbox_attention_score`, `consolidate`), capacity eviction |
 | `llmem.code_index` | `CodeIndex` — manages `code_chunks` table, FTS5/vec virtual tables, add/search/remove operations |
 | `llmem.chunking` | `ParagraphChunking`, `FixedLineChunking`, `detect_language()`, `walk_code_files()`, `parse_gitignore()`, `is_ignored()` |
 
@@ -1239,7 +1294,7 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 python -m pytest
 ```
 
-660 Python tests and 53 JavaScript tests covering all providers, URL validation, configuration, session extraction, security, and edge cases.
+806 Python tests and 53 JavaScript tests covering all providers, URL validation, configuration, security, session hooks, and edge cases.
 
 ## License
 

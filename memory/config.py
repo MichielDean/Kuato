@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+from .url_validate import is_safe_url, _strip_credentials
+
 log = logging.getLogger(__name__)
 
 CONFIG_PATH = Path("~/.lobsterdog/config.yaml").expanduser()
@@ -68,6 +70,7 @@ DEFAULTS = {
         "default": "ollama",
         "embed": {},
         "generate": {},
+        "local": {"model": "all-MiniLM-L6-v2"},
     },
 }
 
@@ -112,6 +115,10 @@ def get_ollama_url(config_path: Path | None = None, config: dict | None = None) 
     ]
     if not url.startswith(("http://", "https://")):
         raise ValueError("config: Ollama URL must be http/https")
+    if not is_safe_url(url, allow_remote=True):
+        raise ValueError(
+            f"config: Ollama URL blocked (unsafe address): {_strip_credentials(url)!r}"
+        )
     return url
 
 
@@ -360,15 +367,15 @@ def get_provider_config(
 
     Reads the ``provider`` key from config, falling back to
     ``DEFAULTS["provider"]``. Returns dict with keys ``default``,
-    ``embed``, ``generate``.
+    ``embed``, ``generate``, and ``local``.
 
     Args:
         config_path: Optional path to config.yaml.
         config: Optional pre-loaded config dict.
 
     Returns:
-        A dict containing ``default``, ``embed``, and ``generate`` keys
-        with defaults filled in.
+        A dict containing ``default``, ``embed``, ``generate``, and
+        ``local`` keys with defaults filled in.
     """
     if config is None:
         config = load_config(config_path)

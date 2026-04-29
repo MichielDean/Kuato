@@ -108,9 +108,25 @@ def cmd_search(args):
     else:
         search_mode = "hybrid"
 
-    # Create embedder if available
+    # Create embedder based on --provider flag or legacy Ollama logic
     embedder = None
-    if search_mode != "fts":
+    provider_name = getattr(args, "provider", None)
+
+    if provider_name and search_mode != "fts":
+        try:
+            from memory.providers import resolve_provider
+
+            embed_provider, _ = resolve_provider(
+                {"provider": {"default": provider_name}}
+            )
+            embedder = embed_provider
+        except Exception:
+            log.warning(
+                "llmem: cli: --provider %s failed, falling back to FTS5-only",
+                provider_name,
+            )
+            embedder = None
+    elif search_mode != "fts":
         try:
             ollama_url = getattr(args, "ollama_url", None) or "http://localhost:11434"
             embedder = EmbeddingEngine(base_url=ollama_url)
@@ -747,6 +763,11 @@ def main():
         "--include-code",
         action="store_true",
         help="Include code chunks in search results",
+    )
+    p_search.add_argument(
+        "--provider",
+        choices=["ollama", "openai", "local", "none"],
+        help="Embedding provider to use (overrides config-based selection)",
     )
     search_mode_group = p_search.add_mutually_exclusive_group()
     search_mode_group.add_argument(

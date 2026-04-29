@@ -18,9 +18,11 @@ from memory.providers import (
     OllamaProvider,
     OpenAIProvider,
     resolve_provider,
+    SentenceTransformersProvider,
     DEFAULT_NONE_EMBED_DIMENSIONS,
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_LOCAL_MODEL,
 )
 from memory.config import get_provider_config, DEFAULTS, load_config
 
@@ -68,6 +70,10 @@ class TestEmbedProvider_AbstractMethods:
     def test_check_available_is_abstract(self):
         assert hasattr(EmbedProvider, "check_available")
         assert getattr(EmbedProvider.check_available, "__isabstractmethod__", False)
+
+    def test_dimension_is_abstract(self):
+        assert hasattr(EmbedProvider, "dimension")
+        assert getattr(EmbedProvider.dimension, "__isabstractmethod__", False)
 
 
 class TestGenerateProvider_AbstractMethods:
@@ -219,7 +225,8 @@ class TestOpenAIProvider:
         call_args = mock_req.call_args
         assert call_args[0][0] == "/v1/embeddings"
         assert call_args[0][1]["model"] == "text-embedding-3-small"
-        assert call_args[0][1]["input"] == "test text"
+        # embed() delegates to embed_batch, so input is wrapped in a list
+        assert call_args[0][1]["input"] == ["test text"]
 
     def test_embed_batch_calls_openai(self):
         provider = OpenAIProvider(api_key="test-key")
@@ -2739,3 +2746,653 @@ class TestConfigFalsyValueSafety:
         config = {"correction_detection": {"enabled": False}}
         result = is_correction_detection_enabled(config=config)
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# dimension() method tests for all providers
+# ---------------------------------------------------------------------------
+
+
+class TestEmbedProviderDimension:
+    """Test dimension() method on all EmbedProvider implementations."""
+
+    def test_ollama_dimension_default(self):
+        """OllamaProvider.dimension() returns 768 by default (nomic-embed-text)."""
+        provider = OllamaProvider()
+        assert provider.dimension() == 768
+
+    def test_ollama_dimension_known_model(self):
+        """OllamaProvider.dimension() returns known dimension for mxbai-embed-large."""
+        provider = OllamaProvider(embed_model="mxbai-embed-large")
+        assert provider.dimension() == 1024
+
+    def test_ollama_dimension_unknown_model_returns_default(self):
+        """OllamaProvider.dimension() returns 768 for unknown models."""
+        provider = OllamaProvider(embed_model="custom-unknown-model")
+        assert provider.dimension() == 768
+
+    def test_openai_dimension_default(self):
+        """OpenAIProvider.dimension() returns 1536 by default (text-embedding-3-small)."""
+        provider = OpenAIProvider(api_key="test-key")
+        assert provider.dimension() == 1536
+
+    def test_openai_dimension_large_model(self):
+        """OpenAIProvider.dimension() returns 3072 for text-embedding-3-large."""
+        provider = OpenAIProvider(
+            api_key="test-key", embed_model="text-embedding-3-large"
+        )
+        assert provider.dimension() == 3072
+
+    def test_openai_dimension_unknown_model_returns_default(self):
+        """OpenAIProvider.dimension() returns 1536 for unknown models."""
+        provider = OpenAIProvider(api_key="test-key", embed_model="custom-model")
+        assert provider.dimension() == 1536
+
+    def test_none_dimension(self):
+        """NoneProvider.dimension() returns 768 (default DEFAULT_NONE_EMBED_DIMENSIONS)."""
+        provider = NoneProvider()
+        assert provider.dimension() == 768
+        assert provider.dimension() == DEFAULT_NONE_EMBED_DIMENSIONS
+
+    def test_none_dimension_custom(self):
+        """NoneProvider(embed_dimensions=384).dimension() returns 384."""
+        provider = NoneProvider(embed_dimensions=384)
+        assert provider.dimension() == 384
+
+
+# ---------------------------------------------------------------------------
+# SentenceTransformersProvider tests
+# ---------------------------------------------------------------------------
+
+
+class TestSentenceTransformersProviderEmbedProvider:
+    """SentenceTransformersProvider must implement EmbedProvider ABC."""
+
+    def test_is_instance_of_embed_provider(self):
+        """SentenceTransformersProvider is an EmbedProvider."""
+        provider = SentenceTransformersProvider()
+        assert isinstance(provider, EmbedProvider)
+
+
+class TestSentenceTransformersProvider:
+    """Test SentenceTransformersProvider constructor and methods."""
+
+    def test_constructor_default_model(self):
+        """Default model_name is 'all-MiniLM-L6-v2'."""
+        provider = SentenceTransformersProvider()
+        assert provider._model_name == "all-MiniLM-L6-v2"
+
+    def test_constructor_custom_model_and_dimensions(self):
+        """Constructor accepts custom model_name and explicit dimensions."""
+        provider = SentenceTransformersProvider(
+            model_name="all-mpnet-base-v2", dimensions=768
+        )
+        assert provider._model_name == "all-mpnet-base-v2"
+        assert provider._dimensions == 768
+
+    def test_constructor_empty_model_name_raises(self):
+        """Empty model_name raises ValueError."""
+        with pytest.raises(ValueError, match="non-empty string"):
+            SentenceTransformersProvider(model_name="")
+
+    def test_constructor_none_model_name_raises(self):
+        """None model_name raises ValueError."""
+        with pytest.raises(ValueError, match="non-empty string"):
+            SentenceTransformersProvider(model_name=None)
+
+    def test_embed_returns_vector(self):
+        """embed() returns a list[float] by mocking the sentence-transformers model."""
+        provider = SentenceTransformersProvider()
+        mock_vec = [0.1] * 384
+        # Simulate numpy array with tolist() method
+        mock_row = MagicMock()
+        mock_row.tolist.return_value = mock_vec
+        mock_model = MagicMock()
+        mock_model.encode.return_value = [mock_row]  # iterable of rows
+        with patch.object(provider, "_load_model"):
+            provider._model = mock_model
+            provider._model_loaded = True
+            result = provider.embed("test text")
+        assert isinstance(result, list)
+        assert len(result) == 384
+        assert result == mock_vec
+
+    def test_embed_batch_returns_vectors(self):
+        """embed_batch() returns list[list[float]] by mocking the model."""
+        provider = SentenceTransformersProvider()
+        vec_a = [0.1] * 384
+        vec_b = [0.2] * 384
+        mock_row_a = MagicMock()
+        mock_row_a.tolist.return_value = vec_a
+        mock_row_b = MagicMock()
+        mock_row_b.tolist.return_value = vec_b
+        mock_model = MagicMock()
+        mock_model.encode.return_value = [mock_row_a, mock_row_b]
+        with patch.object(provider, "_load_model"):
+            provider._model = mock_model
+            provider._model_loaded = True
+            result = provider.embed_batch(["text a", "text b"])
+        assert len(result) == 2
+        assert result[0] == vec_a
+        assert result[1] == vec_b
+
+    def test_embed_batch_empty_list(self):
+        """embed_batch([]) returns empty list without loading model."""
+        provider = SentenceTransformersProvider()
+        result = provider.embed_batch([])
+        assert result == []
+
+    def test_check_available_returns_true_when_model_loaded(self):
+        """check_available() returns True when model loads successfully."""
+        provider = SentenceTransformersProvider()
+        mock_model = MagicMock()
+
+        def mock_load():
+            provider._model_loaded = True
+            provider._model = mock_model
+
+        with patch.object(provider, "_load_model", side_effect=mock_load):
+            result = provider.check_available()
+        assert result is True
+
+    def test_check_available_returns_false_on_import_error(self):
+        """check_available() returns False when sentence_transformers is not installed."""
+        provider = SentenceTransformersProvider()
+        with patch.object(
+            provider, "_load_model", side_effect=ImportError("not installed")
+        ):
+            result = provider.check_available()
+        assert result is False
+
+    def test_check_available_caches_result(self):
+        """check_available() caches its result — second call doesn't reload model."""
+        provider = SentenceTransformersProvider()
+        call_count = 0
+        original_load = provider._load_model
+
+        def counting_load():
+            nonlocal call_count
+            call_count += 1
+            # Simulate successful load
+            provider._model_loaded = True
+            provider._model = MagicMock()
+
+        with patch.object(provider, "_load_model", side_effect=counting_load):
+            result1 = provider.check_available()
+            result2 = provider.check_available()
+        assert result1 is True
+        assert result2 is True
+        # _load_model called only once (cached after first check)
+        assert call_count == 1
+
+    def test_dimension_returns_model_dimension(self):
+        """dimension() returns the known dimension for default model without loading it.
+
+        Per the EmbedProvider ABC contract, dimension() must be lightweight and
+        never trigger network/disk IO. The known-dimensions lookup table is used
+        instead of calling model.get_sentence_embedding_dimension().
+        """
+        provider = SentenceTransformersProvider()
+        # Should return 384 for all-MiniLM-L6-v2 WITHOUT calling _load_model()
+        assert provider.dimension() == 384
+        # Verify no lazy loading happened
+        assert provider._model_loaded is False
+
+    def test_dimension_returns_known_dimension_without_load(self):
+        """dimension() for a known model (all-mpnet-base-v2) returns 768 without loading."""
+        provider = SentenceTransformersProvider(model_name="all-mpnet-base-v2")
+        assert provider.dimension() == 768
+        assert provider._model_loaded is False
+
+    def test_dimension_unknown_model_returns_default(self):
+        """dimension() for an unknown model returns 384 (default) without loading."""
+        provider = SentenceTransformersProvider(model_name="custom-unknown-model")
+        assert provider.dimension() == 384
+        assert provider._model_loaded is False
+
+    def test_dimension_never_calls_load_model(self):
+        """dimension() must never call _load_model() — ABC contract violation.
+
+        Regression test: a prior implementation called _load_model() when no
+        explicit dimensions were given, which triggers network/disk IO and can
+        raise exceptions from a method the ABC says should be lightweight.
+        """
+        provider = SentenceTransformersProvider()
+        with patch.object(
+            provider, "_load_model", side_effect=AssertionError("must not be called")
+        ):
+            # dimension() must return without ever calling _load_model
+            result = provider.dimension()
+        assert result == 384
+
+    def test_dimension_returns_explicit_dimensions(self):
+        """dimension() returns the explicit dimensions when provided in constructor."""
+        provider = SentenceTransformersProvider(dimensions=512)
+        assert provider.dimension() == 512
+
+    def test_repr(self):
+        """repr includes model_name."""
+        provider = SentenceTransformersProvider(model_name="all-MiniLM-L6-v2")
+        r = repr(provider)
+        assert "SentenceTransformersProvider" in r
+        assert "all-MiniLM-L6-v2" in r
+
+    def test_import_error_message(self):
+        """_load_model raises ImportError with helpful message when sentence_transformers missing."""
+        provider = SentenceTransformersProvider()
+        with patch.dict("sys.modules", {"sentence_transformers": None}):
+            # Force re-import attempt
+            with pytest.raises(ImportError, match="pip install llmem\\[local\\]"):
+                provider._load_model()
+
+
+# ---------------------------------------------------------------------------
+# resolve_provider() tests for 'local' provider
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProvider_LocalProvider:
+    """Test resolve_provider when provider.default='local'."""
+
+    def test_local_provider_resolved(self):
+        """When provider.default='local' and sentence_transformers is available,
+        resolve_provider returns SentenceTransformersProvider for embed."""
+        mock_st_provider = MagicMock(spec=SentenceTransformersProvider)
+        mock_st_provider.check_available.return_value = True
+        with patch(
+            "memory.providers.SentenceTransformersProvider",
+            return_value=mock_st_provider,
+        ):
+            config = {"provider": {"default": "local"}}
+            embed, gen = resolve_provider(config)
+        # The embed provider is the mocked SentenceTransformersProvider
+        assert embed is mock_st_provider
+
+    def test_local_provider_fallback_on_import_error(self):
+        """When provider.default='local' but sentence_transformers not installed
+        (check_available returns False), falls back to NoneProvider."""
+        mock_st_provider = MagicMock(spec=SentenceTransformersProvider)
+        mock_st_provider.check_available.return_value = False
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "memory.providers.SentenceTransformersProvider",
+                return_value=mock_st_provider,
+            ),
+        ):
+            os.environ.pop("OPENAI_API_KEY", None)
+            config = {"provider": {"default": "local"}}
+            embed, gen = resolve_provider(config)
+        # Falls back gracefully since check_available returns False → no OpenAI key → NoneProvider
+        assert isinstance(embed, NoneProvider)
+
+
+class TestResolveProvider_LocalProviderFallback:
+    """When local provider is configured but sentence_transformers not installed,
+    falls back to NoneProvider with warning."""
+
+    def test_local_fallback_to_none(self):
+        """When SentenceTransformersProvider.check_available returns False,
+        should fall back to NoneProvider."""
+        mock_provider = MagicMock(spec=SentenceTransformersProvider)
+        mock_provider.check_available.return_value = False
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "memory.providers.SentenceTransformersProvider",
+                return_value=mock_provider,
+            ),
+        ):
+            os.environ.pop("OPENAI_API_KEY", None)
+            config = {"provider": {"default": "local"}}
+            embed, gen = resolve_provider(config)
+        # Provider check fails → fallback → No openai key → NoneProvider
+        assert isinstance(embed, NoneProvider)
+
+
+class TestResolveProvider_LocalWithCustomModel:
+    """Config provider.local.model creates provider with that model name."""
+
+    def test_local_with_custom_model(self):
+        """provider.local.model='all-mpnet-base-v2' creates provider with that model."""
+        mock_provider = MagicMock(spec=SentenceTransformersProvider)
+        mock_provider.check_available.return_value = True
+        with patch(
+            "memory.providers.SentenceTransformersProvider",
+            return_value=mock_provider,
+        ) as mock_cls:
+            config = {
+                "provider": {
+                    "default": "local",
+                    "local": {"model": "all-mpnet-base-v2"},
+                }
+            }
+            embed, gen = resolve_provider(config)
+        mock_cls.assert_called_with(model_name="all-mpnet-base-v2")
+
+
+# ---------------------------------------------------------------------------
+# Config tests for provider.local section
+# ---------------------------------------------------------------------------
+
+
+class TestGetProviderConfig_LocalSection:
+    """Test get_provider_config returns the 'local' section with defaults."""
+
+    def test_returns_local_section_in_defaults(self):
+        result = get_provider_config(config={})
+        assert "local" in result
+        assert result["local"]["model"] == "all-MiniLM-L6-v2"
+
+    def test_local_defaults_match_brief(self):
+        from memory.config import DEFAULTS
+
+        assert DEFAULTS["provider"]["local"]["model"] == "all-MiniLM-L6-v2"
+
+    def test_custom_local_model_preserved(self):
+        config = {"provider": {"local": {"model": "custom-model"}}}
+        result = get_provider_config(config=config)
+        assert result["local"]["model"] == "custom-model"
+
+    def test_none_local_section_uses_default(self):
+        """When provider.local is None in config, should use default."""
+        config = {"provider": {"local": None}}
+        result = get_provider_config(config=config)
+        # None local should be treated as default, not None
+        assert result["local"]["model"] == "all-MiniLM-L6-v2"
+
+
+# ---------------------------------------------------------------------------
+# MemoryStore dimension validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestStoreDimensionValidation:
+    """Test dimension validation in MemoryStore.add()."""
+
+    def test_reject_mismatched_dimension(self, tmp_path):
+        """add() raises ValueError when embedding dimension doesn't match vec_dimensions.
+
+        Dimension validation only runs when disable_vec=False, so this test
+        requires sqlite-vec to be available.
+        """
+        import struct
+
+        from llmem.store import MemoryStore
+
+        sqlite_vec = pytest.importorskip("sqlite_vec")
+        db = tmp_path / "test_dim.db"
+        store = MemoryStore(db_path=db, vec_dimensions=768, disable_vec=False)
+        # Create a 4-float embedding (4 dimensions), but store expects 768
+        wrong_embedding = struct.pack(f"{4}f", 0.1, 0.2, 0.3, 0.4)
+        with pytest.raises(
+            ValueError, match="embedding dimension 4 does not match vec_dimensions 768"
+        ):
+            store.add(type="fact", content="test", embedding=wrong_embedding)
+        store.close()
+
+    def test_accept_correct_dimension(self, tmp_path):
+        """add() succeeds when embedding dimension matches vec_dimensions."""
+        import struct
+
+        from llmem.store import MemoryStore
+
+        sqlite_vec = pytest.importorskip("sqlite_vec")
+        db = tmp_path / "test_dim_accept.db"
+        vec_store = MemoryStore(db_path=db, vec_dimensions=768, disable_vec=False)
+        correct_embedding = struct.pack(f"{768}f", *([0.0] * 768))
+        mid = vec_store.add(type="fact", content="test", embedding=correct_embedding)
+        assert mid is not None
+        vec_store.close()
+
+    def test_dimension_validation_disabled_when_no_vec(self, tmp_path):
+        """When disable_vec=True, dimension validation is skipped.
+
+        Embeddings with wrong dimension are accepted when vec is disabled,
+        since there's no vec index to corrupt.
+        """
+        import struct
+
+        from llmem.store import MemoryStore
+        from pathlib import Path
+
+        db = tmp_path / "test_dim_validation_disabled.db"
+        store = MemoryStore(db_path=db, vec_dimensions=4, disable_vec=True)
+        # Embedding with 2 floats = 8 bytes (2*4), but vec_dimensions=4
+        small_embedding = struct.pack(f"{2}f", 0.1, 0.2)
+        # Should NOT raise — validation is skipped when disable_vec=True
+        mid = store.add(type="fact", content="test", embedding=small_embedding)
+        assert mid is not None
+        store.close()
+
+    def test_dimension_validation_none_embedding(self, store):
+        """add() with embedding=None should not trigger dimension validation."""
+        mid = store.add(type="fact", content="test", embedding=None)
+        assert mid is not None
+
+
+# ---------------------------------------------------------------------------
+# Input validation tests: _validate_embed_inputs and prompt length checks
+# ---------------------------------------------------------------------------
+
+
+class TestValidateEmbedInputs:
+    """Test _validate_embed_inputs for batch size and text length limits."""
+
+    def test_batch_exceeds_max_size_raises_value_error(self):
+        """embed_batch with > MAX_BATCH_SIZE texts raises ValueError."""
+        from memory.providers import _validate_embed_inputs, MAX_BATCH_SIZE
+
+        texts = ["x"] * (MAX_BATCH_SIZE + 1)
+        with pytest.raises(ValueError, match="batch size .* exceeds maximum"):
+            _validate_embed_inputs(texts)
+
+    def test_text_exceeds_max_length_raises_value_error(self):
+        """embed_batch with a text > MAX_TEXT_LENGTH chars raises ValueError."""
+        from memory.providers import _validate_embed_inputs, MAX_TEXT_LENGTH
+
+        long_text = "a" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="text at index .* exceeds maximum length"):
+            _validate_embed_inputs([long_text])
+
+    def test_text_exceeds_max_length_reports_index(self):
+        """embed_batch reports the offending index in the ValueError."""
+        from memory.providers import _validate_embed_inputs, MAX_TEXT_LENGTH
+
+        long_text = "b" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="text at index 3"):
+            _validate_embed_inputs(["short", "also short", "ok", long_text])
+
+    def test_valid_inputs_pass(self):
+        """_validate_embed_inputs returns None for valid inputs (no exception)."""
+        from memory.providers import _validate_embed_inputs
+
+        result = _validate_embed_inputs(["hello", "world"])
+        assert result is None
+
+    def test_empty_list_passes(self):
+        """_validate_embed_inputs([]) returns None — empty batch is valid."""
+        from memory.providers import _validate_embed_inputs
+
+        result = _validate_embed_inputs([])
+        assert result is None
+
+    def test_exact_max_batch_size_passes(self):
+        """Batch of exactly MAX_BATCH_SIZE texts should not raise."""
+        from memory.providers import _validate_embed_inputs, MAX_BATCH_SIZE
+
+        texts = ["x"] * MAX_BATCH_SIZE
+        result = _validate_embed_inputs(texts)
+        assert result is None
+
+    def test_exact_max_text_length_passes(self):
+        """A text of exactly MAX_TEXT_LENGTH chars should not raise."""
+        from memory.providers import _validate_embed_inputs, MAX_TEXT_LENGTH
+
+        text = "a" * MAX_TEXT_LENGTH
+        result = _validate_embed_inputs([text])
+        assert result is None
+
+
+class TestOllamaProvider_PromptLengthValidation:
+    """Test OllamaProvider.generate() prompt length limit."""
+
+    def test_generate_rejects_oversized_prompt(self):
+        """OllamaProvider.generate() raises ValueError for prompt > MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = OllamaProvider()
+        long_prompt = "x" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="prompt exceeds maximum length"):
+            provider.generate(long_prompt)
+
+    def test_generate_accepts_max_length_prompt(self):
+        """OllamaProvider.generate() accepts a prompt at exactly MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = OllamaProvider()
+        prompt = "x" * MAX_TEXT_LENGTH
+        with patch(
+            "memory.providers._call_ollama_generate", return_value="ok"
+        ) as mock_gen:
+            result = provider.generate(prompt)
+        assert result == "ok"
+        mock_gen.assert_called_once()
+
+
+class TestOpenAIProvider_PromptLengthValidation:
+    """Test OpenAIProvider.generate() prompt length limit."""
+
+    def test_generate_rejects_oversized_prompt(self):
+        """OpenAIProvider.generate() raises ValueError for prompt > MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = OpenAIProvider(api_key="test-key")
+        long_prompt = "y" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="prompt exceeds maximum length"):
+            provider.generate(long_prompt)
+
+    def test_generate_accepts_max_length_prompt(self):
+        """OpenAIProvider.generate() accepts a prompt at exactly MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = OpenAIProvider(api_key="test-key")
+        prompt = "y" * MAX_TEXT_LENGTH
+        with patch.object(
+            provider,
+            "_make_request",
+            return_value={"choices": [{"message": {"content": "ok"}}]},
+        ):
+            result = provider.generate(prompt)
+        assert result == "ok"
+
+
+class TestAnthropicProvider_PromptLengthValidation:
+    """Test AnthropicProvider.generate() prompt length limit."""
+
+    def test_generate_rejects_oversized_prompt(self):
+        """AnthropicProvider.generate() raises ValueError for prompt > MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = AnthropicProvider(api_key="test-key")
+        long_prompt = "z" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="prompt exceeds maximum length"):
+            provider.generate(long_prompt)
+
+    def test_generate_accepts_max_length_prompt(self):
+        """AnthropicProvider.generate() accepts a prompt at exactly MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = AnthropicProvider(api_key="test-key")
+        prompt = "z" * MAX_TEXT_LENGTH
+        with patch("memory.providers.safe_urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(
+                {"content": [{"text": "ok"}]}
+            ).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+            result = provider.generate(prompt)
+        assert result == "ok"
+
+
+class TestOllamaProvider_EmbedBatchInputValidation:
+    """Test OllamaProvider.embed_batch() input validation."""
+
+    def test_embed_batch_rejects_oversized_batch(self):
+        """OllamaProvider.embed_batch() raises ValueError for batch > MAX_BATCH_SIZE."""
+        from memory.providers import MAX_BATCH_SIZE
+
+        provider = OllamaProvider()
+        texts = ["x"] * (MAX_BATCH_SIZE + 1)
+        with pytest.raises(ValueError, match="batch size .* exceeds maximum"):
+            provider.embed_batch(texts)
+
+    def test_embed_batch_rejects_oversized_text(self):
+        """OllamaProvider.embed_batch() raises ValueError for text > MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = OllamaProvider()
+        long_text = "a" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="text at index .* exceeds maximum length"):
+            provider.embed_batch([long_text])
+
+
+class TestOpenAIProvider_EmbedBatchInputValidation:
+    """Test OpenAIProvider.embed_batch() input validation."""
+
+    def test_embed_batch_rejects_oversized_batch(self):
+        """OpenAIProvider.embed_batch() raises ValueError for batch > MAX_BATCH_SIZE."""
+        from memory.providers import MAX_BATCH_SIZE
+
+        provider = OpenAIProvider(api_key="test-key")
+        texts = ["x"] * (MAX_BATCH_SIZE + 1)
+        with pytest.raises(ValueError, match="batch size .* exceeds maximum"):
+            provider.embed_batch(texts)
+
+    def test_embed_batch_rejects_oversized_text(self):
+        """OpenAIProvider.embed_batch() raises ValueError for text > MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = OpenAIProvider(api_key="test-key")
+        long_text = "a" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="text at index .* exceeds maximum length"):
+            provider.embed_batch([long_text])
+
+
+class TestOpenAIProvider_EmbedInputValidation:
+    """Test OpenAIProvider.embed() delegates to embed_batch for input validation.
+
+    Previously embed() bypassed _validate_embed_inputs by calling _make_request
+    directly. Now it delegates to embed_batch([text])[0] so single-text embeds
+    are also validated against MAX_TEXT_LENGTH.
+    """
+
+    def test_embed_rejects_oversized_text(self):
+        """OpenAIProvider.embed() raises ValueError for text > MAX_TEXT_LENGTH."""
+        from memory.providers import MAX_TEXT_LENGTH
+
+        provider = OpenAIProvider(api_key="test-key")
+        long_text = "a" * (MAX_TEXT_LENGTH + 1)
+        with pytest.raises(ValueError, match="text at index .* exceeds maximum length"):
+            provider.embed(long_text)
+
+    def test_embed_accepts_valid_text(self):
+        """OpenAIProvider.embed() accepts text within length limits.
+
+        Verifies that valid text reaches _make_request (mocked), proving
+        the text was not rejected by the _validate_embed_inputs check.
+        """
+        provider = OpenAIProvider(api_key="test-key")
+        vec = [0.1] * 1536
+        with patch.object(
+            provider,
+            "_make_request",
+            return_value={
+                "data": [{"embedding": vec, "index": 0}],
+            },
+        ) as mock_req:
+            result = provider.embed("short valid text")
+        assert result == vec
+        mock_req.assert_called_once()

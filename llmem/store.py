@@ -453,6 +453,16 @@ class MemoryStore:
                 f"llmem: store: add: unregistered type '{type}'. "
                 f"Register it with register_memory_type('{type}') first."
             )
+        # Validate embedding dimension matches configured vec_dimensions
+        # Skips validation when embedding is None or when vec is disabled
+        if embedding is not None and not self._disable_vec:
+            actual_dim = len(embedding) // 4
+            if actual_dim != self._vec_dimensions:
+                raise ValueError(
+                    f"llmem: store: add: embedding dimension {actual_dim} "
+                    f"does not match vec_dimensions {self._vec_dimensions} "
+                    f"— use {self._vec_dimensions}-dimensional embeddings"
+                )
         mem_id = id or str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         conn = self._connect()

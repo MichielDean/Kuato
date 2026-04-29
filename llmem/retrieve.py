@@ -8,6 +8,11 @@ from datetime import datetime, timezone
 from .store import MemoryStore
 from .embed import EmbeddingEngine
 
+try:
+    from memory.providers import EmbedProvider
+except ImportError:
+    EmbedProvider = None  # type: ignore[assignment,misc]
+
 log = logging.getLogger(__name__)
 
 RECENCY_DAYS = 30
@@ -166,14 +171,16 @@ class Retriever:
     def __init__(
         self,
         store: MemoryStore,
-        embedder: EmbeddingEngine | None = None,
+        embedder: "EmbeddingEngine | EmbedProvider | None" = None,
         blend: float = 0.3,
     ):
         """Initialize the Retriever.
 
         Args:
             store: The memory store to search against.
-            embedder: Optional embedding engine for semantic search.
+            embedder: Optional embedding engine or provider for semantic search.
+                Accepts either an EmbeddingEngine (legacy) or an EmbedProvider
+                from the memory.providers module.
             blend: Blend factor for reranking (0.0 = pure RRF, 1.0 = pure
                 signals). Defaults to 0.3.
 

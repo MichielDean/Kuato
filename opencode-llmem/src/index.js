@@ -69,17 +69,9 @@ function _loadConfig() {
   return {};
 }
 
-/**
- * Parse simple YAML into a nested object.
- *
- * Handles key: value pairs and nested sections via indentation.
- * Strings are trimmed; numeric/boolean values are not coerced —
- * everything is a string, which is sufficient for config lookups
- * (e.g. config.opencode.context_dir).
- *
- * @param {string} text - YAML text to parse.
- * @returns {object} Parsed config object.
- */
+// Keys that could prototype-pollute the result object if assigned via YAML keys.
+var _DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 function _parseSimpleYaml(text) {
   var result = {};
   var stack = [{ indent: -1, obj: result }];
@@ -97,6 +89,11 @@ function _parseSimpleYaml(text) {
       continue;
     }
     var key = trimmed.substring(0, colonIdx).trim();
+    // Prevent prototype pollution: reject keys that could overwrite
+    // Object.prototype properties (__proto__, constructor, prototype).
+    if (_DANGEROUS_KEYS.has(key)) {
+      continue;
+    }
     var value = trimmed.substring(colonIdx + 1).trim();
 
     // Pop stack until we find the parent with less indentation

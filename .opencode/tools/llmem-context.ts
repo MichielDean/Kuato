@@ -25,7 +25,7 @@ export default tool({
   execute: async (args, context) => {
     const budget = args.budget ?? 4000;
 
-    const cmdArgs: string[] = ["search", args.query, "--limit", "20"];
+    const cmdArgs: string[] = ["search", "--limit", "20", "--", args.query];
 
     const result = await runLlmem(cmdArgs, {
       json: true,

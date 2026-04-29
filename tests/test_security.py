@@ -1038,9 +1038,12 @@ class TestUrlValidate_CredentialStripping:
 
         with pytest.raises(ValueError) as exc_info:
             EmbeddingEngine(base_url="http://user:pass@evil.internal:11434")
-        assert "pass" not in str(exc_info.value).lower() or "password" not in str(
-            exc_info.value
-        )
+        # Both the username and password must be stripped from the error
+        # message. Using separate assertions (not 'or') ensures both
+        # credentials are independently verified as absent.
+        error_msg = str(exc_info.value)
+        assert "user" not in error_msg, f"username leaked: {error_msg}"
+        assert "pass@" not in error_msg, f"password leaked: {error_msg}"
 
 
 # ============================================================================
