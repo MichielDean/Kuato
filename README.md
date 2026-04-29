@@ -198,6 +198,12 @@ llmem add --type fact --content "Project uses pytest for testing"
 # Search memories
 llmem search "testing"
 llmem search "testing" --type fact --limit 5 --json
+llmem search "testing" --include-code --json
+
+# Index a codebase
+llmem learn ./src
+llmem learn ./src --strategy fixed --window-size 30 --overlap 5
+llmem learn ./src --no-embed
 
 # List all memories
 llmem list
@@ -309,6 +315,7 @@ Commands:
   inbox           List items in the working memory inbox
   consolidate     Promote inbox items to long-term memory
   init            Initialize the llmem memory system
+  learn           Ingest a codebase into the code index
 ```
 
 Plugins registered via [`register_cli_plugin`](#cli-plugin-registry) add additional subcommands at runtime.
@@ -332,16 +339,17 @@ llmem add --type TYPE --content TEXT [--summary TEXT] [--source SOURCE] \
 ### `llmem search`
 
 ```bash
-llmem search QUERY [--type TYPE] [--limit N] [--json] [--fts-only | --semantic-only]
+llmem search QUERY [--type TYPE] [--limit N] [--json] [--include-code] [--fts-only | --semantic-only]
 ```
 
 Hybrid search combining FTS5 keyword search and vector semantic search via Reciprocal Rank Fusion (RRF), followed by multi-signal reranking. By default, both search modes are merged with `alpha=0.7` (favoring semantic results while keeping keyword relevance), then reranked with `blend=0.3` (70% semantic, 30% confidence/recency/access/type signals).
 
 - `--fts-only`: Use FTS5 keyword search only (no embedder needed).
 - `--semantic-only`: Use semantic (embedding) search only (requires an embedder). Raises an error if no embedder is available.
-- Without either flag: hybrid mode — runs both FTS5 and semantic search, fuses results via RRF, then applies reranking. Falls back to FTS5-only if no embedder is configured.
+- `--include-code`: Include indexed code chunks in search results alongside memories. Code results are interleaved with memory results using RRF scoring. Code results display with a `[code]` prefix and show `file=` and `lines=` instead of type and confidence. Requires running `llmem learn` first to populate the code index.
+- Without either `--fts-only` / `--semantic-only` flag: hybrid mode — runs both FTS5 and semantic search, fuses results via RRF, then applies reranking. Falls back to FTS5-only if no embedder is configured.
 
-With `--json`, outputs raw JSON (each result includes `_rrf_score` and `_rerank_score` keys); otherwise, a human-readable table with an `rrf=` score column.
+With `--json`, outputs raw JSON (each result includes `_rrf_score` and `_rerank_score` keys, plus a `_source` key of `"memory"` or `"code"` when `--include-code` is used); otherwise, a human-readable table with an `rrf=` score column.
 
 ### `llmem list`
 
@@ -456,6 +464,30 @@ In interactive mode, you'll be prompted for:
 2. **Dream cycle** — enable or disable the background dream cycle (default: enabled).
 
 If `~/.lobsterdog/` exists (legacy path), init automatically migrates data to `~/.config/llmem/`.
+
+### `llmem learn`
+
+```bash
+llmem learn PATH [--strategy paragraph|fixed] [--window-size N] [--overlap N] \
+  [--no-embed] [--max-file-size N] [--max-depth N] [--ollama-url URL]
+```
+
+Ingest a codebase directory into the code index. Walks the directory tree respecting `.gitignore` files, chunks each source file, generates embeddings, and stores the results in a `code_chunks` table (shared database with memories). Running `llmem learn` on the same directory is idempotent — stale chunks for each file are removed before re-inserting.
+
+- `PATH` (required): Root directory to ingest.
+- `--strategy`: Chunking strategy — `paragraph` (split at blank-line boundaries, merges short paragraphs) or `fixed` (sliding window with overlap). Default: `paragraph`.
+- `--window-size`: Window size in lines for `fixed` chunking strategy. Default: 50.
+- `--overlap`: Overlap in lines between consecutive chunks for `fixed` strategy. Must be less than `--window-size`. Default: 10.
+- `--no-embed`: Skip embedding generation. Chunks are stored with text only (searchable via FTS5, but not via semantic/vec search). Useful for quick indexing without an embedding provider.
+- `--max-file-size`: Maximum file size in bytes to index. Files exceeding this limit are skipped. Default: 1048576 (1 MiB).
+- `--max-depth`: Maximum directory recursion depth. Prevents stack overflow from deeply nested trees. Default: 50.
+- `--ollama-url`: Ollama base URL for embedding generation. Default: `http://localhost:11434`.
+
+**Skipped files:** Binary files (images, fonts, archives, compiled objects), common non-code directories (`.git`, `__pycache__`, `node_modules`, `.venv`), credential files (`.env`, `.env.*`, `.pem`, `.key`, `id_rsa`, `id_dsa`, `id_ed25519`, `id_ecdsa`, `.netrc`, `.htpasswd`, `.npmrc`, `.pypirc`), and symlinks (to prevent path traversal).
+
+**Language detection:** File extensions are mapped to language names automatically (e.g., `.py` → `python`, `.rs` → `rust`, `.go` → `go`). Unknown extensions produce `None`.
+
+**Output:** `Ingested N chunks from M files`
 
 ## Multi-Signal Reranking
 
@@ -800,6 +832,75 @@ validate_session_id("../etc/passwd")  # raises ValueError
 validate_session_id("foo/bar")   # raises ValueError
 ```
 
+### Code Indexing
+
+The `CodeIndex` class manages the `code_chunks` table for semantic and full-text search over indexed code. It shares the same SQLite database as `MemoryStore` for cross-retrieval.
+
+```python
+from llmem.code_index import CodeIndex
+from llmem.chunking import ParagraphChunking, FixedLineChunking, detect_language, walk_code_files
+
+# Open the code index (uses the same database as MemoryStore)
+code_index = CodeIndex()  # defaults to ~/.config/llmem/memory.db
+
+# Add a single chunk
+chunk_id = code_index.add_chunk(
+    file_path="src/main.py",
+    start_line=1,
+    end_line=42,
+    content="def main():\n    ...",
+    language="python",
+    chunk_type="paragraph",
+)
+
+# Batch add chunks from CodeChunk named tuples
+chunks = chunker.chunk("src/main.py", content, language="python")
+chunk_ids = code_index.add_chunks(chunks)
+
+# Remove all chunks for a file (useful before re-indexing)
+removed = code_index.remove_by_path("src/main.py")
+
+# Full-text search
+results = code_index.search_content("async def", limit=10)
+
+# Semantic search (requires sqlite-vec and embeddings)
+results = code_index.search_by_embedding(query_vec, limit=10, threshold=0.5)
+
+code_index.close()
+```
+
+**Chunking strategies:**
+
+```python
+from llmem.chunking import ParagraphChunking, FixedLineChunking
+
+# Paragraph chunking: splits at blank-line boundaries (default)
+chunker = ParagraphChunking(min_lines=1, max_lines=200)
+chunks = chunker.chunk("src/app.py", content, language="python")
+
+# Fixed-line chunking: sliding window with overlap
+chunker = FixedLineChunking(window_size=50, overlap=10)
+chunks = chunker.chunk("src/app.py", content, language="python")
+```
+
+**Directory walking:**
+
+```python
+from llmem.chunking import walk_code_files, parse_gitignore
+
+# Walk a directory respecting .gitignore
+code_files = walk_code_files(Path("./my-project"))
+
+# With custom size/depth limits
+code_files = walk_code_files(
+    Path("./my-project"),
+    max_file_size=2 * 1024 * 1024,  # 2 MiB
+    max_depth=30,
+)
+```
+
+`walk_code_files` skips symlinks, binary files, credential files (`.env`, `.pem`, `.key`, SSH keys), and common non-code directories. `detect_language(file_path)` returns a language string from the file extension, or `None` for unknown extensions.
+
 ## Extension Points
 
 LLMem provides a registry system that allows harnesses and external tools to plug in domain-specific behavior without modifying core code. All registry functions validate their inputs and raise `ValueError` or `TypeError` on invalid arguments.
@@ -897,6 +998,28 @@ LLMem uses SQLite with WAL mode and numbered SQL migrations (stored in the `llme
 When `sqlite-vec` is available, LLMem creates a `memories_vec` virtual table for cosine similarity search. If the extension isn't installed, vector search is gracefully disabled and the store falls back to FTS-only search.
 
 The embedding dimension defaults to 768 (matching `nomic-embed-text`), configurable via `vec_dimensions`.
+
+### Code Index
+
+LLMem also provides a code indexing system via the `code_chunks` table, created by migration 004. This table stores chunked source code with embeddings for cross-retrieval alongside memories.
+
+The `code_chunks` table schema:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT PRIMARY KEY | Format: `<file_path>:<start_line>:<end_line>` |
+| `file_path` | TEXT NOT NULL | Relative path of the source file |
+| `start_line` | INTEGER NOT NULL | Starting line (1-based) |
+| `end_line` | INTEGER NOT NULL | Ending line (1-based, inclusive) |
+| `content` | TEXT NOT NULL | Chunk text content |
+| `embedding` | BLOB | Embedding vector bytes (nullable) |
+| `language` | TEXT | Detected programming language |
+| `chunk_type` | TEXT NOT NULL | Chunking strategy (`paragraph` or `fixed_line`) |
+| `created_at` | TEXT NOT NULL | ISO timestamp |
+
+When `sqlite-vec` is available, a `code_chunks_vec` virtual table enables semantic similarity search over code chunk embeddings, with INSERT/UPDATE/DELETE triggers for automatic synchronization. An FTS5 `code_chunks_fts` virtual table provides full-text search over chunk content, file paths, and language names.
+
+The `--include-code` flag on `llmem search` interleaves code chunk results with memory results using the same RRF scoring formula, enabling unified search across both knowledge stores.
 
 ## Dream Cycle
 
@@ -1086,6 +1209,14 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 - ProviderDetector.detect() only returns `provider` and `ollama_url` — no API key presence is exposed.
 - Migration from `~/.lobsterdog/` skips symlinks (using `follow_symlinks=False`).
 
+**Code indexing security:**
+
+- `walk_code_files()` skips all symlinks (both file and directory) to prevent path traversal and data exposure.
+- Default file size limit of 1 MiB (`--max-file-size`) prevents memory exhaustion from large files.
+- Default directory depth limit of 50 (`--max-depth`) prevents stack overflow from deeply nested trees.
+- Credential files are excluded from indexing: `.env`, `.env.*` variants, `.pem`, `.key`, SSH private keys (`id_rsa`, `id_dsa`, `id_ed25519`, `id_ecdsa`), `.netrc`, `.htpasswd`, `.npmrc`, `.pypirc`.
+- `.gitignore` patterns are respected at every directory level, with correct handling of anchored patterns (leading `/`), negation patterns (`!`), and directory-only patterns (trailing `/`).
+
 ## Module Reference
 
 | Module | Description |
@@ -1099,6 +1230,8 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 | `llmem.paths` | `validate_session_id()`, `get_context_dir()`, `_validate_write_path()`, `BLOCKED_SYSTEM_PREFIXES`, home/write path checks |
 | `llmem.registry` | `register_session_hook()`, `get_registered_session_hooks()`, `VALID_SESSION_EVENT_TYPES` |
 | `llmem.store` | `MemoryStore` with `export_all(limit=)`, `import_memories()` validation, brute-force/embedding caps, inbox methods (`add_to_inbox`, `get_from_inbox`, `list_inbox`, `remove_from_inbox`, `update_inbox_attention_score`, `consolidate`), capacity eviction |
+| `llmem.code_index` | `CodeIndex` — manages `code_chunks` table, FTS5/vec virtual tables, add/search/remove operations |
+| `llmem.chunking` | `ParagraphChunking`, `FixedLineChunking`, `detect_language()`, `walk_code_files()`, `parse_gitignore()`, `is_ignored()` |
 
 ## Running Tests
 
