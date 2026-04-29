@@ -1,9 +1,7 @@
 """Tests for schema migration system."""
 
 import sqlite3
-from pathlib import Path
 
-import pytest
 
 from llmem.store import MemoryStore, _run_migrations
 

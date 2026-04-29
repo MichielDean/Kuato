@@ -1,7 +1,6 @@
 """Tests for llmem.paths module."""
 
 import os
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -120,7 +119,7 @@ class TestPaths_DataMigration:
     def test_migrate_idempotent(self, tmp_path):
         """Calling migrate twice does nothing on second call."""
         old_home = tmp_path / ".lobsterdog"
-        new_home = tmp_path / ".config" / "llmem"
+        tmp_path / ".config" / "llmem"
         old_home.mkdir()
         (old_home / "config.yaml").write_text("test")
 
@@ -238,7 +237,6 @@ class TestPaths_BlockedSystemPrefixesShared:
     def test_opencode_adapter_uses_shared_constant(self):
         """OpenCodeAdapter must use BLOCKED_SYSTEM_PREFIXES, not a local copy."""
         from llmem.adapters.opencode import OpenCodeAdapter
-        from llmem.paths import BLOCKED_SYSTEM_PREFIXES
 
         # OpenCodeAdapter must not have its own _BLOCKED_PREFIXES
         assert not hasattr(OpenCodeAdapter, "_BLOCKED_PREFIXES")

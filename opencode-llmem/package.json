@@ -4,6 +4,12 @@
   "description": "LLMem session hooks for OpenCode: memory injection on session lifecycle events",
   "main": "src/index.js",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MichielDean/LLMem.git",
+    "directory": "opencode-llmem"
+  },
+  "homepage": "https://github.com/MichielDean/LLMem/tree/main/opencode-llmem",
   "scripts": {
     "postinstall": "node install.js",
     "test": "node test.js"

@@ -8,7 +8,6 @@ import urllib.error
 
 from .url_validate import validate_base_url
 
-import math
 
 log = logging.getLogger(__name__)
 

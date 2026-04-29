@@ -20,6 +20,11 @@ dev = ["pytest>=9.0"]
 llmem = "llmem.cli:main"
 lobmem = "llmem.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/MichielDean/LLMem"
+Repository = "https://github.com/MichielDean/LLMem"
+"Bug Tracker" = "https://github.com/MichielDean/LLMem/issues"
+
 [tool.setuptools.packages.find]
 include = ["llmem*", "llmem_migrations*", "memory*"]
 

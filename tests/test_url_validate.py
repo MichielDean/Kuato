@@ -8,8 +8,6 @@ and validate_url raising ValueError.
 """
 
 import ipaddress
-import urllib.error
-import urllib.request
 from unittest.mock import MagicMock, patch
 
 import pytest

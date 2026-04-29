@@ -732,7 +732,7 @@ class TestInit_Integration:
     def test_init_then_add_memory(self, tmp_path):
         """After init, llmem add --type fact --content 'test' works."""
         from llmem.cli import cmd_init, cmd_add
-        from llmem.store import MemoryStore, register_memory_type
+        from llmem.store import MemoryStore
 
         home = tmp_path / "llmem_home"
         config_path = home / "config.yaml"

@@ -1,6 +1,10 @@
 # LLMem — Structured Memory with Semantic Search
 
+[![CI](https://github.com/MichielDean/LLMem/actions/workflows/ci.yml/badge.svg)](https://github.com/MichielDean/LLMem/actions/workflows/ci.yml)
+
 LLMem is a SQLite-backed memory store for LLM agents. It provides structured storage with full-text search (FTS5), optional vector similarity search (via sqlite-vec), an extensible type system, and a provider abstraction layer for LLM embeddings and text generation. A background dreaming cycle consolidates, decays, and merges memories over time.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and coding conventions.
 
 ## Installation
 

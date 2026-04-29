@@ -21,7 +21,6 @@ from llmem.retrieve import (
     TYPE_PRIORITY,
 )
 from llmem.store import MemoryStore
-from llmem.embed import EmbeddingEngine
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +161,7 @@ class TestRetrieve_HybridSearch:
     def test_hybrid_search_returns_merged_results(self, store):
         """When both FTS5 and semantic search produce results, hybrid_search
         returns a deduplicated merged list sorted by RRF score."""
-        ids = self._add_memories(store)
+        self._add_memories(store)
         # Without embedder, hybrid_search falls back to FTS5 — still returns
         # valid results
         retriever = Retriever(store=store, embedder=None)
@@ -187,7 +186,7 @@ class TestRetrieve_HybridSearch:
     def test_hybrid_search_deduplicates_by_id(self, store):
         """When the same memory ID appears in both FTS and semantic results,
         it appears only once in hybrid results with a combined RRF score."""
-        ids = self._add_memories(store)
+        self._add_memories(store)
         retriever = Retriever(store=store, embedder=None)
         results = retriever.hybrid_search("Python", limit=10)
         result_ids = [r["id"] for r in results]
@@ -308,7 +307,7 @@ class TestRetrieve_HybridSearch:
 
     def test_hybrid_search_type_filter(self, store):
         """search_mode='fts' with type_filter narrows results to that type."""
-        ids = self._add_memories(store)
+        self._add_memories(store)
         retriever = Retriever(store=store, embedder=None)
 
         results = retriever.hybrid_search(
@@ -438,7 +437,7 @@ class TestRetrieve_HybridSearchSemantic:
 
     def test_hybrid_search_hybrid_mode_with_embedder(self, vec_store):
         """Hybrid mode with embedder returns merged results from both paths."""
-        ids = self._add_memories_with_embeddings(vec_store)
+        self._add_memories_with_embeddings(vec_store)
 
         class FakeEmbedder:
             def embed(self, text: str) -> list[float]:
@@ -894,7 +893,7 @@ class TestRetrieve_RerankingIntegration:
         """A memory with significantly higher confidence ranks higher after
         reranking when blend is non-zero."""
         # Add a low-confidence and high-confidence memory with the same text
-        low_id = store.add(
+        store.add(
             type="fact", content="UniqueAlpha programming language", confidence=0.1
         )
         high_id = store.add(
@@ -905,7 +904,7 @@ class TestRetrieve_RerankingIntegration:
         # identical content — the tie-breaker is ID). With blend > 0, the
         # high-confidence memory should outrank the low-confidence one.
         retriever_no_blend = Retriever(store=store, embedder=None, blend=0.0)
-        results_no_blend = retriever_no_blend.hybrid_search(
+        retriever_no_blend.hybrid_search(
             "UniqueAlpha", limit=10, search_mode="fts"
         )
 

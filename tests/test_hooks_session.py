@@ -21,7 +21,6 @@ from llmem.session_hooks import (
     SESSION_IDLE_DEBOUNCED,
     SESSION_IDLE_NO_TRANSCRIPT,
     SESSION_COMPACTING_SUCCESS,
-    SESSION_COMPACTING_NO_MEMORIES,
     SESSION_COMPACTING_ERROR,
 )
 from llmem.url_validate import validate_base_url
@@ -104,21 +103,24 @@ class TestRegisterSessionHook:
     """Tests for register_session_hook()."""
 
     def test_register_created_hook(self):
-        hook_fn = lambda sid: None
+        def hook_fn(sid):
+            return None
         register_session_hook("created", hook_fn)
         hooks = get_registered_session_hooks()
         assert "created" in hooks
         assert hooks["created"] is hook_fn
 
     def test_register_idle_hook(self):
-        hook_fn = lambda sid: None
+        def hook_fn(sid):
+            return None
         register_session_hook("idle", hook_fn)
         hooks = get_registered_session_hooks()
         assert "idle" in hooks
         assert hooks["idle"] is hook_fn
 
     def test_register_compacting_hook(self):
-        hook_fn = lambda sid: None
+        def hook_fn(sid):
+            return None
         register_session_hook("compacting", hook_fn)
         hooks = get_registered_session_hooks()
         assert "compacting" in hooks
@@ -146,7 +148,8 @@ class TestGetRegisteredSessionHooks:
 
     def test_returns_dict_copy(self):
         """Mutating the returned dict does not affect the internal registry."""
-        hook_fn = lambda sid: None
+        def hook_fn(sid):
+            return None
         register_session_hook("created", hook_fn)
         hooks = get_registered_session_hooks()
         hooks["idle"] = lambda sid: None  # Mutate the copy

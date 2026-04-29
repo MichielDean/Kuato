@@ -27,8 +27,6 @@ ojbjt: process_transcript size limit
 import json
 import logging
 import os
-import socket
-import tempfile
 import urllib.request
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -42,10 +40,8 @@ from llmem.url_validate import (
     _extract_url_string,
     _NoRedirectHandler,
     safe_urlopen,
-    DEFAULT_URLOPEN_TIMEOUT,
 )
 from llmem.paths import (
-    get_llmem_home,
     _validate_home_path,
     _validate_write_path,
     migrate_from_lobsterdog,
@@ -236,7 +232,6 @@ class TestUrlValidate_SafeUrlopen:
 
     def test_safe_urlopen_strips_credentials_from_error(self):
         """Error messages should not contain credentials."""
-        url_with_creds = "http://admin:s3cret@localhost:11434/api/tags"
         # This should pass is_safe_url (loopback, correct port)
         # but will fail to connect; the error should strip credentials
         # We can't easily test connection failure here, so test validation
@@ -327,8 +322,8 @@ class TestUrlValidate_ExtractUrlString:
 # ============================================================================
 
 
-class TestUrlValidate_ExtractUrlString:
-    """Test _extract_url_string handles both str and Request inputs."""
+class TestUrlValidate_ExtractUrlStringLocalhost:
+    """Test _extract_url_string handles both str and Request inputs (localhost variants)."""
 
     def test_returns_string_unchanged(self):
         """Plain strings pass through unchanged."""
@@ -533,7 +528,7 @@ class TestUrlValidate_DnsRebindResolve:
         returns a private IP. The re-resolve ValueError must propagate."""
         from unittest.mock import patch, MagicMock
 
-        mock_resp = MagicMock()
+        MagicMock()
 
         with (
             patch("llmem.url_validate.is_safe_url", return_value=True),
@@ -701,7 +696,7 @@ class TestPaths_MigrationSymlinkSafety:
         with patch("llmem.paths.Path") as mock_path_cls:
             mock_path_cls.home.return_value = tmp_path
             mock_path_cls.side_effect = lambda *a, **kw: Path(*a, **kw) if a else Path()
-            result = migrate_from_lobsterdog()
+            migrate_from_lobsterdog()
 
         # The symlink directory should have been skipped
         assert not (new_home / "context").exists()
@@ -1234,7 +1229,7 @@ class TestSessionHooks_ValidateWritePath:
 
     def test_on_created_calls_validate_write_path(self, tmp_path):
         """on_created should call _validate_write_path for the context file."""
-        from llmem.session_hooks import SessionHookCoordinator, SESSION_CREATED_SUCCESS
+        from llmem.session_hooks import SessionHookCoordinator
 
         mock_store = MagicMock()
         mock_store.is_extracted.return_value = False
@@ -1263,7 +1258,6 @@ class TestSessionHooks_ValidateWritePath:
         """on_compacting should call _validate_write_path for the context file."""
         from llmem.session_hooks import (
             SessionHookCoordinator,
-            SESSION_COMPACTING_SUCCESS,
         )
 
         mock_store = MagicMock()
@@ -2177,7 +2171,6 @@ class TestExtract_BoundedRegex:
         nested = '[{"a": [1, 2], "b": 3}]'
         match = pattern.search(nested)
         assert match is not None
-        import json
 
         parsed = json.loads(match.group(0))
         assert isinstance(parsed, list)
