@@ -15,11 +15,18 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+try:
+    import fcntl
+
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
+
 from .ollama import _call_ollama_generate
 from .store import MemoryStore
 from .taxonomy import ERROR_TAXONOMY, ERROR_TAXONOMY_KEYS, _parse_self_assessment
 from .url_validate import is_safe_url
-from .paths import get_dream_diary_path, get_proposed_changes_path
+from .paths import get_dream_diary_path, get_proposed_changes_path, _is_blocked_path
 from .registry import get_registered_dream_hooks
 
 log = logging.getLogger(__name__)
@@ -42,16 +49,6 @@ DEFAULT_BEHAVIORAL_LOOKBACK_DAYS = 30
 DEFAULT_CALIBRATION_ENABLED = True
 DEFAULT_STALE_PROCEDURE_DAYS = 30
 DEFAULT_CALIBRATION_LOOKBACK_DAYS = 90
-
-_DANGEROUS_PATH_PREFIXES = (
-    "/etc/",
-    "/var/",
-    "/sys/",
-    "/proc/",
-    "/dev/",
-    "/boot/",
-    "/root/",
-)
 
 
 def _validate_output_path(path: Path, label: str) -> Path:
@@ -81,7 +78,9 @@ def _validate_output_path(path: Path, label: str) -> Path:
         raise ValueError(f"{label} path contains '..' traversal: {path}")
 
     resolved = path.resolve()
-    if any(str(resolved).startswith(p) for p in _DANGEROUS_PATH_PREFIXES):
+
+    # Block system directories using shared helper (prefix + '/' matching)
+    if _is_blocked_path(resolved):
         raise ValueError(f"{label} path targets a protected directory: {resolved}")
     if path.is_symlink():
         raise ValueError(
@@ -303,4 +302,15 @@ class Dreamer:
             entry += f"- Merged: {result.deep.merged_count}\n"
 
         with open(diary_path, "a") as f:
-            f.write(entry)
+            # Acquire an exclusive lock to prevent concurrent writes
+            # from corrupting the diary during parallel dream cycles.
+            # On Windows (no fcntl), the write proceeds without locking
+            # but is still append-mode atomic for small writes.
+            if _HAS_FCNTL:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX)
+                    f.write(entry)
+                finally:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+            else:
+                f.write(entry)

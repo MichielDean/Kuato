@@ -302,6 +302,8 @@ Commands:
 
 Plugins registered via [`register_cli_plugin`](#cli-plugin-registry) add additional subcommands at runtime.
 
+**Backward compatibility:** The `lobmem` command is installed as a symlink to `llmem`. When invoked as `lobmem`, a deprecation warning is printed to stderr: `warning: 'lobmem' is deprecated, use 'llmem'`. This wrapper will be removed in a future version.
+
 ### `llmem add`
 
 ```bash
@@ -311,7 +313,7 @@ llmem add --type TYPE --content TEXT [--summary TEXT] [--source SOURCE] \
 ```
 
 - `--type` (required): Memory type. Use `llmem types` to list registered types, or `llmem register-type` to add new ones.
-- `--content` or `--file`: The memory text (or read from a file).
+- `--content` or `--file`: The memory text (or read from a file). Files in protected system directories (e.g. `/etc`, `/bin`, `/usr/bin`) are blocked to prevent arbitrary file reads.
 - `--source`: Source of the memory (default: `manual`). Valid: `manual`, `session`, `heartbeat`, `extraction`, `import`.
 - `--confidence`: Confidence score 0–1 (default: 0.8).
 - `--relation` / `--relation-to`: Create a relation to another memory after adding.
@@ -373,6 +375,9 @@ llmem import FILE
 ```
 
 Export produces a JSON array of all memories. Import validates that each entry has `type` and `content` string fields before inserting.
+
+- `--output FILE`: Write export to a file. The output path is validated against traversal attacks, system directories, and symlinks.
+- Import `FILE`: Path to a JSON file. Files in protected system directories are blocked, and the file must be under 10 MiB.
 
 ### `llmem register-type` / `llmem types`
 
@@ -552,11 +557,37 @@ written = write_config_yaml(
 detector = ProviderDetector()
 result = detector.detect(ollama_url="http://localhost:11434")
 # result["provider"] → "ollama" | "openai" | "anthropic" | "none"
-# result["ollama_url"], result["openai_key_found"], result["anthropic_key_found"]
+# result["ollama_url"]
 
 # Check if Ollama is running
 if is_ollama_running("http://localhost:11434"):
     print("Ollama is reachable")
+```
+
+### `safe_urlopen`
+
+The `safe_urlopen` function is the safe replacement for `urllib.request.urlopen()`. It validates URLs against SSRF, blocks redirects, and re-resolves hostnames before opening:
+
+```python
+from llmem.url_validate import safe_urlopen
+
+# Default: allow_remote is inferred from the URL
+response = safe_urlopen("http://localhost:11434/api/generate")
+
+# Explicit allow_remote for remote endpoints
+response = safe_urlopen("https://api.openai.com/v1/models", allow_remote=True)
+```
+
+The `allow_remote` parameter controls whether non-loopback URLs are permitted. If `None` (default), it's inferred from the URL — loopback URLs default to `False`, all others default to `False` as well (fail-closed). Pass `allow_remote=True` explicitly for known-remote endpoints.
+
+### `get_server_auth_token`
+
+```python
+from llmem.config import get_server_auth_token
+
+token = get_server_auth_token()
+# Returns None if no token configured
+# Raises ValueError if token is set but < 16 characters (too weak)
 ```
 
 ### Session Adapters
@@ -939,23 +970,29 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 
 - `LMEM_HOME` is validated against path traversal, system directories, and symlink attacks.
 - Write paths are validated against system directories and symbolic links. `is_symlink()` checks are wrapped in `try/except OSError` to handle inaccessible paths gracefully.
-- System directory blocking uses a shared `BLOCKED_SYSTEM_PREFIXES` tuple across `_validate_home_path`, `_validate_write_path`, and `OpenCodeAdapter.__init__` to prevent DRY violations.
+- System directory blocking uses a shared `_BLOCKED_PATH_PREFIXES` tuple (with prefix + `/` matching to avoid false positives) across `_validate_home_path`, `_validate_write_path`, and `OpenCodeAdapter.__init__` to prevent DRY violations.
 - `validate_session_id()` rejects session IDs containing `/`, `\`, or `..` to prevent path traversal when constructing context file paths.
-- URL validation (`is_safe_url`) blocks private/reserved IPs, rejects URLs with embedded credentials (`user:password@`), and blocks SSRF vectors including percent-encoded IP hostnames (e.g. `%31%32%37%2e%30%2e%30%2e%31` is decoded before IP checks). `safe_urlopen` enforces URL validation, blocks redirects, mitigates DNS rebinding (re-resolves hostname immediately before the request), sets a 30-second default timeout, and strips credentials from error messages. It accepts both string URLs and `urllib.request.Request` objects, and requires an explicit `allow_remote` parameter (defaults to `False`) for non-loopback addresses. Loopback addresses are only permitted on the Ollama default port (11434), regardless of `allow_remote`.
-- OpenCode session extraction validates the database path: rejects path traversal (`..`), system directories, and symlinks. `get_opencode_db_path()` validates via `_validate_home_path` before returning.
+- **CLI path validation**: `llmem add --file`, `llmem import`, and `llmem export --output` block access to protected system directories (e.g. `/etc`, `/bin`, `/usr/bin`, `/sbin`, `/usr/sbin`, `/dev`, `/proc`, `/sys`, `/var`, `/boot`, `/root`). These checks use prefix + `/` matching to avoid false positives (e.g. `/binary_search` is not blocked as `/bin`).
+- **Import file size limit**: `llmem import` rejects files larger than 10 MiB.
+- URL validation (`is_safe_url`) blocks private/reserved IPs, rejects URLs with embedded credentials (`user:password@`), and blocks SSRF vectors including percent-encoded IP hostnames (e.g. `%31%32%37%2e%30%2e%30%2e%31` is decoded before IP checks). `safe_urlopen` enforces URL validation, blocks redirects, mitigates DNS rebinding (re-resolves hostname immediately before the request), sets a 30-second default timeout, and strips credentials from error messages. It accepts both string URLs and `urllib.request.Request` objects, and requires an explicit `allow_remote` parameter (defaults to `False`) for non-loopback addresses. Loopback addresses are only permitted on the Ollama default port (11434), regardless of `allow_remote`. The `_is_remote_allowed` check is fail-closed: unknown or unresolvable hostnames default to blocked.
+- OpenCode session extraction validates the database path: rejects path traversal (`..`), system directories, symlinks, and URI injection (`?` and `#` characters). `get_opencode_db_path()` validates via `_validate_home_path` before returning.
 - API keys are masked in `__repr__` on provider instances (`***masked***`).
 - API keys are refused over plain HTTP to non-loopback hosts. `OpenAIProvider` and `AnthropicProvider` raise `ValueError` if `base_url` is `http://` and the hostname is not an exact loopback address (`localhost`, `127.0.0.1`, or `::1`). Substring matches like `localhost.evil.com` are blocked.
 - A warning is logged when API keys are sent to a non-default base URL to alert the user of potential credential exfiltration risk.
 - Validation error messages use generic strings (never embed user-supplied URLs).
 - All SQL queries use parameterized statements (no injection risk).
+- SQLite extension loading is disabled immediately after `sqlite-vec` loads, preventing runtime loading of arbitrary shared libraries.
 - Database files are created with `umask(0o177)` before creation, then `chmod(0o600)` applied to the DB file and its WAL/SHM sidecars (prevents a race window where sensitive memory content is world-readable on multi-user systems). Parent directories use `0o700`.
 - `config.yaml` is written with `0o600` file permissions (owner-only read/write).
+- **Server auth token strength**: `server.auth_token` in `config.yaml` must be at least 16 characters. Short tokens are rejected with a hint to generate a strong token.
 - `import_memories()` validates entry IDs (string, max 256 chars), embeddings (bytes, max 1 MB), and confidence (numeric) before insertion. Invalid entries are skipped with warnings rather than crashing.
 - `export_all()` defaults to a limit of 10,000 memories to prevent unbounded memory consumption; pass `limit=None` to export all.
 - `_search_by_embedding_brute()` uses a `LIMIT` clause (10,000 rows max) to prevent OOM on large databases.
 - `process_transcript()` enforces the same size limit as `process_file()` to prevent OOM from large session transcripts.
+- **Dream diary locking**: On platforms with `fcntl` (Linux/macOS), dream diary writes use an exclusive file lock to prevent corruption from concurrent dream cycles.
 - OpenCode tool invocations (`_llmem.ts`) prepend `--` before user arguments to prevent argparse flag injection.
 - JavaScript hooks use `execFileSync` (not shell-based `execSync`) and `validateSessionId()` for path traversal protection, with `canSpawnProcess()` rate limiting.
+- ProviderDetector.detect() only returns `provider` and `ollama_url` — no API key presence is exposed.
 - Migration from `~/.lobsterdog/` skips symlinks (using `follow_symlinks=False`).
 
 ## Module Reference

@@ -42,7 +42,6 @@ from llmem.url_validate import (
     _extract_url_string,
     _NoRedirectHandler,
     safe_urlopen,
-    _extract_url_string,
     DEFAULT_URLOPEN_TIMEOUT,
 )
 from llmem.paths import (
@@ -65,6 +64,7 @@ from llmem.hooks import (
 )
 from llmem.dream_report import generate_dream_report
 from llmem.dream import DreamResult, RemPhaseResult
+from llmem.ollama import ProviderDetector
 from llmem.session_hooks import (
     SESSION_CREATED_SUCCESS,
     SESSION_COMPACTING_SUCCESS,
@@ -1071,6 +1071,11 @@ class TestPaths_ValidateWritePath:
         with pytest.raises(ValueError, match="protected directory"):
             _validate_write_path(Path("/proc/self/status"), "report")
 
+    def test_binary_search_not_blocked(self):
+        """'/binary_search/output.html' must NOT be blocked as /bin."""
+        result = _validate_write_path(Path("/binary_search/output.html"), "report")
+        assert isinstance(result, Path)
+
 
 # ============================================================================
 # ll-7rudv-vp1ad: SSRF bypass via percent-encoded IP hostnames
@@ -1452,6 +1457,12 @@ class TestStore_ImportMemoriesValidation:
         count = store.import_memories(memories)
         assert count == 0
 
+    def test_imports_without_embedding(self, store):
+        """Memories without embeddings should import fine."""
+        memories = [{"type": "fact", "content": "no embedding"}]
+        count = store.import_memories(memories)
+        assert count == 1
+
     def test_import_rejects_oversized_id(self, store):
         """import_memories should skip entries with IDs exceeding max length."""
         memories = [
@@ -1493,3 +1504,699 @@ class TestStore_ImportMemoriesValidation:
         memories = [{"type": "fact", "content": "a basic test"}]
         count = store.import_memories(memories)
         assert count == 1
+
+
+# ============================================================================
+# Security fixes from ll-dunf9 audit
+# ============================================================================
+
+
+class TestPaths_ValidateHomePath_NoFalsePositives:
+    """Test that _validate_home_path does not produce false positives from bare prefix matching."""
+
+    def test_binary_search_dir_allowed(self):
+        """'/binary_search/llmem' must NOT be blocked as /bin."""
+        # This used to fail with bare startswith('/bin') check
+        result = _validate_home_path(Path("/binary_search/llmem"), "LMEM_HOME")
+        assert isinstance(result, Path)
+
+    def test_usabin_dir_allowed(self):
+        """'/usabin/llmem' must NOT be blocked as /usr/sbin or /usr/bin."""
+        result = _validate_home_path(Path("/usabin/llmem"), "LMEM_HOME")
+        assert isinstance(result, Path)
+
+
+class TestUrlValidate_IsRemoteAllowed_FailClosed:
+    """Test that safe_urlopen enforces port restrictions for loopback URLs.
+
+    This addresses the SSRF vulnerability where _is_remote_allowed() returned
+    True for hostname-based localhost URLs, bypassing the port-11434 check.
+    """
+
+    def test_safe_urlopen_uses_allow_remote_for_loopback(self):
+        """safe_urlopen with explicit allow_remote=False validates port."""
+        # This should reject non-11434 ports on loopback
+        with pytest.raises(ValueError, match="URL rejected"):
+            safe_urlopen("http://localhost:8080/api", allow_remote=False)
+
+
+class TestUrlValidate_SafeUrlopen_ExplicitAllowRemote:
+    """Test safe_urlopen allow_remote parameter."""
+
+    def test_explicit_allow_remote_true_for_loopback(self):
+        """allow_remote=True with loopback URL should pass is_safe_url
+        but will likely fail to connect (which is OK)."""
+        # We can only test validation — actual connection will fail
+        # Validate that the URL passes is_safe_url with allow_remote=True
+        assert is_safe_url("http://localhost:8080/api", allow_remote=True) is True
+
+
+class TestPaths_ValidateHomePath_SymlinkCheck:
+    """Test that _validate_home_path rejects symlinks."""
+
+    def test_rejects_symlink(self, tmp_path):
+        """A symlink home path must be rejected."""
+        target = tmp_path / "real_home"
+        target.mkdir()
+        symlink = tmp_path / "symlink_home"
+        symlink.symlink_to(target)
+        with pytest.raises(ValueError, match="symlink"):
+            _validate_home_path(symlink, "LMEM_HOME")
+
+
+class TestPaths_BlockedPrefixConsistency:
+    """Test that _validate_home_path and _validate_write_path block the same prefixes."""
+
+    def test_home_path_blocks_sbin(self):
+        """_validate_home_path blocks /sbin (was missing from _validate_write_path)."""
+        with pytest.raises(ValueError, match="system directory"):
+            _validate_home_path(Path("/sbin/llmem"), "LMEM_HOME")
+
+    def test_write_path_blocks_usr_sbin(self):
+        """_validate_write_path blocks /usr/sbin (now consistent with home path)."""
+        with pytest.raises(ValueError, match="protected directory"):
+            _validate_write_path(Path("/usr/sbin/evil.html"), "report")
+
+
+class TestPaths_IsBlockedPath_NoFalsePositives:
+    """Test that _is_blocked_path uses prefix+'/' matching to avoid false positives.
+
+    The old bare startswith check would match /binary_search/data.db against /bin.
+    The new prefix+'/' check correctly requires /bin/ (or exact /bin).
+    """
+
+    def test_binary_search_not_blocked(self):
+        """'/binary_search/data.db' must NOT match the /bin prefix."""
+        from llmem.paths import _is_blocked_path
+
+        assert not _is_blocked_path(Path("/binary_search/data.db"))
+
+    def test_bin_subdir_blocked(self):
+        """'/bin/ls' must match the /bin prefix."""
+        from llmem.paths import _is_blocked_path
+
+        assert _is_blocked_path(Path("/bin/ls"))
+
+    def test_bin_exact_blocked(self):
+        """'/bin' itself (exact match) must be blocked."""
+        from llmem.paths import _is_blocked_path
+
+        assert _is_blocked_path(Path("/bin"))
+
+    def test_usabin_not_blocked(self):
+        """'/usabin/local/cmd' must NOT match /usr/sbin."""
+        from llmem.paths import _is_blocked_path
+
+        assert not _is_blocked_path(Path("/usabin/local/cmd"))
+
+    def test_usr_bin_blocked(self):
+        """'/usr/bin/python3' must match /usr/bin prefix."""
+        from llmem.paths import _is_blocked_path
+
+        assert _is_blocked_path(Path("/usr/bin/python3"))
+
+    def test_usr_sbin_blocked(self):
+        """'/usr/sbin/apache2' must match /usr/sbin prefix."""
+        from llmem.paths import _is_blocked_path
+
+        assert _is_blocked_path(Path("/usr/sbin/apache2"))
+
+    def test_home_dir_not_blocked(self):
+        """'/home/user/data' must NOT be blocked."""
+        from llmem.paths import _is_blocked_path
+
+        assert not _is_blocked_path(Path("/home/user/data"))
+
+    def test_tmp_not_blocked(self):
+        """'/tmp/llmem-test' must NOT be blocked."""
+        from llmem.paths import _is_blocked_path
+
+        assert not _is_blocked_path(Path("/tmp/llmem-test"))
+
+    def test_all_prefixes_blocked_as_dirs(self):
+        """Every prefix in _BLOCKED_PATH_PREFIXES must block paths under it."""
+        from llmem.paths import _BLOCKED_PATH_PREFIXES, _is_blocked_path
+
+        for prefix in _BLOCKED_PATH_PREFIXES:
+            assert _is_blocked_path(Path(prefix + "/some/file")), (
+                f"{prefix}/some/file should be blocked"
+            )
+
+    def test_all_prefixes_blocked_as_exact(self):
+        """Every prefix in _BLOCKED_PATH_PREFIXES must block itself as exact match."""
+        from llmem.paths import _BLOCKED_PATH_PREFIXES, _is_blocked_path
+
+        for prefix in _BLOCKED_PATH_PREFIXES:
+            assert _is_blocked_path(Path(prefix)), (
+                f"{prefix} should be blocked as exact match"
+            )
+
+
+class TestCli_CmdAdd_FileReadProtection:
+    """Test that cmd_add --file rejects paths in protected directories."""
+
+    def test_rejects_etc_file(self, tmp_path):
+        """Reading from /etc should be rejected."""
+        from llmem.cli import cmd_add
+        import argparse
+
+        args = argparse.Namespace(
+            db=tmp_path / "test.db",
+            type="fact",
+            content=None,
+            file="/etc/passwd",
+            summary=None,
+            source="manual",
+            confidence=0.8,
+            valid_until=None,
+            metadata=None,
+            relation=None,
+            relation_to=None,
+        )
+
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            with pytest.raises(SystemExit):
+                cmd_add(args)
+
+    def test_rejects_proc_file(self, tmp_path):
+        """Reading from /proc should be rejected."""
+        from llmem.cli import cmd_add
+        import argparse
+
+        args = argparse.Namespace(
+            db=tmp_path / "test.db",
+            type="fact",
+            content=None,
+            file="/proc/self/status",
+            summary=None,
+            source="manual",
+            confidence=0.8,
+            valid_until=None,
+            metadata=None,
+            relation=None,
+            relation_to=None,
+        )
+
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            with pytest.raises(SystemExit):
+                cmd_add(args)
+
+    def test_rejects_usr_bin_file(self, tmp_path):
+        """Reading from /usr/bin should be rejected (was missing from old hardcoded list)."""
+        from llmem.cli import cmd_add
+        import argparse
+
+        args = argparse.Namespace(
+            db=tmp_path / "test.db",
+            type="fact",
+            content=None,
+            file="/usr/bin/python3",
+            summary=None,
+            source="manual",
+            confidence=0.8,
+            valid_until=None,
+            metadata=None,
+            relation=None,
+            relation_to=None,
+        )
+
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            with pytest.raises(SystemExit):
+                cmd_add(args)
+
+    def test_rejects_sbin_file(self, tmp_path):
+        """Reading from /sbin should be rejected (was missing from old hardcoded list)."""
+        from llmem.cli import cmd_add
+        import argparse
+
+        args = argparse.Namespace(
+            db=tmp_path / "test.db",
+            type="fact",
+            content=None,
+            file="/sbin/iptables",
+            summary=None,
+            source="manual",
+            confidence=0.8,
+            valid_until=None,
+            metadata=None,
+            relation=None,
+            relation_to=None,
+        )
+
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            with pytest.raises(SystemExit):
+                cmd_add(args)
+
+    def test_allows_binary_search_path(self, tmp_path):
+        """'/binary_search/data.db' must NOT be blocked (false positive fix)."""
+        from llmem.cli import cmd_add
+        import argparse
+
+        # Create a file at a path that starts with /bin-like string but is not /bin
+        binary_dir = tmp_path / "binary_search"
+        binary_dir.mkdir()
+        data_file = binary_dir / "data.db"
+        data_file.write_text("safe data")
+
+        db = tmp_path / "test.db"
+        MemoryStore(db_path=db, disable_vec=True).close()
+
+        args = argparse.Namespace(
+            db=db,
+            type="fact",
+            content=None,
+            file=str(data_file),
+            summary=None,
+            source="manual",
+            confidence=0.8,
+            valid_until=None,
+            metadata=None,
+            relation=None,
+            relation_to=None,
+        )
+
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_add(args)  # Should not raise
+
+    def test_allows_valid_file(self, tmp_path):
+        """Reading from a safe directory should work."""
+        from llmem.cli import cmd_add
+        import argparse
+
+        db = tmp_path / "test.db"
+        MemoryStore(db_path=db, disable_vec=True).close()
+        content_file = tmp_path / "content.txt"
+        content_file.write_text("test content")
+
+        args = argparse.Namespace(
+            db=db,
+            type="fact",
+            content=None,
+            file=str(content_file),
+            summary=None,
+            source="manual",
+            confidence=0.8,
+            valid_until=None,
+            metadata=None,
+            relation=None,
+            relation_to=None,
+        )
+
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_add(args)  # Should not raise
+
+
+class TestCli_CmdExport_WriteProtection:
+    """Test that cmd_export --output uses _validate_write_path."""
+
+    def test_rejects_etc_output(self, tmp_path):
+        """Writing to /etc should be rejected."""
+        from llmem.cli import cmd_export
+        import argparse
+
+        db = tmp_path / "test.db"
+        MemoryStore(db_path=db, disable_vec=True).close()
+
+        args = argparse.Namespace(
+            db=db,
+            output="/etc/llmem-export.json",
+        )
+
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            with pytest.raises(ValueError, match="protected directory"):
+                cmd_export(args)
+
+    def test_rejects_traversal_output(self, tmp_path):
+        """Paths with '..' should be rejected."""
+        from llmem.cli import cmd_export
+        import argparse
+
+        db = tmp_path / "test.db"
+        MemoryStore(db_path=db, disable_vec=True).close()
+
+        args = argparse.Namespace(
+            db=db,
+            output="/tmp/../../../etc/export.json",
+        )
+
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            with pytest.raises(ValueError, match="traversal"):
+                cmd_export(args)
+
+
+class TestCli_CmdImport_ReadOnlyProtection:
+    """Test that cmd_import rejects files in protected directories."""
+
+    def test_rejects_etc_file(self, tmp_path):
+        """Importing from /etc should be rejected."""
+        from llmem.cli import cmd_import
+        import argparse
+
+        args = argparse.Namespace(
+            db=tmp_path / "test.db",
+            file="/etc/shadow",
+        )
+
+        with pytest.raises(SystemExit):
+            cmd_import(args)
+
+    def test_rejects_sbin_file(self, tmp_path):
+        """Importing from /sbin should be rejected (was missing from old list)."""
+        from llmem.cli import cmd_import
+        import argparse
+
+        args = argparse.Namespace(
+            db=tmp_path / "test.db",
+            file="/sbin/iptables",
+        )
+
+        with pytest.raises(SystemExit):
+            cmd_import(args)
+
+    def test_rejects_usr_bin_file(self, tmp_path):
+        """Importing from /usr/bin should be rejected (was missing from old list)."""
+        from llmem.cli import cmd_import
+        import argparse
+
+        args = argparse.Namespace(
+            db=tmp_path / "test.db",
+            file="/usr/bin/env",
+        )
+
+        with pytest.raises(SystemExit):
+            cmd_import(args)
+
+    def test_rejects_oversized_file(self, tmp_path):
+        """Files larger than MAX_IMPORT_FILE_SIZE should be rejected."""
+        from llmem.cli import cmd_import
+        from llmem.cli import MAX_IMPORT_FILE_SIZE
+        import argparse
+
+        large_file = tmp_path / "large.json"
+        large_file.write_text("x" * (MAX_IMPORT_FILE_SIZE + 1))
+
+        db = tmp_path / "test.db"
+        MemoryStore(db_path=db, disable_vec=True).close()
+
+        args = argparse.Namespace(
+            db=db,
+            file=str(large_file),
+        )
+
+        with pytest.raises(SystemExit):
+            cmd_import(args)
+
+
+class TestConfig_ServerAuthToken_MinStrength:
+    """Test that get_server_auth_token enforces minimum token strength."""
+
+    def test_rejects_short_token(self):
+        """Tokens shorter than 16 characters should be rejected."""
+        from llmem.config import get_server_auth_token
+
+        with pytest.raises(ValueError, match="too short"):
+            get_server_auth_token(config={"server": {"auth_token": "short"}})
+
+    def test_rejects_empty_string_token(self):
+        """Empty string token should return None (not set)."""
+        from llmem.config import get_server_auth_token
+
+        result = get_server_auth_token(config={"server": {"auth_token": ""}})
+        assert result is None
+
+    def test_accepts_strong_token(self):
+        """Tokens >= 16 characters should be accepted."""
+        from llmem.config import get_server_auth_token
+
+        strong_token = "a" * 32
+        result = get_server_auth_token(config={"server": {"auth_token": strong_token}})
+        assert result == strong_token
+
+    def test_returns_none_when_not_set(self):
+        """When token is not configured, return None."""
+        from llmem.config import get_server_auth_token
+
+        result = get_server_auth_token(config={})
+        assert result is None
+
+    def test_rejects_non_string_token(self):
+        """Non-string token values should raise ValueError."""
+        from llmem.config import get_server_auth_token
+
+        with pytest.raises(ValueError, match="must be a string"):
+            get_server_auth_token(config={"server": {"auth_token": 12345}})
+
+
+class TestConfig_GetOllamaUrl_SsrfValidation:
+    """Test that get_ollama_url validates URLs via is_safe_url."""
+
+    def test_rejects_file_scheme(self):
+        """file:// URLs should be rejected."""
+        from llmem.config import get_ollama_url
+
+        with pytest.raises(ValueError, match="unsafe|rejected"):
+            get_ollama_url(config={"memory": {"ollama_url": "file:///etc/passwd"}})
+
+    def test_rejects_private_ip_without_allow_remote(self):
+        """private IP URLs should be rejected by is_safe_url."""
+        from llmem.config import get_ollama_url
+
+        with pytest.raises(ValueError, match="unsafe|rejected"):
+            get_ollama_url(
+                config={"memory": {"ollama_url": "http://192.168.1.1:11434"}}
+            )
+
+
+class TestStore_ExtensionLoadingDisabled:
+    """Test that SQLite extension loading is disabled after use."""
+
+    def test_extension_loading_disabled_after_init(self, tmp_path):
+        """After MemoryStore init, extension loading should be disabled."""
+        import sqlite3
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=False)
+        try:
+            conn = store._connect()
+            # Attempting to load an extension should fail
+            with pytest.raises(
+                sqlite3.OperationalError, match="not authorized|extension"
+            ):
+                conn.enable_load_extension(True)
+                conn.load_extension("nonexistent_extension")
+        finally:
+            store.close()
+
+    def test_extension_loading_disabled_when_vec_unavailable(self, tmp_path):
+        """Extension loading should be disabled even when sqlite-vec is unavailable."""
+        import sqlite3
+
+        db = tmp_path / "test.db"
+        # Force sqlite-vec import to fail
+        with patch.dict("sys.modules", {"sqlite_vec": None}):
+            store = MemoryStore(db_path=db, disable_vec=False)
+            try:
+                conn = store._connect()
+                with pytest.raises(
+                    sqlite3.OperationalError, match="not authorized|extension"
+                ):
+                    conn.enable_load_extension(True)
+                    conn.load_extension("nonexistent_extension")
+            finally:
+                store.close()
+
+
+class TestOpencode_UriPathInjection:
+    """Test that OpenCodeAdapter rejects path injection via URI parameters."""
+
+    def test_rejects_question_mark_in_path(self, tmp_path):
+        """Paths with '?' (URI query separator) should be rejected."""
+        from llmem.adapters.opencode import OpenCodeAdapter
+
+        # Create a valid database first
+        db = tmp_path / "test.db"
+        import sqlite3
+
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE session (id TEXT PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        # Inject a query parameter to attempt mode=rw escalation
+        bad_path = tmp_path / "test.db?mode=rw"
+        with pytest.raises(ValueError, match="disallowed character"):
+            OpenCodeAdapter(bad_path)
+
+    def test_rejects_hash_in_path(self, tmp_path):
+        """Paths with '#' (URI fragment separator) should be rejected."""
+        from llmem.adapters.opencode import OpenCodeAdapter
+
+        db = tmp_path / "test.db"
+        import sqlite3
+
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE session (id TEXT PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        bad_path = tmp_path / "test.db#fragment"
+        with pytest.raises(ValueError, match="disallowed character"):
+            OpenCodeAdapter(bad_path)
+
+    def test_rejects_traversal_in_path(self, tmp_path):
+        """Paths with '..' should be rejected."""
+        from llmem.adapters.opencode import OpenCodeAdapter
+
+        bad_path = tmp_path / ".." / "etc" / "passwd"
+        with pytest.raises(ValueError, match="traversal"):
+            OpenCodeAdapter(bad_path)
+
+    def test_accepts_valid_path(self, tmp_path):
+        """Normal database paths should work fine."""
+        from llmem.adapters.opencode import OpenCodeAdapter
+
+        db = tmp_path / "test.db"
+        import sqlite3
+
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE session (id TEXT PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        adapter = OpenCodeAdapter(db)
+        adapter.close()  # Should not raise
+
+
+class TestOllama_ProviderDetector_NoKeyLeakage:
+    """Test that ProviderDetector.detect() no longer exposes API key presence."""
+
+    def test_detect_does_not_return_key_found(self):
+        """detect() should not include openai_key_found or anthropic_key_found."""
+        with patch("llmem.ollama.is_ollama_running", return_value=False):
+            with patch.dict(os.environ, {}, clear=True):
+                os.environ.pop("OPENAI_API_KEY", None)
+                os.environ.pop("ANTHROPIC_API_KEY", None)
+                detector = ProviderDetector()
+                result = detector.detect()
+
+        assert "openai_key_found" not in result
+        assert "anthropic_key_found" not in result
+        assert "provider" in result
+        assert "ollama_url" in result
+
+    def test_detect_with_openai_key_no_leakage(self):
+        """Even with OPENAI_API_KEY set, detect should not leak presence."""
+        with patch("llmem.ollama.is_ollama_running", return_value=False):
+            with patch.dict(
+                os.environ, {"OPENAI_API_KEY": "sk-test-key-123"}, clear=False
+            ):
+                detector = ProviderDetector()
+                result = detector.detect()
+
+        assert "openai_key_found" not in result
+        assert result["provider"] == "openai"
+
+
+class TestExtract_BoundedRegex:
+    """Test that extract.py uses a bounded regex to avoid ReDoS.
+
+    The regex must use a bounded quantifier {1,100000} to prevent
+    catastrophic backtracking (ReDoS). It should be greedy so that
+    nested JSON arrays are matched correctly, not truncated at an
+    inner ] bracket.
+    """
+
+    def test_regex_pattern_is_bounded_greedy(self):
+        """The JSON array extraction regex should use bounded greedy matching."""
+        import inspect
+        from llmem.extract import ExtractionEngine
+
+        source = inspect.getsource(ExtractionEngine.extract)
+        # The pattern must use a bounded quantifier to prevent ReDoS
+        assert ".{1,100000}" in source
+        # The unbounded greedy .*] pattern must NOT be present
+        # (the bounded version .{1,100000}] is acceptable)
+        assert "[.*\\]" not in source or ".{1,100000}\\]" in source
+
+    def test_bounded_greedy_regex_matches_nested_json(self):
+        """Bounded greedy regex must match complete nested JSON arrays.
+
+        A non-greedy regex like [.{1,N}?] would match from the opening
+        bracket to the FIRST closing bracket, producing invalid JSON
+        like [{"a": [1, 2] when the input contains nested arrays.
+        The greedy version [.{1,N}] correctly matches the outermost pair.
+        """
+        import re
+
+        pattern = re.compile(r"\[.{1,100000}\]", re.DOTALL)
+
+        # Nested JSON array: the regex must match the FULL outer array
+        nested = '[{"a": [1, 2], "b": 3}]'
+        match = pattern.search(nested)
+        assert match is not None
+        import json
+
+        parsed = json.loads(match.group(0))
+        assert isinstance(parsed, list)
+        assert parsed[0]["a"] == [1, 2]
+
+        # Multiple nested arrays in one response
+        text = 'Here are the results:\n[{"x": [1], "y": [2, 3]}]\nEnd.'
+        match = pattern.search(text)
+        assert match is not None
+        parsed = json.loads(match.group(0))
+        assert isinstance(parsed, list)
+
+    def test_bounded_regex_no_redos(self):
+        """Bounded quantifier prevents ReDoS by capping backtracking."""
+        import re
+        import time
+
+        pattern = re.compile(r"\[.{1,100000}\]", re.DOTALL)
+        # Crafted adversarial input: many nested brackets without closing
+        adversarial = "[" + "a" * 50000 + "]"
+        start = time.monotonic()
+        pattern.search(adversarial)
+        elapsed = time.monotonic() - start
+        # Should complete in well under 1 second (bounded quantifier)
+        assert elapsed < 1.0

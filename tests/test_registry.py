@@ -186,23 +186,23 @@ class TestRegistry_RegisterCliPlugin:
 
     def test_register_plugin_adds_to_registry(self):
         setup_fn = lambda subparsers: None
-        register_cli_plugin("my-extension", setup_fn)
-        assert "my-extension" in get_registered_cli_plugins()
+        register_cli_plugin("my_plugin", setup_fn)
+        assert "my_plugin" in get_registered_cli_plugins()
 
     def test_register_duplicate_plugin_raises(self):
-        register_cli_plugin("my-extension", lambda sp: None)
+        register_cli_plugin("my_plugin", lambda sp: None)
         with pytest.raises(ValueError, match="already registered"):
-            register_cli_plugin("my-extension", lambda sp: None)
+            register_cli_plugin("my_plugin", lambda sp: None)
 
     def test_get_registered_plugins_returns_frozenset(self):
         result = get_registered_cli_plugins()
         assert isinstance(result, frozenset)
 
     def test_reset_registry_clears_custom_plugins(self):
-        register_cli_plugin("my-extension", lambda sp: None)
-        assert "my-extension" in get_registered_cli_plugins()
+        register_cli_plugin("my_plugin", lambda sp: None)
+        assert "my_plugin" in get_registered_cli_plugins()
         _reset_registries()
-        assert "my-extension" not in get_registered_cli_plugins()
+        assert "my_plugin" not in get_registered_cli_plugins()
 
     def test_register_plugin_empty_name_raises(self):
         with pytest.raises(ValueError, match="non-empty string"):
@@ -214,8 +214,8 @@ class TestRegistry_RegisterCliPlugin:
 
     def test_get_cli_plugin_setup_fn(self):
         setup_fn = lambda subparsers: None
-        register_cli_plugin("my-extension", setup_fn)
-        assert get_cli_plugin_setup_fn("my-extension") is setup_fn
+        register_cli_plugin("my_plugin", setup_fn)
+        assert get_cli_plugin_setup_fn("my_plugin") is setup_fn
 
     def test_get_cli_plugin_setup_fn_not_found(self):
         assert get_cli_plugin_setup_fn("nonexistent") is None

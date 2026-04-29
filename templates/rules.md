@@ -41,7 +41,7 @@ cp -rf source dest          # NOT: cp -r source dest
 
 ## Skills
 
-Agent skills are at `~/.agents/skills/`. Deploy with `npm install -g opencode-kuato` or `cp -rf`.
+Agent skills are at `~/.agents/skills/`. Deploy with `npm install -g llmem` or `cp -rf`.
 
 **Mandatory coding workflow — run these skills in order:**
 

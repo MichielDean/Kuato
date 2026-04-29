@@ -1,5 +1,5 @@
 {
-  "name": "opencode-kuato",
+  "name": "llmem",
   "version": "1.0.0",
   "description": "Generic skills for OpenCode: git-sync, task-intake, test-and-verify, branch-strategy, critical-code-reviewer, pre-pr-review, visual-explainer",
   "license": "MIT",

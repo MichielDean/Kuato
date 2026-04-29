@@ -89,7 +89,7 @@ Use the llmem skill for memory operations. Auto-extract memories from conversati
 
 ## Skills
 
-Agent skills are at `~/.agents/skills/`. Source of truth: `~/source/lobsterdog/skills/` (repo). Deploy with `install.sh` or `cp -rf`.
+Agent skills are at `~/.agents/skills/`. Source of truth: `~/source/llmem/skills/` (repo). Deploy with `install.sh` or `cp -rf`.
 
 **Mandatory coding workflow — run these skills in order:**
 
@@ -140,14 +140,14 @@ The user chats remotely almost exclusively. They cannot open local files from th
 **Diagrams server:** A persistent `python3 -m http.server` runs on port 8321 serving `~/.agent/diagrams/` at `0.0.0.0`. When generating visual explainer output or any browsable file:
 
 1. Write the file to `~/.agent/diagrams/`
-2. Provide the URL: `http://lobsterdog.local:8321/filename.html`
+2. Provide the URL: `http://llmem.local:8321/filename.html`
 3. If the server isn't running, start it as a background process
 
 **Always give the URL, never just the file path.** The user can't open `/home/lobsterdog/...` from their chat interface.
 
-**Resumes:** Generated resumes and cover letters go to `~/.agent/resumes/`. They appear on the dashboard at `http://lobsterdog.local:8322/resumes`. Use `lobresume tailor --output-dir ~/.agent/resumes/` to generate tailored resumes. See the `lobresume` skill for full instructions.
+**Resumes:** Generated resumes and cover letters go to `~/.agent/resumes/`. They appear on the dashboard at `http://llmem.local:8322/resumes`. Use `lobresume tailor --output-dir ~/.agent/resumes/` to generate tailored resumes. See the `lobresume` skill for full instructions.
 
-**Dashboard:** The dashboard at `http://lobsterdog.local:8322` shows diagrams, resumes, dreams, and memories — all sorted by most recent.
+**Dashboard:** The dashboard at `http://llmem.local:8322` shows diagrams, resumes, dreams, and memories — all sorted by most recent.
 
 ## Auto-Extraction Hook
 
@@ -250,7 +250,7 @@ llmem dream --apply --report
 
 After each `--apply` run, the dream:
 - Writes a markdown diary to `~/.config/llmem/dream-diary.md` (append — entries accumulate)
-- With `--report`, generates an HTML report at `http://lobsterdog.local:8321/dream-report.html` and archives a timestamped copy to `~/.agent/diagrams/dream-reports/`
+- With `--report`, generates an HTML report at `http://llmem.local:8321/dream-report.html` and archives a timestamped copy to `~/.agent/diagrams/dream-reports/`
 - Stores a summary `event` memory so the next session surfaces the dream outcome
 
 The systemd timer is deployed automatically by `install.sh`. Set `dream.enabled: false` to disable it.

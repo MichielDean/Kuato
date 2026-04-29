@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * opencode-kuato validation and integration tests.
+ * llmem validation and integration tests.
  *
  * Validates that all skill directories contain valid SKILL.md frontmatter,
  * have no Lobsterdog/Cistern/personal references, and that install.js
