@@ -8,13 +8,10 @@ import argparse
 import io
 import json
 import sys
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from llmem.cli import cmd_track_review, cmd_suggest_categories, main
-from llmem.taxonomy import ERROR_TAXONOMY, REVIEW_SEVERITY_TAXONOMY
 from llmem.store import MemoryStore
 
 

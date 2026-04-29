@@ -6,7 +6,6 @@ to inject memory context and extract memories at session lifecycle events.
 
 import argparse
 import io
-import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -25,7 +24,6 @@ from llmem.session_hooks import (
     SESSION_IDLE_NO_TRANSCRIPT,
 )
 from llmem.hooks import PROCESS_RESULT_SUCCESS
-from llmem.store import MemoryStore
 
 # Patch target for create_session_hook_coordinator — imported inside
 # cmd_context and cmd_hook function bodies from llmem.session_hooks.
