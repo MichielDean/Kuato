@@ -213,6 +213,13 @@ llmem stats
 llmem register-type my_custom_type
 llmem types
 
+# Working memory inbox
+llmem note "Important observation from today's session"
+llmem note "Tentative insight" --attention-score 0.3
+llmem inbox
+llmem consolidate --dry-run
+llmem consolidate --min-score 0.5
+
 # Export and import
 llmem export --output backup.json
 llmem import backup.json
@@ -243,6 +250,7 @@ memory:
   context_budget: 4000
   auto_extract: true
   max_file_size: 10485760     # 10MB
+  inbox_capacity: 7            # Miller's 7±2; items above this count are evicted
 
 dream:
   enabled: true
@@ -297,6 +305,9 @@ Commands:
   import          Import memories from a JSON file
   register-type   Register a new memory type
   types           List registered memory types
+  note            Add a note to the working memory inbox
+  inbox           List items in the working memory inbox
+  consolidate     Promote inbox items to long-term memory
   init            Initialize the llmem memory system
 ```
 
@@ -378,6 +389,45 @@ Export produces a JSON array of all memories. Import validates that each entry h
 
 - `--output FILE`: Write export to a file. The output path is validated against traversal attacks, system directories, and symlinks.
 - Import `FILE`: Path to a JSON file. Files in protected system directories are blocked, and the file must be under 10 MiB.
+
+### `llmem note`
+
+```bash
+llmem note TEXT [--source SOURCE] [--attention-score FLOAT] [--metadata JSON]
+```
+
+Add an ephemeral note to the working memory inbox. Notes are staged and not yet in long-term memory.
+
+- `TEXT` (required): Note content text.
+- `--source`: Origin of the note. One of `note`, `learn`, `extract`, `consolidation`. Default: `note`.
+- `--attention-score`: Float in [0.0, 1.0]. Higher scores survive eviction and are prioritized during consolidation. Default: `0.5`.
+- `--metadata`: Optional JSON metadata string.
+
+The inbox has a configurable capacity (default: 7, Miller's 7±2). When full, the item with the lowest attention score is evicted (tiebreak: earliest `created_at`).
+
+### `llmem inbox`
+
+```bash
+llmem inbox [--limit N] [--json]
+```
+
+List items in the working memory inbox, ordered by attention score descending.
+
+- `--limit`: Maximum items to display. Default: 20.
+- `--json`: Output as JSON (full item details).
+
+Without `--json`, prints a human-readable table with ID, source, score, content preview, and timestamp.
+
+### `llmem consolidate`
+
+```bash
+llmem consolidate [--min-score FLOAT] [--dry-run]
+```
+
+Promote inbox items to long-term memory. Items with attention score ≥ `min_score` become permanent memories (with `source=consolidation` and `confidence=attention_score`). Items below the threshold are evicted. After consolidation, the inbox is empty.
+
+- `--min-score`: Minimum attention score threshold for promotion. Items below this are evicted. Default: `0.0` (promote everything).
+- `--dry-run`: Show what would happen without making changes. Promoted items won't have a `memory_id`, and no rows are inserted or deleted.
 
 ### `llmem register-type` / `llmem types`
 
@@ -508,6 +558,47 @@ store.update(mid, content="Updated content")
 
 # Invalidate (soft delete)
 store.invalidate(mid, reason="No longer relevant")
+
+# --- Working Memory Inbox ---
+# The inbox is a capacity-limited staging area for ephemeral information.
+# Items enter via add_to_inbox() and are promoted to long-term memory via
+# consolidate() or the dream deep phase.
+
+# Add a note to the inbox (default attention_score=0.5, source=note)
+inbox_id = store.add_to_inbox(content="Important observation", attention_score=0.8)
+
+# Add with explicit source and metadata
+inbox_id = store.add_to_inbox(
+    content="Learned something",
+    source="learn",  # note | learn | extract | consolidation
+    attention_score=0.7,
+    metadata={"context": "session-abc"},
+)
+
+# Retrieve an inbox item
+item = store.get_from_inbox(inbox_id)
+# item = {"id": ..., "content": ..., "source": ..., "attention_score": ..., ...}
+
+# List inbox items (ordered by attention_score DESC, created_at ASC)
+items = store.list_inbox(limit=20)
+
+# Get inbox count
+count = store.inbox_count()
+
+# Update attention score
+store.update_inbox_attention_score(inbox_id, 0.9)
+
+# Remove an inbox item
+store.remove_from_inbox(inbox_id)
+
+# Consolidate inbox → long-term memory
+# Items with attention_score >= min_score become memories (source=consolidation,
+# confidence=attention_score). Items below are evicted. Inbox is empty after.
+result = store.consolidate(min_score=0.5)
+# result = {"promoted": [...], "evicted": [...]}
+
+# Dry run (shows what would happen without changes)
+result = store.consolidate(min_score=0.5, dry_run=True)
 
 # Batch access tracking (efficient single UPDATE for multiple IDs)
 # Increments access_count and updates accessed_at for each listed memory.
@@ -812,7 +903,7 @@ The embedding dimension defaults to 768 (matching `nomic-embed-text`), configura
 The dream cycle performs automated memory maintenance during idle periods:
 
 - **Light phase:** Sort and deduplicate near-duplicate memories (cosine similarity ≥ threshold).
-- **Deep phase:** Score, promote, decay, and merge memories. Decays confidence on idle memories. Boosts frequently accessed memories. LLM-assisted merging of similar pairs.
+- **Deep phase:** Score, promote, decay, and merge memories. Also promotes inbox items to long-term memory (items with attention_score ≥ `dream.min_score` become permanent memories; lower-scored items are evicted). Decays confidence on idle memories. Boosts frequently accessed memories. LLM-assisted merging of similar pairs.
 - **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection).
 
 Configuration is under the `dream:` key in `config.yaml`. Set `dream.enabled: false` to disable.
@@ -1007,7 +1098,7 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 | `llmem.url_validate` | `is_safe_url()`, `safe_urlopen()`, `validate_base_url()`, `_extract_url_string()` (mirrors `memory.url_validate`), DNS rebinding protection |
 | `llmem.paths` | `validate_session_id()`, `get_context_dir()`, `_validate_write_path()`, `BLOCKED_SYSTEM_PREFIXES`, home/write path checks |
 | `llmem.registry` | `register_session_hook()`, `get_registered_session_hooks()`, `VALID_SESSION_EVENT_TYPES` |
-| `llmem.store` | `MemoryStore` with `export_all(limit=)`, `import_memories()` validation, brute-force/embedding caps |
+| `llmem.store` | `MemoryStore` with `export_all(limit=)`, `import_memories()` validation, brute-force/embedding caps, inbox methods (`add_to_inbox`, `get_from_inbox`, `list_inbox`, `remove_from_inbox`, `update_inbox_attention_score`, `consolidate`), capacity eviction |
 
 ## Running Tests
 
