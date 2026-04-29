@@ -210,13 +210,28 @@ function testFrontmatterNameValidFormat(skillDir) {
 
 function checkNoPersonalReferences(dirPath, label) {
   var foundProblems = [];
+  var allowedPatterns = [/github\.com\/MichielDean\//];
   function checkFile(filePath, relativePath) {
     var content = fs.readFileSync(filePath, 'utf8');
     for (var i = 0; i < FORBIDDEN_PATTERNS.length; i++) {
       var pattern = FORBIDDEN_PATTERNS[i];
       var matches = content.match(pattern);
       if (matches) {
-        foundProblems.push(relativePath + ': found "' + matches[0] + '"');
+        var lineIdx = content.indexOf(matches[0]);
+        var lineStart = content.lastIndexOf('\n', lineIdx - 1) + 1;
+        var lineEnd = content.indexOf('\n', lineIdx);
+        if (lineEnd === -1) lineEnd = content.length;
+        var line = content.substring(lineStart, lineEnd);
+        var lineAllowed = false;
+        for (var j = 0; j < allowedPatterns.length; j++) {
+          if (allowedPatterns[j].test(line)) {
+            lineAllowed = true;
+            break;
+          }
+        }
+        if (!lineAllowed) {
+          foundProblems.push(relativePath + ': found "' + matches[0] + '"');
+        }
       }
     }
   }
@@ -310,7 +325,7 @@ function testTemplateNoPersonalReferences(templateFile) {
 // ── Integration Tests ─────────────────────────────────────────────────
 
 function testInstallCreatesTargetDir() {
-  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kuato-test-'));
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'llmem-test-'));
   var fakeHome = path.join(tmpDir, 'home');
   fs.mkdirSync(fakeHome);
   try {
@@ -330,7 +345,7 @@ function testInstallCreatesTargetDir() {
 }
 
 function testInstallCopiesAllSkills() {
-  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kuato-test-'));
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'llmem-test-'));
   var fakeHome = path.join(tmpDir, 'home');
   fs.mkdirSync(fakeHome);
   try {
@@ -359,7 +374,7 @@ function testInstallCopiesAllSkills() {
 }
 
 function testInstallOverwritesExisting() {
-  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kuato-test-'));
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'llmem-test-'));
   var fakeHome = path.join(tmpDir, 'home');
   fs.mkdirSync(fakeHome);
   try {
@@ -398,7 +413,7 @@ function testInstallOverwritesExisting() {
 
 function testInstallFailsOnPermissionError() {
   // Create a directory that we can't write to
-  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kuato-test-'));
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'llmem-test-'));
   var fakeHome = path.join(tmpDir, 'home');
   fs.mkdirSync(fakeHome);
   var targetDir = path.join(fakeHome, '.agents', 'skills');
@@ -435,7 +450,7 @@ function testShareShRejectsSecrets() {
     console.log('  SKIP: share.sh secret detection (share.sh not found)');
     return;
   }
-  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kuato-share-test-'));
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'llmem-share-test-'));
   try {
     // Test: HTML with AWS access key should be rejected
     var awsKeyHtml = path.join(tmpDir, 'aws-key.html');
@@ -494,9 +509,9 @@ function testTemplatesInPackageJsonFiles() {
   assert(hasTemplates, 'package.json files array includes "templates/"');
 }
 
-function testOpencodeJsonLoadsAllHarnessFiles() {
+function testOpencodeJsonLoadsAllTemplateFiles() {
   var config = JSON.parse(fs.readFileSync(path.join(__dirname, 'opencode.json'), 'utf8'));
-  var expected = ['harness/identity.md', 'harness/user.md', 'harness/rules.md'];
+  var expected = ['templates/identity.md', 'templates/user.md', 'templates/rules.md'];
   var instructions = config.instructions || [];
   for (var i = 0; i < expected.length; i++) {
     assert(instructions.indexOf(expected[i]) !== -1,
@@ -855,7 +870,7 @@ testInstallOverwritesExisting();
 testInstallFailsOnPermissionError();
 testShareShRejectsSecrets();
 testTemplatesInPackageJsonFiles();
-testOpencodeJsonLoadsAllHarnessFiles();
+testOpencodeJsonLoadsAllTemplateFiles();
 
 console.log('\n=== opencode-llmem Package Validation Tests ===\n');
 

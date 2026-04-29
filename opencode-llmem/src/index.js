@@ -1,4 +1,4 @@
-const LLMEM = "/home/lobsterdog/.local/bin/llmem"
+const LLMEM = "llmem"
 const fs = require("fs")
 const child_process = require("child_process")
 

@@ -61,7 +61,7 @@ DEFAULTS = {
         "boost_on_promote": 0.1,
         "merge_model": "qwen2.5:1.5b",
         "diary_path": None,  # Resolved from get_dream_diary_path()
-        "report_path": str(Path("~/.agent/diagrams/dream-report.html").expanduser()),
+        "report_path": None,  # Resolved from get_dream_report_path()
         "behavioral_threshold": 3,
         "behavioral_lookback_days": 30,
         "proposed_changes_path": None,  # Resolved from get_proposed_changes_path()

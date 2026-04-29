@@ -14,7 +14,7 @@ pip install llmem
 
 Requires Python 3.11+ and [PyYAML](https://pypi.org/project/PyYAML/).
 
-This copies all 10 skills into `~/.agents/skills/`, where OpenCode discovers them automatically.
+This copies all 10 skills into the agent skills directory, where OpenCode discovers them automatically.
 
 ## Skills
 
@@ -332,7 +332,7 @@ dream:
   boost_on_promote: 0.1
   merge_model: qwen2.5:1.5b
   diary_path: null            # Auto-resolved from get_dream_diary_path()
-  report_path: ~/.agent/diagrams/dream-report.html  # Must not target system dirs, '..' traversal, or symlinks
+  report_path: null              # Auto-resolved from get_dream_report_path()
   behavioral_threshold: 3
   behavioral_lookback_days: 30
   proposed_changes_path: null # Auto-resolved from get_proposed_changes_path()
@@ -1286,7 +1286,7 @@ Code ref paths must be relative (no leading `/`) and must not contain `..` trave
 
 ## Dream Cycle
 
-The dream cycle performs automated memory maintenance during idle periods. It can be invoked manually via `llmem dream` (see [CLI Reference](#llmem-dream)) or run automatically by the `lobsterdog-dream.service` systemd timer.
+The dream cycle performs automated memory maintenance during idle periods. It can be invoked manually via `llmem dream` (see [CLI Reference](#llmem-dream)) or run automatically by a systemd timer.
 
 - **Light phase:** Sort and deduplicate near-duplicate memories (cosine similarity ≥ threshold).
 - **Deep phase:** Score, promote, decay, and merge memories. Also promotes inbox items to long-term memory (items with attention_score ≥ `dream.min_score` become permanent memories; lower-scored items are evicted). Decays confidence on idle memories. Boosts frequently accessed memories. LLM-assisted merging of similar pairs. Auto-links memories with high cosine similarity (≥ `dream.auto_link_threshold`, default 0.85) by creating `related_to` relations between them.

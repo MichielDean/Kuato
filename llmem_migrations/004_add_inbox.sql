@@ -1,7 +1,7 @@
 -- 004_add_inbox.sql — DDL only
 -- Working memory inbox: capacity-limited staging area with attention scoring.
--- Items enter via 'lobmem note' and are promoted to long-term memory
--- via 'lobmem consolidate' or the dream deep phase.
+-- Items enter via 'llmem note' and are promoted to long-term memory
+-- via 'llmem consolidate' or the dream deep phase.
 
 CREATE TABLE IF NOT EXISTS "inbox" (
     "id" TEXT PRIMARY KEY,

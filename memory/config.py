@@ -1,4 +1,4 @@
-"""Configuration loading for lobmem."""
+"""Configuration loading for llmem (legacy compat shim — prefer llmem.config)."""
 
 import logging
 from pathlib import Path
@@ -9,11 +9,11 @@ from .url_validate import is_safe_url, _strip_credentials
 
 log = logging.getLogger(__name__)
 
-CONFIG_PATH = Path("~/.lobsterdog/config.yaml").expanduser()
+CONFIG_PATH = Path("~/.config/llmem/config.yaml").expanduser()
 
 DEFAULTS = {
     "memory": {
-        "db": str(Path("~/.lobsterdog/memory.db").expanduser()),
+        "db": str(Path("~/.config/llmem/memory.db").expanduser()),
         "ollama_url": "http://localhost:11434",
         "embed_model": "nomic-embed-text",
         "extract_model": "qwen2.5:1.5b",
@@ -38,20 +38,20 @@ DEFAULTS = {
         "min_unique_queries": 1,
         "boost_on_promote": 0.1,
         "merge_model": "qwen2.5:1.5b",
-        "diary_path": str(Path("~/.lobsterdog/dream-diary.md").expanduser()),
+        "diary_path": str(Path("~/.config/llmem/dream-diary.md").expanduser()),
         "report_path": str(Path("~/.agent/diagrams/dream-report.html").expanduser()),
         "behavioral_threshold": 3,
         "behavioral_lookback_days": 30,
         "skill_patch_threshold": 3,
         "proposed_changes_path": str(
-            Path("~/.lobsterdog/proposed-changes.md").expanduser()
+            Path("~/.config/llmem/proposed-changes.md").expanduser()
         ),
         "calibration_enabled": True,
         "stale_procedure_days": 30,
         "calibration_lookback_days": 90,
     },
     "opencode": {
-        "context_dir": str(Path("~/.lobsterdog/context").expanduser()),
+        "context_dir": str(Path("~/.config/llmem/context").expanduser()),
         "db_path": str(Path("~/.local/share/opencode/opencode.db").expanduser()),
     },
     "resume": {
