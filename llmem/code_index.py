@@ -83,7 +83,12 @@ class CodeIndex:
         return self._conn
 
     def _load_vec_extension(self) -> None:
-        """Attempt to load the sqlite-vec extension."""
+        """Attempt to load the sqlite-vec extension.
+
+        Disables extension loading immediately after use (both success and
+        failure paths) to prevent runtime loading of arbitrary shared
+        libraries via SQLite.
+        """
         if self._disable_vec:
             self._vec_available = False
             return

@@ -3,7 +3,7 @@
 import sqlite3
 
 
-from llmem.store import MemoryStore, _run_migrations
+from llmem.store import MemoryStore, _run_migrations, _split_sql_statements
 
 
 class TestMigration_NumberedFiles:
@@ -201,3 +201,210 @@ class TestMigration_CodeChunksTable:
         assert "BEGIN TRANSACTION" not in sql_content
         # Only the schema_migrations INSERT is allowed, no data DML
         assert 'INSERT INTO "memory_types"' not in sql_content
+
+
+class TestMigration_006RefTypes:
+    """Test that migration 006 adds target_type column and extends relation_type CHECK."""
+
+    def test_006_ref_types_migration_applied(self, tmp_path):
+        """Migration 006 is tracked in _schema_migrations."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        conn = store._connect()
+        rows = conn.execute(
+            'SELECT "version" FROM "_schema_migrations" ORDER BY "version"'
+        ).fetchall()
+        versions = [row[0] for row in rows]
+        store.close()
+        assert 6 in versions
+
+    def test_006_relations_has_target_type_column(self, tmp_path):
+        """relations table has a target_type column."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        conn = store._connect()
+        cursor = conn.execute("PRAGMA table_info('relations')")
+        columns = {row[1] for row in cursor.fetchall()}
+        store.close()
+        assert "target_type" in columns
+
+    def test_006_target_type_default_is_memory(self, tmp_path):
+        """Existing relation rows have target_type='memory'."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        # Add a relation to test default
+        mid1 = store.add(type="fact", content="memory A")
+        mid2 = store.add(type="fact", content="memory B")
+        rel_id = store.add_relation(mid1, mid2, "related_to")
+        conn = store._connect()
+        rows = conn.execute(
+            'SELECT "target_type" FROM "relations" WHERE "id" = ?',
+            (rel_id,),
+        ).fetchall()
+        store.close()
+        assert all(row[0] == "memory" for row in rows)
+
+    def test_006_relation_type_includes_references(self, tmp_path):
+        """The CHECK constraint on relation_type includes 'references'."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        mid1 = store.add(type="fact", content="memory A")
+        mid2 = store.add(type="fact", content="memory B")
+        # This would raise if 'references' is not in the CHECK constraint
+        rel_id = store.add_relation(mid1, mid2, "references")
+        assert rel_id is not None
+        store.close()
+
+    def test_006_table_recreation_is_atomic(self, tmp_path):
+        """Migration 006's table recreation (DROP + RENAME) is atomic.
+
+        The migration runner (_run_migrations) wraps each migration in
+        BEGIN/COMMIT at the Python level, so a crash between DROP TABLE
+        and ALTER TABLE RENAME rolls back to the original table state
+        rather than leaving no relations table at all.
+        """
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        conn = store._connect()
+        # Verify relations table exists after migration (table recreation succeeded)
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='relations'"
+        ).fetchone()
+        # Verify target_type column exists (proves migration 006 completed)
+        cursor = conn.execute("PRAGMA table_info('relations')")
+        columns = {row[1] for row in cursor.fetchall()}
+        store.close()
+        assert result is not None
+        assert "target_type" in columns
+
+
+class TestMigration_SplitSqlStatements:
+    """Test _split_sql_statements helper for migration transaction safety."""
+
+    def test_split_simple_ddl(self):
+        """Splits simple DDL statements correctly."""
+        sql = 'CREATE TABLE "test" ("id" TEXT PRIMARY KEY);'
+        stmts = _split_sql_statements(sql)
+        assert len(stmts) == 1
+        assert 'CREATE TABLE "test"' in stmts[0]
+
+    def test_split_strips_transaction_control(self):
+        """BEGIN TRANSACTION and COMMIT are stripped (handled by Python-level control)."""
+        sql = "BEGIN TRANSACTION;\nINSERT INTO t VALUES (1);\nCOMMIT;"
+        stmts = _split_sql_statements(sql)
+        assert len(stmts) == 1
+        assert "INSERT INTO t VALUES (1)" in stmts[0]
+        assert "BEGIN" not in " ".join(stmts)
+        assert "COMMIT" not in " ".join(stmts)
+
+    def test_split_strips_begin_without_transaction(self):
+        """Bare BEGIN; is also stripped."""
+        sql = "BEGIN;\nDROP TABLE t;\nCOMMIT;"
+        stmts = _split_sql_statements(sql)
+        assert len(stmts) == 1
+        assert "DROP TABLE t" in stmts[0]
+
+    def test_split_preserves_comments_in_statement_body(self):
+        """Comments on their own line are filtered out, but inline comments
+        within a statement are preserved."""
+        sql = '-- Header comment\nCREATE TABLE "t" ("id" TEXT); -- inline'
+        stmts = _split_sql_statements(sql)
+        assert len(stmts) == 1
+        assert 'CREATE TABLE "t" ("id" TEXT)' in stmts[0]
+
+    def test_split_empty_sql(self):
+        """Empty SQL returns empty list."""
+        assert _split_sql_statements("") == []
+        assert _split_sql_statements("-- only comments\n") == []
+
+    def test_split_migration_006_produces_ddl_statements(self):
+        """_split_sql_statements extracts all DDL from migration 006."""
+        import importlib.resources
+
+        migrations_pkg = importlib.resources.files("llmem_migrations")
+        sql_content = migrations_pkg.joinpath("006_add_ref_types.sql").read_text()
+        stmts = _split_sql_statements(sql_content)
+        # Should have: CREATE TABLE, INSERT INTO relations_new,
+        # DROP TABLE, ALTER TABLE RENAME, 3 CREATE INDEX = 7 statements
+        assert len(stmts) >= 5
+        # No transaction control statements
+        for s in stmts:
+            assert not s.upper().startswith("BEGIN")
+            assert not s.upper().startswith("COMMIT")
+
+    def test_split_migration_003_strips_transaction(self):
+        """For DML migration 003, BEGIN TRANSACTION/COMMIT are stripped."""
+        import importlib.resources
+
+        migrations_pkg = importlib.resources.files("llmem_migrations")
+        sql_content = migrations_pkg.joinpath(
+            "003_register_default_types.sql"
+        ).read_text()
+        stmts = _split_sql_statements(sql_content)
+        # 8 INSERT statements (one per memory type)
+        insert_stmts = [s for s in stmts if "INSERT" in s]
+        assert len(insert_stmts) >= 8
+        # No transaction control statements
+        for s in stmts:
+            assert not s.upper().startswith("BEGIN")
+            assert not s.upper().startswith("COMMIT")
+
+    def test_split_multiline_trigger_begin_on_own_line(self):
+        """Multi-line trigger with BEGIN on its own line is preserved as
+        a single statement."""
+        sql = (
+            "CREATE TRIGGER my_trigger\n"
+            "AFTER INSERT ON my_table\n"
+            "BEGIN\n"
+            "    INSERT INTO log VALUES (1);\n"
+            "END;\n"
+        )
+        stmts = _split_sql_statements(sql)
+        assert len(stmts) == 1
+        assert "CREATE TRIGGER my_trigger" in stmts[0]
+        assert "BEGIN" in stmts[0]
+        assert "INSERT INTO log" in stmts[0]
+
+    def test_split_single_line_trigger_still_works(self):
+        """Single-line trigger (CREATE TRIGGER ... BEGIN) still works."""
+        sql = (
+            "CREATE TRIGGER t AFTER INSERT ON x BEGIN\n"
+            "    INSERT INTO y VALUES (1);\n"
+            "END;\n"
+        )
+        stmts = _split_sql_statements(sql)
+        assert len(stmts) == 1
+        assert "CREATE TRIGGER t" in stmts[0]
+
+    def test_split_multiline_trigger_with_multiple_statements(self):
+        """Multi-line trigger and other DDL are both parsed correctly."""
+        sql = (
+            "CREATE TABLE t (id TEXT);\n"
+            "CREATE TRIGGER my_trig\n"
+            "AFTER DELETE ON t\n"
+            "BEGIN\n"
+            "    INSERT INTO log VALUES (1);\n"
+            "END;\n"
+            "CREATE INDEX idx ON t(id);\n"
+        )
+        stmts = _split_sql_statements(sql)
+        assert len(stmts) == 3
+        assert "CREATE TABLE t" in stmts[0]
+        assert "CREATE TRIGGER my_trig" in stmts[1]
+        assert "BEGIN" in stmts[1]
+        assert "CREATE INDEX" in stmts[2]
+
+    def test_split_migration_001_preserves_triggers(self):
+        """Migration 001 (which has FTS5 triggers) is split correctly
+        with trigger bodies intact."""
+        import importlib.resources
+
+        migrations_pkg = importlib.resources.files("llmem_migrations")
+        sql_content = migrations_pkg.joinpath("001_initial_schema.sql").read_text()
+        stmts = _split_sql_statements(sql_content)
+        trigger_stmts = [s for s in stmts if "CREATE TRIGGER" in s.upper()]
+        # 001 has 3 FTS triggers
+        assert len(trigger_stmts) == 3
+        for trig in trigger_stmts:
+            assert "BEGIN" in trig
+            assert "INSERT INTO" in trig

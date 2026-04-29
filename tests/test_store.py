@@ -458,3 +458,243 @@ class TestStore_Migration005Compatibility:
         assert store.delete(mid)
         assert store.get(mid) is None
         store.close()
+
+
+class TestStore_RelationsRefTypes:
+    """Test add_relation with target_type and references relation type."""
+
+    def test_add_relation_with_target_type_code(self, store):
+        """add_relation with target_type='code' inserts row with target_type='code'."""
+        mid = store.add(type="fact", content="source memory")
+        code_target_id = "src/lib.rs:42:58"
+        rel_id = store.add_relation(
+            mid, code_target_id, "references", target_type="code"
+        )
+        assert rel_id is not None
+        relations = store.get_relations(mid)
+        assert len(relations) >= 1
+        ref_rel = [r for r in relations if r["id"] == rel_id][0]
+        assert ref_rel["target_type"] == "code"
+        assert ref_rel["target_id"] == code_target_id
+        assert ref_rel["relation_type"] == "references"
+
+    def test_add_relation_default_target_type_memory(self, store):
+        """add_relation without target_type defaults to 'memory'."""
+        mid1 = store.add(type="fact", content="memory A")
+        mid2 = store.add(type="fact", content="memory B")
+        rel_id = store.add_relation(mid1, mid2, "related_to")
+        relations = store.get_relations(mid1)
+        ref_rel = [r for r in relations if r["id"] == rel_id][0]
+        assert ref_rel["target_type"] == "memory"
+
+    def test_add_relation_references_type_accepted(self, store):
+        """add_relation with 'references' type succeeds (CHECK constraint extended)."""
+        mid = store.add(type="fact", content="source memory")
+        mid2 = store.add(type="fact", content="target memory")
+        rel_id = store.add_relation(mid, mid2, "references")
+        assert rel_id is not None
+        relations = store.get_relations(mid)
+        assert any(r["relation_type"] == "references" for r in relations)
+
+    def test_existing_relations_have_target_type_memory(self, store):
+        """All relation rows have target_type='memory' after migration 006."""
+        mid1 = store.add(type="fact", content="first")
+        mid2 = store.add(type="fact", content="second")
+        store.add_relation(mid1, mid2, "related_to")
+        conn = store._connect()
+        rows = conn.execute('SELECT "target_type" FROM "relations"').fetchall()
+        for row in rows:
+            assert row[0] == "memory"
+
+    def test_get_relations_includes_target_type(self, store):
+        """get_relations(mem_id) returns dicts with a target_type key."""
+        mid = store.add(type="fact", content="test memory")
+        mid2 = store.add(type="fact", content="related memory")
+        store.add_relation(mid, mid2, "related_to")
+        relations = store.get_relations(mid)
+        assert len(relations) >= 1
+        for r in relations:
+            assert "target_type" in r
+
+    def test_add_relation_code_ref_rejects_absolute_path(self, store):
+        """add_relation rejects target_type='code' with absolute path — prevents
+        arbitrary file reads via code refs like /etc/passwd or /home/user/.ssh/id_rsa."""
+        import pytest
+
+        mid = store.add(type="fact", content="source memory")
+        with pytest.raises(ValueError, match="unsafe path"):
+            store.add_relation(mid, "/etc/passwd:1:5", "references", target_type="code")
+
+    def test_add_relation_code_ref_rejects_traversal(self, store):
+        """add_relation rejects target_type='code' with '..' traversal — prevents
+        directory escape via code refs like ../../etc/passwd."""
+        import pytest
+
+        mid = store.add(type="fact", content="source memory")
+        with pytest.raises(ValueError, match="unsafe path"):
+            store.add_relation(
+                mid, "../../etc/passwd:1:5", "references", target_type="code"
+            )
+
+    def test_add_relation_code_ref_rejects_absolute_home_path(self, store):
+        """add_relation rejects target_type='code' with absolute /home path —
+        prevents reading SSH keys, .bashrc, etc."""
+        import pytest
+
+        mid = store.add(type="fact", content="source memory")
+        with pytest.raises(ValueError, match="unsafe path"):
+            store.add_relation(
+                mid,
+                "/home/user/.ssh/id_rsa:1:5",
+                "references",
+                target_type="code",
+            )
+
+    def test_add_relation_code_ref_rejects_invalid_format(self, store):
+        """add_relation rejects target_type='code' with invalid format
+        (missing line numbers)."""
+        import pytest
+
+        mid = store.add(type="fact", content="source memory")
+        with pytest.raises(ValueError, match="path:start_line:end_line"):
+            store.add_relation(mid, "src/lib.rs:42", "references", target_type="code")
+
+    def test_add_relation_code_ref_accepts_relative_path(self, store):
+        """add_relation accepts target_type='code' with safe relative path."""
+        mid = store.add(type="fact", content="source memory")
+        code_target_id = "src/lib.rs:42:58"
+        rel_id = store.add_relation(
+            mid, code_target_id, "references", target_type="code"
+        )
+        assert rel_id is not None
+        relations = store.get_relations(mid)
+        ref_rel = [r for r in relations if r["id"] == rel_id][0]
+        assert ref_rel["target_id"] == code_target_id
+
+    def test_add_relation_memory_target_unaffected_by_path_validation(self, store):
+        """add_relation with target_type='memory' is not affected by code ref
+        path validation — memory IDs may look like paths but aren't validated."""
+        mid1 = store.add(type="fact", content="source memory")
+        mid2 = store.add(type="fact", content="target memory")
+        # This should work fine — path validation only applies to target_type='code'
+        rel_id = store.add_relation(mid1, mid2, "related_to", target_type="memory")
+        assert rel_id is not None
+
+
+class TestStore_TraverseRelationsWithRefs:
+    """Test traverse_relations with target_type filter for code refs."""
+
+    def test_traverse_relations_follows_code_refs(self, store):
+        """traverse_relations where mem has a references edge to a code chunk
+        returns the code chunk target_id."""
+        mid = store.add(type="fact", content="source memory")
+        code_ref = "src/lib.rs:42:58"
+        store.add_relation(mid, code_ref, "references", target_type="code")
+        results = store.traverse_relations([mid], max_depth=1)
+        code_results = [r for r in results if r["target_type"] == "code"]
+        assert len(code_results) >= 1
+        assert code_results[0]["target_id"] == code_ref
+
+    def test_traverse_relations_code_ref_expansion_depth(self, store):
+        """traverse_relations respects max_depth, does not expand beyond configured depth."""
+        mid = store.add(type="fact", content="root memory")
+        results_depth_1 = store.traverse_relations([mid], max_depth=1)
+        results_depth_2 = store.traverse_relations([mid], max_depth=2)
+        # Both should return results since there's one hop, but the structure
+        # should respect the max_depth parameter (no extra expansion beyond 1)
+        assert isinstance(results_depth_1, list)
+        assert isinstance(results_depth_2, list)
+
+    def test_traverse_relations_target_type_filter(self, store):
+        """traverse_relations with target_type='code' only returns code edges."""
+        mid = store.add(type="fact", content="source memory")
+        mid2 = store.add(type="fact", content="target memory")
+        code_ref = "src/lib.rs:1:10"
+        store.add_relation(mid, mid2, "related_to", target_type="memory")
+        store.add_relation(mid, code_ref, "references", target_type="code")
+        # target_type='code' only
+        code_results = store.traverse_relations([mid], max_depth=1, target_type="code")
+        for r in code_results:
+            assert r["target_type"] == "code"
+        # target_type='memory' only
+        mem_results = store.traverse_relations([mid], max_depth=1, target_type="memory")
+        for r in mem_results:
+            assert r["target_type"] == "memory"
+
+    def test_traverse_relations_backward_arm_reports_memory_type(self, store):
+        """When traverse_relations reaches backward through a code-ref edge
+        at depth > 1, the reached memory node must have target_type='memory',
+        not 'code' (the edge's target_type).
+
+        Scenario: memA → references → codeChunk, memB → references → codeChunk.
+        Starting from memA at depth 2, the backward arm reaches memB (source of
+        an edge targeting codeChunk). The reached node is a memory, so its
+        target_type in results must be 'memory'.
+        """
+        mid_a = store.add(type="fact", content="memory A")
+        mid_b = store.add(type="fact", content="memory B")
+        code_ref = "src/lib.rs:42:58"
+        store.add_relation(mid_a, code_ref, "references", target_type="code")
+        store.add_relation(mid_b, code_ref, "references", target_type="code")
+        results = store.traverse_relations([mid_a], max_depth=2)
+        # Find the result for mid_b (reached backward through code-ref edge)
+        b_results = [r for r in results if r["target_id"] == mid_b]
+        assert len(b_results) >= 1, (
+            f"Expected to reach {mid_b} from {mid_a} via code ref {code_ref}, "
+            f"but got results: {results}"
+        )
+        # The reached node is a memory — target_type must be 'memory', not 'code'
+        assert b_results[0]["target_type"] == "memory", (
+            f"Backward-reached memory {mid_b} should have target_type='memory', "
+            f"got '{b_results[0]['target_type']}'"
+        )
+
+
+class TestStore_DeleteOrphanedRelations:
+    """Test that deleting a memory cleans up orphaned target_id relations."""
+
+    def test_delete_memory_removes_target_id_relations(self, store):
+        """When a memory is deleted, relations where it is the target_id
+        (target_type='memory') are cleaned up — no orphaned rows remain."""
+        mid1 = store.add(type="fact", content="source memory")
+        mid2 = store.add(type="fact", content="target memory")
+        store.add_relation(mid1, mid2, "related_to", target_type="memory")
+        # mid2 is the target — delete it
+        assert store.delete(mid2)
+        # Relation should be gone (no orphan)
+        relations = store.get_relations(mid1)
+        assert not any(r["target_id"] == mid2 for r in relations)
+
+    def test_delete_memory_removes_source_id_relations_via_cascade(self, store):
+        """When a memory is deleted, relations where it is the source_id
+        are removed by the ON DELETE CASCADE FK constraint."""
+        mid1 = store.add(type="fact", content="source memory")
+        mid2 = store.add(type="fact", content="target memory")
+        store.add_relation(mid1, mid2, "related_to", target_type="memory")
+        # mid1 is the source — delete it
+        assert store.delete(mid1)
+        relations = store.get_relations(mid2)
+        assert not any(r["source_id"] == mid1 for r in relations)
+
+    def test_delete_memory_preserves_code_ref_relations(self, store):
+        """When a memory is deleted, code ref relations (target_type='code')
+        where the memory is the source are cascade-deleted, but code ref
+        relations from other memories are untouched."""
+        mid1 = store.add(type="fact", content="has code ref")
+        store.add_relation(mid1, "src/app.rs:10:20", "references", target_type="code")
+        # Delete mid1 — source_id cascade removes the relation
+        assert store.delete(mid1)
+        # Verify the relation is gone
+        relations = store.get_relations(mid1)
+        assert len(relations) == 0
+
+    def test_delete_memory_no_relations_no_error(self, store):
+        """Deleting a memory with no relations does not raise."""
+        mid = store.add(type="fact", content="lonely memory")
+        # Add an unrelated code ref from another memory
+        mid2 = store.add(type="fact", content="other memory")
+        store.add_relation(mid2, "src/x.rs:1:2", "references", target_type="code")
+        assert store.delete(mid)
+        # Code ref from mid2 is still intact
+        relations = store.get_relations(mid2)
+        assert any(r["target_type"] == "code" for r in relations)

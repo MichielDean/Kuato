@@ -105,6 +105,7 @@ class TestRegisterSessionHook:
     def test_register_created_hook(self):
         def hook_fn(sid):
             return None
+
         register_session_hook("created", hook_fn)
         hooks = get_registered_session_hooks()
         assert "created" in hooks
@@ -113,6 +114,7 @@ class TestRegisterSessionHook:
     def test_register_idle_hook(self):
         def hook_fn(sid):
             return None
+
         register_session_hook("idle", hook_fn)
         hooks = get_registered_session_hooks()
         assert "idle" in hooks
@@ -121,6 +123,7 @@ class TestRegisterSessionHook:
     def test_register_compacting_hook(self):
         def hook_fn(sid):
             return None
+
         register_session_hook("compacting", hook_fn)
         hooks = get_registered_session_hooks()
         assert "compacting" in hooks
@@ -148,8 +151,10 @@ class TestGetRegisteredSessionHooks:
 
     def test_returns_dict_copy(self):
         """Mutating the returned dict does not affect the internal registry."""
+
         def hook_fn(sid):
             return None
+
         register_session_hook("created", hook_fn)
         hooks = get_registered_session_hooks()
         hooks["idle"] = lambda sid: None  # Mutate the copy
@@ -469,7 +474,8 @@ class TestDeadCodeRemoval:
     def test_session_hooks_pathlib_import_is_used(self):
         """session_hooks.py imports pathlib.Path and must use it.
 
-        Path is used as a type annotation (db_path: Path | None), so the
+        Path is used as a type annotation (db_path: Path | None) and for
+        the db_path.exists() call in process_opencode_sessions, so the
         import is NOT dead code. This test verifies that if Path is imported,
         it is actually referenced in the module source.
         """

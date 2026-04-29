@@ -1,6 +1,9 @@
 """Tests for llmem.code_index module — CodeIndex CRUD, search, and vec0 integration."""
 
+import sqlite3
 import struct
+
+from unittest.mock import patch
 
 import pytest
 
@@ -708,3 +711,38 @@ class TestCodeIndex_DuplicateChunkHandling:
             sys.stdout = old_stdout
 
         assert "Ingested" in output2
+
+
+class TestCodeIndex_ExtensionLoadingDisabled:
+    """Test that SQLite extension loading is disabled after CodeIndex init."""
+
+    def test_extension_loading_disabled_after_init(self, tmp_path):
+        """After CodeIndex init, extension loading should be disabled."""
+        db = tmp_path / "test.db"
+        idx = CodeIndex(db_path=db, disable_vec=True)
+        try:
+            conn = idx._connect()
+            # Attempting to load an extension should fail
+            with pytest.raises(
+                sqlite3.OperationalError, match="not authorized|extension"
+            ):
+                conn.enable_load_extension(True)
+                conn.load_extension("nonexistent_extension")
+        finally:
+            idx.close()
+
+    def test_extension_loading_disabled_when_vec_unavailable(self, tmp_path):
+        """Extension loading should be disabled even when sqlite-vec is unavailable."""
+        db = tmp_path / "test.db"
+        # Force sqlite-vec import to fail
+        with patch.dict("sys.modules", {"sqlite_vec": None}):
+            idx = CodeIndex(db_path=db, disable_vec=False)
+            try:
+                conn = idx._connect()
+                with pytest.raises(
+                    sqlite3.OperationalError, match="not authorized|extension"
+                ):
+                    conn.enable_load_extension(True)
+                    conn.load_extension("nonexistent_extension")
+            finally:
+                idx.close()

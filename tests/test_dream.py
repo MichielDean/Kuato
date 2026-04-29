@@ -123,3 +123,75 @@ class TestDream_DeepPhasePromotesInbox:
         # dry_run=True should not clear the inbox
         assert store.inbox_count() == 1
         store.close()
+
+
+class TestDream_DeepPhaseAutoLink:
+    """Test auto-linking in dream deep phase with consolidate_duplicates."""
+
+    def test_dream_deep_auto_links_similar_memories(self):
+        """With auto_link_threshold and memories with high cosine similarity,
+        running deep phase with apply=True creates a related_to relation edge."""
+        import struct
+
+        store = MemoryStore(db_path=Path(":memory:"), disable_vec=True)
+        # Add two memories with near-identical embeddings
+        emb = struct.pack("3f", 0.9, 0.1, 0.1)
+        mid1 = store.add(type="fact", content="python programming", embedding=emb)
+        store.add(type="fact", content="python programming lang", embedding=emb)
+
+        dreamer = Dreamer(store=store, auto_link_threshold=0.85)
+        result = dreamer.run(apply=True, phase="deep")
+
+        assert result.deep is not None
+        # With identical embeddings, consolidate_duplicates should find them
+        # and auto-link should create a relation
+        assert result.deep.auto_linked_count >= 1
+
+        # Verify the relation exists
+        relations = store.get_relations(mid1)
+        related_to = [r for r in relations if r["relation_type"] == "related_to"]
+        assert len(related_to) >= 1
+        store.close()
+
+    def test_dream_deep_auto_link_respects_threshold(self):
+        """Memories with cosine similarity < threshold do NOT get auto-linked."""
+        import struct
+
+        store = MemoryStore(db_path=Path(":memory:"), disable_vec=True)
+        # Very different embeddings
+        emb1 = struct.pack("3f", 1.0, 0.0, 0.0)
+        emb2 = struct.pack("3f", 0.0, 1.0, 0.0)
+        store.add(type="fact", content="completely different A", embedding=emb1)
+        store.add(type="fact", content="completely different B", embedding=emb2)
+
+        # High threshold means they shouldn't be linked
+        dreamer = Dreamer(store=store, auto_link_threshold=0.99)
+        result = dreamer.run(apply=True, phase="deep")
+
+        assert result.deep is not None
+        assert result.deep.auto_linked_count == 0
+        store.close()
+
+    def test_dream_deep_auto_link_dry_run_does_not_create_relations(self):
+        """With apply=False, no auto-link relations are created."""
+        import struct
+
+        store = MemoryStore(db_path=Path(":memory:"), disable_vec=True)
+        emb = struct.pack("3f", 0.9, 0.1, 0.1)
+        store.add(type="fact", content="python programming", embedding=emb)
+        store.add(type="fact", content="python programming lang", embedding=emb)
+
+        dreamer = Dreamer(store=store, auto_link_threshold=0.85)
+        result = dreamer.run(apply=False, phase="deep")
+
+        assert result.deep is not None
+        # Dry run should not create any relations
+        assert result.deep.auto_linked_count == 0
+        store.close()
+
+    def test_dream_deep_auto_link_default_threshold(self):
+        """Dreamer auto_link_threshold defaults to 0.85."""
+        store = MemoryStore(db_path=Path(":memory:"), disable_vec=True)
+        dreamer = Dreamer(store=store)
+        assert dreamer._auto_link_threshold == 0.85
+        store.close()

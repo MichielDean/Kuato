@@ -102,6 +102,135 @@ def _reset_global_registry() -> None:
 _global_registry: set[str] = set(_DEFAULT_TYPES)
 
 
+def _split_sql_statements(sql: str) -> list[str]:
+    """Split SQL text into individual executable statements.
+
+    Splits by semicolons, strips comment-only lines and empty lines.
+    Filters out standalone BEGIN TRANSACTION / COMMIT statements because
+    transaction control is managed at the Python level by _run_migrations(),
+    ensuring atomic execution of the entire migration (including table-recreation
+    patterns like DROP TABLE + ALTER TABLE RENAME).
+
+    Only strips BEGIN/BEGIN TRANSACTION/COMMIT when they are standalone
+    statements (the entire trimmed line is just that keyword plus optional
+    semicolon). Does NOT strip BEGIN inside trigger bodies or other
+    compound SQL statements.
+
+    Handles both single-line triggers (BEGIN on same line as CREATE TRIGGER)
+    and multi-line triggers (BEGIN on its own line after the trigger header).
+
+    Args:
+        sql: Raw SQL text from a migration file.
+
+    Returns:
+        List of stripped SQL statements (without trailing semicolons).
+    """
+    statements: list[str] = []
+    current_lines: list[str] = []
+    in_trigger_body = False
+    # Tracks whether we've seen CREATE TRIGGER without BEGIN yet —
+    # used for multi-line trigger headers where BEGIN is on its own line.
+    pending_trigger = False
+
+    for line in sql.split("\n"):
+        stripped = line.strip()
+
+        # Track trigger body boundaries so we don't misinterpret
+        # trigger-internal BEGIN as a transaction start.
+        if not in_trigger_body:
+            upper = stripped.upper()
+            if upper.startswith("CREATE TRIGGER"):
+                if upper.rstrip(";").endswith("BEGIN"):
+                    # Single-line trigger: CREATE TRIGGER ... BEGIN
+                    in_trigger_body = True
+                    current_lines.append(line)
+                    continue
+                else:
+                    # Multi-line trigger header: BEGIN will appear
+                    # on a later line.
+                    pending_trigger = True
+                    current_lines.append(line)
+                    continue
+            if pending_trigger:
+                # We're collecting a multi-line trigger header —
+                # wait for the BEGIN line to enter trigger body mode.
+                if upper.rstrip(";") == "BEGIN":
+                    pending_trigger = False
+                    in_trigger_body = True
+                    current_lines.append(line)
+                    continue
+                # Still in the trigger header (e.g. AFTER INSERT ON ...)
+                current_lines.append(line)
+                continue
+        else:
+            if stripped.upper() in ("END;", "END"):
+                in_trigger_body = False
+                current_lines.append(line)
+                stmt = "\n".join(current_lines).rstrip(";").strip()
+                if stmt:
+                    statements.append(stmt)
+                current_lines = []
+                continue
+            current_lines.append(line)
+            continue
+
+        # Outside trigger body: normal statement splitting
+
+        # Check for standalone transaction control statements.
+        # A line is a standalone transaction control if:
+        # 1. The trimmed line is just BEGIN/BEGIN TRANSACTION/COMMIT (with
+        #    optional semicolon), AND
+        # 2. Any previously collected lines are comments or empty
+        upper = stripped.upper().rstrip(";")
+        is_transaction_control = upper in ("BEGIN TRANSACTION", "BEGIN", "COMMIT")
+        if is_transaction_control:
+            # Check if current_lines only has comments/blanks — if so,
+            # this is a standalone transaction control statement
+            all_comments = all(
+                line.strip() == "" or line.strip().startswith("--")
+                for line in current_lines
+            )
+            if all_comments:
+                # Discard the comments before and the transaction control itself
+                current_lines = []
+                continue
+            # If current_lines has real code, this BEGIN/COMMIT is part of
+            # a larger statement — keep collecting
+
+        current_lines.append(line)
+
+        if stripped.endswith(";"):
+            stmt = "\n".join(current_lines).rstrip(";").strip()
+            # Filter out comment-only and _schema_migrations statements
+            if stmt:
+                non_comment_lines = [
+                    line
+                    for line in stmt.split("\n")
+                    if line.strip() and not line.strip().startswith("--")
+                ]
+                if non_comment_lines:
+                    # Skip _schema_migrations inserts — the migration runner
+                    # handles version tracking itself
+                    if 'INSERT INTO "_schema_migrations"' not in stmt:
+                        statements.append(stmt)
+            current_lines = []
+
+    # Handle any trailing statement without a semicolon
+    if current_lines:
+        stmt = "\n".join(current_lines).strip()
+        if stmt:
+            non_comment_lines = [
+                line
+                for line in stmt.split("\n")
+                if line.strip() and not line.strip().startswith("--")
+            ]
+            if non_comment_lines:
+                if 'INSERT INTO "_schema_migrations"' not in stmt:
+                    statements.append(stmt)
+
+    return statements
+
+
 def _run_migrations(conn: sqlite3.Connection) -> None:
     """Run all unapplied SQL migration files from the migrations/ directory.
 
@@ -152,6 +281,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             (3, "003_register_default_types.sql"),
             (4, "004_add_inbox.sql"),
             (5, "005_add_code_chunks.sql"),
+            (6, "006_add_ref_types.sql"),
         ]
 
     migration_files.sort()
@@ -167,18 +297,28 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             logger.warning("llmem: migration: could not read %s: %s", filename, e)
             continue
 
-        # Execute the migration
+        # Execute the migration using individual statements for proper
+        # transaction control. conn.executescript() issues an implicit
+        # COMMIT before running, which breaks atomicity for migrations
+        # that recreate tables (e.g. 006_add_ref_types.sql — DROP TABLE
+        # + ALTER TABLE RENAME must be in one transaction so a crash
+        # mid-migration rolls back to the original table state).
         try:
-            conn.executescript(sql_content)
+            conn.execute("BEGIN")
+            for stmt in _split_sql_statements(sql_content):
+                conn.execute(stmt)
             conn.execute(
                 'INSERT OR IGNORE INTO "_schema_migrations" ("version") VALUES (?)',
                 (version,),
             )
-            conn.commit()
+            conn.execute("COMMIT")
             logger.info("llmem: migration: applied %s", filename)
         except sqlite3.Error as e:
             logger.error("llmem: migration: failed to apply %s: %s", filename, e)
-            conn.rollback()
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
             raise
 
 
@@ -607,6 +747,14 @@ class MemoryStore:
 
     def delete(self, mem_id: str) -> bool:
         conn = self._connect()
+        # source_id has ON DELETE CASCADE, but target_id no longer has a
+        # foreign key (migration 006 removed it to support code refs).
+        # Manually clean up orphaned relations where the deleted memory
+        # is the target before deleting the memory row itself.
+        conn.execute(
+            'DELETE FROM "relations" WHERE "target_id" = ? AND "target_type" = ?',
+            (mem_id, "memory"),
+        )
         cursor = conn.execute('DELETE FROM "memories" WHERE "id" = ?', (mem_id,))
         conn.commit()
         return cursor.rowcount > 0
@@ -869,14 +1017,60 @@ class MemoryStore:
         source_id: str,
         target_id: str,
         relation_type: str,
+        target_type: str = "memory",
         id: str | None = None,
     ) -> str:
+        """Add a relation between two memories or a memory and a code chunk.
+
+        Precondition: source_id must reference an existing memory. If
+        target_type='code', target_id must match format
+        'path:start_line:end_line' (e.g. 'src/lib.rs:42:58') and the path
+        component must be a safe relative path (no leading '/' or '..'
+        traversal). If target_type='memory', target_id must reference an
+        existing memory (existence check is application-level only, not
+        enforced at SQL level).
+
+        Args:
+            source_id: ID of the source memory.
+            target_id: ID of the target memory or code ref string.
+            relation_type: One of 'supersedes','contradicts','depends_on',
+                'related_to','derived_from','references'.
+            target_type: 'memory' or 'code'. Defaults to 'memory'.
+            id: Optional explicit relation ID (UUID generated if None).
+
+        Returns:
+            The relation ID (UUID string).
+
+        Raises:
+            ValueError: If target_type='code' and target_id has an absolute
+                path or contains '..' traversal.
+        """
+        if target_type == "code":
+            from .refs import validate_code_ref_path
+
+            # Extract the path component from 'path:start_line:end_line'
+            # and validate it is a safe relative path.
+            colon_count = target_id.count(":")
+            if colon_count < 2:
+                raise ValueError(
+                    f"llmem: store: add_relation: code ref target_id must match "
+                    f"'path:start_line:end_line' format, got: {target_id!r}"
+                )
+            # The path is everything before the last two colon-separated segments
+            path_part = target_id.rsplit(":", 2)[0]
+            validated = validate_code_ref_path(path_part)
+            if validated is None:
+                raise ValueError(
+                    f"llmem: store: add_relation: code ref target_id has unsafe path "
+                    f"(must be relative, no '..' traversal): {target_id!r}"
+                )
+
         rel_id = id or str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         conn = self._connect()
         conn.execute(
-            'INSERT INTO "relations" ("id", "source_id", "target_id", "relation_type", "created_at") VALUES (?,?,?,?,?)',
-            (rel_id, source_id, target_id, relation_type, now),
+            'INSERT INTO "relations" ("id", "source_id", "target_id", "relation_type", "target_type", "created_at") VALUES (?,?,?,?,?,?)',
+            (rel_id, source_id, target_id, relation_type, target_type, now),
         )
         conn.commit()
         return rel_id
@@ -904,51 +1098,81 @@ class MemoryStore:
         self,
         start_ids: list[str],
         max_depth: int = 1,
+        target_type: str | None = None,
     ) -> list[dict]:
         """Traverse relation edges from start_ids up to max_depth hops.
 
         Follows both source_id->target_id and target_id->source_id directions
         so relations are traversed bidirectionally. Uses a recursive CTE.
         Returns deduplicated results with the shortest distance, relation_type,
-        and relation_score (decays as 0.5^distance).
+        target_type, and relation_score (decays as 0.5^distance).
+
+        Args:
+            start_ids: Memory IDs to start traversal from.
+            max_depth: Maximum number of hops (1-5, capped at 5).
+            target_type: Filter by target type. None (default) follows all
+                edges, 'memory' only follows memory edges, 'code' only
+                follows code edges.
+
+        Returns:
+            List of dicts with target_id, relation_type, target_type,
+            distance, and relation_score keys.
         """
         if not start_ids or max_depth < 1:
             return []
 
         max_depth = min(max_depth, 5)
 
+        # Build target_type filter clause if specified
+        tt_filter = ""
+        if target_type is not None:
+            tt_filter = ' AND "target_type" = ?'
+
         conn = self._connect()
         placeholders = ",".join("?" for _ in start_ids)
         exclude = ",".join("?" for _ in start_ids)
 
         cte_sql = (
-            'WITH RECURSIVE "rel_traverse"("node_id", "reached_id", "rel_type", "dist") AS ('
-            ' SELECT "source_id", "target_id", "relation_type", 1 FROM "relations"'
-            f' WHERE "source_id" IN ({placeholders})'
+            'WITH RECURSIVE "rel_traverse"("node_id", "reached_id", "rel_type", "tgt_type", "dist") AS ('
+            ' SELECT "source_id", "target_id", "relation_type", "target_type", 1 FROM "relations"'
+            f' WHERE "source_id" IN ({placeholders}){tt_filter}'
             " UNION ALL"
-            ' SELECT "target_id", "source_id", "relation_type", 1 FROM "relations"'
-            f' WHERE "target_id" IN ({placeholders})'
+            ' SELECT "target_id", "source_id", "relation_type", \'memory\', 1 FROM "relations"'
+            f' WHERE "target_id" IN ({placeholders}){tt_filter}'
             " UNION ALL"
-            ' SELECT r."source_id", r."target_id", r."relation_type", rt."dist" + 1 FROM "relations" r'
+            ' SELECT r."source_id", r."target_id", r."relation_type", r."target_type", rt."dist" + 1 FROM "relations" r'
             ' INNER JOIN "rel_traverse" rt ON rt."reached_id" = r."source_id"'
-            ' WHERE rt."dist" < ?'
+            f' WHERE rt."dist" < ?{tt_filter}'
             " UNION ALL"
-            ' SELECT r."target_id", r."source_id", r."relation_type", rt."dist" + 1 FROM "relations" r'
+            ' SELECT r."target_id", r."source_id", r."relation_type", \'memory\', rt."dist" + 1 FROM "relations" r'
             ' INNER JOIN "rel_traverse" rt ON rt."reached_id" = r."target_id"'
-            ' WHERE rt."dist" < ?'
+            f' WHERE rt."dist" < ?{tt_filter}'
             ")"
-            f' SELECT "reached_id", "rel_type", MIN("dist") as "dist" FROM "rel_traverse"'
+            f' SELECT "reached_id", "rel_type", "tgt_type", MIN("dist") as "dist" FROM "rel_traverse"'
             f' WHERE "reached_id" NOT IN ({exclude})'
-            ' GROUP BY "reached_id", "rel_type"'
+            ' GROUP BY "reached_id", "rel_type", "tgt_type"'
             ' ORDER BY "dist"'
         )
-        params = start_ids + start_ids + [max_depth, max_depth] + start_ids
+        params = start_ids
+        if target_type is not None:
+            params = params + [target_type]
+        params = params + start_ids
+        if target_type is not None:
+            params = params + [target_type]
+        params = params + [max_depth]
+        if target_type is not None:
+            params = params + [target_type]
+        params = params + [max_depth]
+        if target_type is not None:
+            params = params + [target_type]
+        params = params + start_ids
+
         rows = conn.execute(cte_sql, params).fetchall()
 
         results = []
         seen = set()
         for row in rows:
-            key = (row["reached_id"], row["rel_type"])
+            key = (row["reached_id"], row["rel_type"], row["tgt_type"])
             if key in seen:
                 continue
             seen.add(key)
@@ -957,6 +1181,7 @@ class MemoryStore:
                 {
                     "target_id": row["reached_id"],
                     "relation_type": row["rel_type"],
+                    "target_type": row["tgt_type"],
                     "distance": distance,
                     "relation_score": 0.5**distance,
                 }

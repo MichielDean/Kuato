@@ -172,6 +172,7 @@ class Retriever:
         store: MemoryStore,
         embedder: "EmbeddingEngine | EmbedProvider | None" = None,
         blend: float = 0.3,
+        allowed_paths: list | None = None,
     ):
         """Initialize the Retriever.
 
@@ -182,6 +183,10 @@ class Retriever:
                 from the memory.providers module.
             blend: Blend factor for reranking (0.0 = pure RRF, 1.0 = pure
                 signals). Defaults to 0.3.
+            allowed_paths: List of Path objects specifying directories under
+                which code ref file reads are allowed. Defaults to None,
+                which means [Path.cwd()]. Prevents arbitrary file reads
+                via resolve_code_ref().
 
         Raises:
             ValueError: If blend is not in [0.0, 1.0].
@@ -193,6 +198,7 @@ class Retriever:
         self._store = store
         self._embedder = embedder
         self._blend = blend
+        self._allowed_paths = allowed_paths
 
     def search(
         self,
@@ -201,6 +207,8 @@ class Retriever:
         type_filter: str | None = None,
         traverse_relations: bool = False,
         relation_depth: int = 1,
+        traverse_refs: bool = False,
+        max_ref_depth: int = 3,
         track_access: bool = True,
     ) -> list[dict]:
         """Search memories with ranking.
@@ -211,11 +219,20 @@ class Retriever:
             type_filter: Filter by memory type.
             traverse_relations: Include related memories.
             relation_depth: Max relation traversal depth.
+            traverse_refs: If True, follow references edges (target_type='code')
+                from result memory IDs and resolve code refs via
+                refs.resolve_code_ref(), appending resolved code dicts to
+                results. Defaults to False.
+            max_ref_depth: Max ref expansion depth (1-5, default 3).
+                Controls how many hops to follow when traversing code refs.
             track_access: If True, increment access_count and update
                 accessed_at for each result. Defaults to True.
 
         Returns:
-            List of memory dicts sorted by relevance.
+            List of dicts sorted by relevance. When traverse_refs is False,
+            all items are memory dicts (with 'id' key). When traverse_refs is
+            True, the list may also include code ref dicts (with '_source':
+            'code' key, lacking 'id' key) appended after memory results.
         """
         results = self._store.search(
             query=query, type=type_filter, limit=limit, _include_rank=True
@@ -226,7 +243,9 @@ class Retriever:
 
         if traverse_relations and results:
             mem_ids = [r["id"] for r in results]
-            related = self._store.traverse_relations(mem_ids, max_depth=relation_depth)
+            related = self._store.traverse_relations(
+                mem_ids, max_depth=relation_depth, target_type="memory"
+            )
             related_ids = [
                 r["target_id"]
                 for r in related
@@ -237,6 +256,27 @@ class Retriever:
                 for mid in related_ids[:limit]:
                     if mid in related_memories:
                         results.append(related_memories[mid])
+
+        if traverse_refs and results:
+            from .refs import resolve_code_ref
+
+            effective_depth = min(max(max_ref_depth, 1), 5)
+            mem_ids = [r["id"] for r in results if r.get("id")]
+            code_refs = self._store.traverse_relations(
+                mem_ids,
+                max_depth=effective_depth,
+                target_type="code",
+            )
+            seen_refs = set()
+            for ref in code_refs:
+                ref_id = ref["target_id"]
+                if ref_id in seen_refs:
+                    continue
+                seen_refs.add(ref_id)
+                resolved = resolve_code_ref(ref_id, allowed_paths=self._allowed_paths)
+                if resolved is not None:
+                    resolved["_source"] = "code"
+                    results.append(resolved)
 
         return results[:limit]
 
