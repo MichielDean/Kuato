@@ -270,6 +270,10 @@ llmem inbox
 llmem consolidate --dry-run
 llmem consolidate --min-score 0.5
 
+# Check embedding quality
+llmem embed
+llmem consolidate --metrics
+
 # Export and import
 llmem export --output backup.json
 llmem import backup.json
@@ -357,6 +361,7 @@ Commands:
   types           List registered memory types
   note            Add a note to the working memory inbox
   inbox           List items in the working memory inbox
+  embed           Report embedding quality metrics
   consolidate     Promote inbox items to long-term memory
   init            Initialize the llmem memory system
   learn           Ingest a codebase into the code index
@@ -471,16 +476,37 @@ List items in the working memory inbox, ordered by attention score descending.
 
 Without `--json`, prints a human-readable table with ID, source, score, content preview, and timestamp.
 
+### `llmem embed`
+
+```bash
+llmem embed
+```
+
+Report embedding quality metrics for existing embeddings. Computes anisotropy, similarity range, and discrimination gap from the embeddings already stored in the database. Does **not** generate new embeddings — only analyses existing ones.
+
+Since the sole purpose of the `embed` subcommand is to report metrics, they are always reported (no flag needed).
+
+Output includes:
+
+- **Anisotropy**: Measures vector uniformity. Lower is better (more isotropic). Value in [0.0, 1.0].
+- **Similarity range**: Spread between max and min pairwise cosine similarity. Higher is better.
+- **Discrimination gap**: Average inter-class cosine distance minus average intra-class cosine distance. Higher is better.
+
+Warnings are printed to stderr when anisotropy > 0.5 or similarity range < 0.1, suggesting embeddings may be poor quality and a different model should be considered.
+
+On large stores (>10,000 embeddings), metrics are computed on a capped sample to prevent O(n²) CPU hangs. A note is printed showing the capped count.
+
 ### `llmem consolidate`
 
 ```bash
-llmem consolidate [--min-score FLOAT] [--dry-run]
+llmem consolidate [--min-score FLOAT] [--dry-run] [--metrics]
 ```
 
 Promote inbox items to long-term memory. Items with attention score ≥ `min_score` become permanent memories (with `source=consolidation` and `confidence=attention_score`). Items below the threshold are evicted. After consolidation, the inbox is empty.
 
 - `--min-score`: Minimum attention score threshold for promotion. Items below this are evicted. Default: `0.0` (promote everything).
 - `--dry-run`: Show what would happen without making changes. Promoted items won't have a `memory_id`, and no rows are inserted or deleted.
+- `--metrics`: Compute and report embedding quality metrics (anisotropy, similarity range, discrimination gap) after consolidation. Useful for checking embedding health after memories have been promoted.
 
 ### `llmem register-type` / `llmem types`
 
@@ -586,6 +612,18 @@ from llmem import (
     register_cli_plugin,
 )
 from llmem.retrieve import Retriever, _rrf_score, DEFAULT_ALPHA, DEFAULT_RRF_K
+from llmem.metrics import (
+    compute_metrics,
+    anisotropy,
+    similarity_range,
+    discrimination_gap,
+    cosine_similarity,
+    bytes_to_vec,
+    EmbeddingMetrics,
+    ANISOTROPY_WARNING_THRESHOLD,
+    SIMILARITY_RANGE_WARNING_THRESHOLD,
+    METRICS_MAX_EMBEDDINGS,
+)
 from llmem.config import write_config_yaml
 from llmem.ollama import ProviderDetector, is_ollama_running
 
@@ -736,6 +774,48 @@ result = detector.detect(ollama_url="http://localhost:11434")
 if is_ollama_running("http://localhost:11434"):
     print("Ollama is reachable")
 ```
+
+### Embedding Quality Metrics
+
+The `llmem.metrics` module provides functions to detect poor-quality embeddings:
+
+```python
+from llmem.metrics import (
+    compute_metrics,
+    anisotropy,
+    similarity_range,
+    discrimination_gap,
+    cosine_similarity,
+    bytes_to_vec,
+    EmbeddingMetrics,
+    ANISOTROPY_WARNING_THRESHOLD,
+    SIMILARITY_RANGE_WARNING_THRESHOLD,
+    METRICS_MAX_EMBEDDINGS,
+)
+
+# Compute all metrics at once (convenience wrapper)
+m = compute_metrics(embeddings, labels=labels)
+# m.anisotropy        → float in [0.0, 1.0]; lower is better
+# m.similarity_range  → float; higher is better
+# m.discrimination_gap → float | None; higher is better (None if no labels)
+
+# Individual metric functions
+aniso = anisotropy(embeddings)             # Average pairwise cosine similarity, clamped [0, 1]
+sim_range = similarity_range(embeddings)   # Max - min pairwise cosine similarity
+disc_gap = discrimination_gap(embeddings, labels)  # Inter-class vs intra-class separation
+
+# Utility functions
+sim = cosine_similarity(vec_a, vec_b)  # Cosine similarity, 0.0 for zero vectors
+vec = bytes_to_vec(emb_bytes)          # Decode packed float32 bytes to list[float]
+
+# Fetch embeddings from store (for metrics computation)
+rows = store.get_embeddings_with_types(limit=10000)  # (embedding_bytes, type) tuples
+count = store.count_embeddings()  # Count of valid embedded memories
+```
+
+**Warning thresholds:** `ANISOTROPY_WARNING_THRESHOLD = 0.5` (anisotropy above this may indicate poor embeddings), `SIMILARITY_RANGE_WARNING_THRESHOLD = 0.1` (similarity range below this may indicate poor embeddings).
+
+**Performance safeguard:** `METRICS_MAX_EMBEDDINGS = 10000` — metrics computations are O(n²) pairwise, so `compute_metrics()` and `get_embeddings_with_types()` cap the number of vectors to prevent CPU hangs and OOM on large stores.
 
 ### `safe_urlopen`
 
@@ -1256,6 +1336,7 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 - `import_memories()` validates entry IDs (string, max 256 chars), embeddings (bytes, max 1 MB), and confidence (numeric) before insertion. Invalid entries are skipped with warnings rather than crashing.
 - `export_all()` defaults to a limit of 10,000 memories to prevent unbounded memory consumption; pass `limit=None` to export all.
 - `_search_by_embedding_brute()` uses a `LIMIT` clause (10,000 rows max) to prevent OOM on large databases.
+- **Embedding metrics computation capping**: `get_embeddings_with_types(limit=)` applies a SQL `LIMIT` clause (default: 10,000) and `compute_metrics(max_embeddings=10000)` truncates input vectors. These caps prevent O(n²) pairwise metrics computations from causing OOM or CPU hangs on large stores.
 - `process_transcript()` enforces the same size limit as `process_file()` to prevent OOM from large session transcripts.
 - **Dream diary locking**: On platforms with `fcntl` (Linux/macOS), dream diary writes use an exclusive file lock to prevent corruption from concurrent dream cycles.
 - OpenCode tool invocations (`_llmem.ts`) prepend `--` before user arguments to prevent argparse flag injection.
@@ -1284,7 +1365,8 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 | `llmem.url_validate` | `is_safe_url()`, `safe_urlopen()`, `_strip_credentials()`, `validate_base_url()`, `_NoRedirectHandler`, `_extract_url_string()` (mirrors `memory.url_validate`), DNS rebinding protection |
 | `llmem.paths` | `validate_session_id()`, `get_context_dir()`, `_validate_write_path()`, `BLOCKED_SYSTEM_PREFIXES`, home/write path checks |
 | `llmem.registry` | `register_session_hook()`, `get_registered_session_hooks()`, `VALID_SESSION_EVENT_TYPES` |
-| `llmem.store` | `MemoryStore` with `export_all(limit=)`, `import_memories()` validation, brute-force/embedding caps, dimension validation, inbox methods (`add_to_inbox`, `get_from_inbox`, `list_inbox`, `remove_from_inbox`, `update_inbox_attention_score`, `consolidate`), capacity eviction |
+| `llmem.metrics` | `compute_metrics()`, `anisotropy()`, `similarity_range()`, `discrimination_gap()`, `cosine_similarity()`, `bytes_to_vec()`, `EmbeddingMetrics` dataclass, warning thresholds, `METRICS_MAX_EMBEDDINGS` |
+| `llmem.store` | `MemoryStore` with `export_all(limit=)`, `import_memories()` validation, brute-force/embedding caps, dimension validation, inbox methods (`add_to_inbox`, `get_from_inbox`, `list_inbox`, `remove_from_inbox`, `update_inbox_attention_score`, `consolidate`), capacity eviction, `get_embeddings_with_types(limit=)`, `count_embeddings()` |
 | `llmem.code_index` | `CodeIndex` — manages `code_chunks` table, FTS5/vec virtual tables, add/search/remove operations |
 | `llmem.chunking` | `ParagraphChunking`, `FixedLineChunking`, `detect_language()`, `walk_code_files()`, `parse_gitignore()`, `is_ignored()` |
 
@@ -1294,7 +1376,7 @@ The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.con
 python -m pytest
 ```
 
-806 Python tests and 53 JavaScript tests covering all providers, URL validation, configuration, security, session hooks, and edge cases.
+967 Python tests and 53 JavaScript tests covering all providers, URL validation, configuration, session extraction, security, and edge cases.
 
 ## License
 

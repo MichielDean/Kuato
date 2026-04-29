@@ -740,3 +740,323 @@ class TestCli_SearchCodeInterleaving:
         # The first code result should have a score well above 0.0
         if code_results:
             assert code_results[0]["_rrf_score"] > 0.0
+
+
+class TestCli_EmbedMetrics:
+    """Test cmd_embed reports anisotropy and similarity range."""
+
+    def test_embed_reports_anisotropy_and_similarity_range(self, tmp_path, capsys):
+        """cmd_embed reports anisotropy and similarity range values."""
+        from llmem.cli import cmd_embed
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.add(
+            type="fact",
+            content="test fact 1",
+            embedding=EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0]),
+        )
+        store.add(
+            type="fact",
+            content="test fact 2",
+            embedding=EmbeddingEngine.vec_to_bytes([0.0, 1.0, 0.0]),
+        )
+        store.add(
+            type="decision",
+            content="test decision",
+            embedding=EmbeddingEngine.vec_to_bytes([0.0, 0.0, 1.0]),
+        )
+        store.close()
+
+        args = argparse.Namespace(db=db)
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_embed(args)
+
+        captured = capsys.readouterr()
+        assert "Anisotropy" in captured.out
+        assert "Similarity range" in captured.out
+        assert "Discrimination gap" in captured.out
+        assert "3 vectors" in captured.out
+
+    def test_embed_warns_on_high_anisotropy(self, tmp_path, capsys):
+        """cmd_embed warns when anisotropy exceeds 0.5."""
+        from llmem.cli import cmd_embed
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+
+        # Identical vectors → anisotropy = 1.0, which exceeds threshold
+        emb = EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0])
+        store.add(type="fact", content="test1", embedding=emb)
+        store.add(type="fact", content="test2", embedding=emb)
+        store.add(type="fact", content="test3", embedding=emb)
+        store.close()
+
+        args = argparse.Namespace(db=db)
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_embed(args)
+
+        captured = capsys.readouterr()
+        assert "Anisotropy" in captured.out
+        assert "WARNING" in captured.err
+        assert "anisotropy" in captured.err.lower() or "Anisotropy" in captured.err
+
+    def test_embed_warns_on_low_similarity_range(self, tmp_path, capsys):
+        """cmd_embed warns when similarity_range is below 0.1."""
+        from llmem.cli import cmd_embed
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+
+        # Identical vectors → similarity_range = 0.0, below threshold
+        emb = EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0])
+        store.add(type="fact", content="test1", embedding=emb)
+        store.add(type="fact", content="test2", embedding=emb)
+        store.close()
+
+        args = argparse.Namespace(db=db)
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_embed(args)
+
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        # Both high anisotropy and low similarity range should warn
+        assert "poor quality" in captured.err
+
+    def test_embed_no_warning_on_good_embeddings(self, tmp_path, capsys):
+        """cmd_embed does not warn when metrics are within thresholds."""
+        from llmem.cli import cmd_embed
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+
+        # Vectors with diverse orientations and non-zero spread:
+        # [1,0,0], [1,1,0], [0,1,0] → pairwise cosines are 0.707, 0.0, 0.707
+        # anisotropy ≈ avg(0.707, 0.0, 0.707) / 3 ≈ 0.47 < 0.5
+        # similarity_range = 0.707 - 0.0 = 0.707 > 0.1
+        store.add(
+            type="fact",
+            content="test fact",
+            embedding=EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0]),
+        )
+        store.add(
+            type="decision",
+            content="test decision",
+            embedding=EmbeddingEngine.vec_to_bytes([1.0, 1.0, 0.0]),
+        )
+        store.add(
+            type="preference",
+            content="test preference",
+            embedding=EmbeddingEngine.vec_to_bytes([0.0, 1.0, 0.0]),
+        )
+        store.close()
+
+        args = argparse.Namespace(db=db)
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_embed(args)
+
+        captured = capsys.readouterr()
+        assert "Anisotropy" in captured.out
+        assert "Similarity range" in captured.out
+        assert "WARNING" not in captured.err
+
+    def test_embed_always_reports_metrics(self, tmp_path, capsys):
+        """cmd_embed always reports metrics — no --metrics flag needed."""
+        from llmem.cli import cmd_embed
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.add(
+            type="fact",
+            content="test fact",
+            embedding=EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0]),
+        )
+        store.close()
+
+        # No metrics attribute on args — embed always reports
+        args = argparse.Namespace(db=db)
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_embed(args)
+
+        captured = capsys.readouterr()
+        assert "Anisotropy" in captured.out
+        assert "Similarity range" in captured.out
+
+    def test_embed_does_not_generate_new_embeddings(self, tmp_path, capsys):
+        """cmd_embed only analyses existing embeddings — it never creates new ones.
+
+        Verifies that calling cmd_embed on memories without embeddings
+        does not add embeddings, and that the function merely reads
+        what is already stored.
+        """
+        from llmem.cli import cmd_embed
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        # Add memories WITHOUT embeddings
+        mid = store.add(type="fact", content="unembedded fact")
+        assert store.get(mid)["embedding"] is None
+        store.close()
+
+        args = argparse.Namespace(db=db)
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_embed(args)
+
+        # Verify no embeddings were generated — the memory still has none
+        store2 = MemoryStore(db_path=db, disable_vec=True)
+        mem = store2.get(mid)
+        assert mem["embedding"] is None, (
+            "cmd_embed should not generate embeddings, but embedding was created"
+        )
+        store2.close()
+
+        captured = capsys.readouterr()
+        assert "No embedded memories found" in captured.out
+
+
+class TestCli_ConsolidateMetrics:
+    """Test cmd_consolidate --metrics reports embedding quality metrics."""
+
+    def test_consolidate_with_metrics_reports_metrics(self, tmp_path, capsys):
+        """cmd_consolidate --metrics reports anisotropy and similarity range."""
+        from llmem.cli import cmd_consolidate
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        # Pre-populate inbox and embeddings
+        store = MemoryStore(db_path=db, disable_vec=True)
+        store.add_to_inbox(content="promote me", attention_score=0.8)
+
+        # Add memories with embeddings for metrics
+        store.add(
+            type="fact",
+            content="embedded fact 1",
+            embedding=EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0]),
+        )
+        store.add(
+            type="fact",
+            content="embedded fact 2",
+            embedding=EmbeddingEngine.vec_to_bytes([0.0, 1.0, 0.0]),
+        )
+        store.close()
+
+        args = argparse.Namespace(
+            db=db,
+            min_score=0.0,
+            dry_run=False,
+            metrics=True,
+        )
+        with patch(
+            "llmem.cli.MemoryStore",
+            side_effect=lambda db_path, **kw: MemoryStore(
+                db_path=db_path, disable_vec=True
+            ),
+        ):
+            cmd_consolidate(args)
+
+        captured = capsys.readouterr()
+        assert "Promoted" in captured.out
+        assert "Anisotropy" in captured.out
+        assert "Similarity range" in captured.out
+
+
+class TestCli_EmbedMetricsCapping:
+    """Test that _report_embedding_metrics respects embedding caps from DoS protection."""
+
+    def test_embed_reports_capped_count_when_exceeding_limit(self, tmp_path, capsys):
+        """_report_embedding_metrics shows capped vector count when total > limit."""
+        from llmem.cli import _report_embedding_metrics
+        from llmem.embed import EmbeddingEngine
+        from llmem.metrics import METRICS_MAX_EMBEDDINGS
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        # Add a few embeddings (not enough to hit the real cap, but we test
+        # the code path by checking the output format)
+        emb = EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0])
+        for i in range(3):
+            store.add(type="fact", content=f"fact {i}", embedding=emb)
+        store.close()
+
+        store2 = MemoryStore(db_path=db, disable_vec=True)
+        _report_embedding_metrics(store2)
+        store2.close()
+
+        captured = capsys.readouterr()
+        # With 3 embeddings < METRICS_MAX_EMBEDDINGS, no capping message
+        assert "3 vectors" in captured.out
+        assert "capped" not in captured.out.lower()
+
+    def test_get_embeddings_with_types_respects_limit(self, tmp_path):
+        """get_embeddings_with_types limit parameter caps returned rows."""
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        emb = EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0])
+        for i in range(5):
+            store.add(type="fact", content=f"fact {i}", embedding=emb)
+
+        # With limit=2, only 2 rows returned
+        rows = store.get_embeddings_with_types(limit=2)
+        assert len(rows) == 2
+        store.close()
+
+    def test_count_embeddings_returns_correct_count(self, tmp_path):
+        """count_embeddings returns count of valid memories with embeddings."""
+        from llmem.embed import EmbeddingEngine
+        from llmem.store import MemoryStore
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        emb = EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0])
+        store.add(type="fact", content="embedded", embedding=emb)
+        store.add(type="fact", content="not embedded")
+        store.add(type="decision", content="also embedded", embedding=emb)
+
+        assert store.count_embeddings() == 2
+        store.close()

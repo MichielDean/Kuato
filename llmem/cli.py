@@ -11,6 +11,13 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 from .store import MemoryStore, register_memory_type, get_registered_types
+from .metrics import (
+    compute_metrics,
+    bytes_to_vec,
+    ANISOTROPY_WARNING_THRESHOLD,
+    SIMILARITY_RANGE_WARNING_THRESHOLD,
+    METRICS_MAX_EMBEDDINGS,
+)
 from .paths import get_db_path, get_config_path, get_llmem_home
 from .paths import _validate_write_path, _is_blocked_path
 from .registry import get_registered_cli_plugins
@@ -27,6 +34,74 @@ from .chunking import (
     _DEFAULT_MAX_DEPTH,
 )
 from .code_index import CodeIndex
+
+
+def _report_embedding_metrics(store: MemoryStore) -> None:
+    """Compute and print embedding quality metrics from the store.
+
+    Fetches embeddings via store.get_embeddings_with_types(), capped at
+    ``METRICS_MAX_EMBEDDINGS``, computes anisotropy, similarity range,
+    and discrimination gap, and prints the results. Emits warnings to
+    stderr when metrics exceed warning thresholds or when the result
+    set is capped.
+
+    Args:
+        store: An open MemoryStore instance.
+    """
+    total_count = store.count_embeddings()
+    limit = METRICS_MAX_EMBEDDINGS
+    rows = store.get_embeddings_with_types(limit=limit)
+
+    if not rows:
+        print("No embedded memories found.")
+        return
+
+    embeddings = []
+    labels = []
+    for emb_bytes, mem_type in rows:
+        vec = bytes_to_vec(emb_bytes)
+        if vec:
+            embeddings.append(vec)
+            labels.append(mem_type)
+
+    if not embeddings:
+        print("No valid embeddings found.")
+        return
+
+    capped = total_count > limit
+    m = compute_metrics(embeddings, labels=labels)
+
+    if capped:
+        print(
+            f"Embedding metrics ({len(embeddings)} of {total_count} vectors, "
+            f"capped at {limit}):"
+        )
+    else:
+        print(f"Embedding metrics ({len(embeddings)} vectors):")
+    print(f"  Anisotropy:        {m.anisotropy:.4f}")
+    print(f"  Similarity range:  {m.similarity_range:.4f}")
+    if m.discrimination_gap is not None:
+        print(f"  Discrimination gap: {m.discrimination_gap:.4f}")
+
+    warnings = []
+    if m.anisotropy > ANISOTROPY_WARNING_THRESHOLD:
+        warnings.append(
+            f"Anisotropy ({m.anisotropy:.4f}) exceeds threshold "
+            f"({ANISOTROPY_WARNING_THRESHOLD})."
+        )
+    if m.similarity_range < SIMILARITY_RANGE_WARNING_THRESHOLD:
+        warnings.append(
+            f"Similarity range ({m.similarity_range:.4f}) is below threshold "
+            f"({SIMILARITY_RANGE_WARNING_THRESHOLD})."
+        )
+    if warnings:
+        print()
+        for w in warnings:
+            print(f"WARNING: {w}", file=sys.stderr)
+        print(
+            "Embeddings may be poor quality, consider using a different model.",
+            file=sys.stderr,
+        )
 
 
 VALID_SOURCES = ["manual", "session", "heartbeat", "extraction", "import"]
@@ -566,6 +641,28 @@ def cmd_inbox(args):
     store.close()
 
 
+def cmd_embed(args):
+    """Report embedding quality metrics for existing embeddings.
+
+    Computes anisotropy, similarity range, and discrimination gap
+    from the embeddings already stored in the database. Does NOT
+    generate new embeddings — only analyses existing ones.
+
+    Since the sole purpose of the embed subcommand is to report
+    metrics, they are always reported (no --metrics flag needed).
+
+    Args:
+        args: argparse Namespace with attributes:
+            - db (Path): Database path.
+
+    Prints metric values to stdout. Emits warnings if anisotropy
+    exceeds the threshold or similarity range is below the threshold.
+    """
+    store = MemoryStore(args.db)
+    _report_embedding_metrics(store)
+    store.close()
+
+
 def cmd_consolidate(args):
     """Promote inbox items to long-term memory.
 
@@ -573,6 +670,8 @@ def cmd_consolidate(args):
         args: argparse Namespace with attributes:
             - min_score (float): Minimum attention_score for promotion. Default: 0.0.
             - dry_run (bool): If True, show what would happen without making changes.
+            - metrics (bool): If True, compute and report embedding metrics after
+              consolidation.
 
     Prints the number of promoted and evicted items.
     """
@@ -594,6 +693,11 @@ def cmd_consolidate(args):
     for item in evicted:
         content_preview = item["content"][:80]
         print(f"{prefix}  evicted: {item['id']}  {content_preview}")
+
+    # Report embedding metrics if requested
+    if getattr(args, "metrics", False):
+        print()
+        _report_embedding_metrics(store)
 
     store.close()
 
@@ -871,6 +975,9 @@ def main():
         help="Output as JSON",
     )
 
+    # embed
+    p_embed = subparsers.add_parser("embed", help="Report embedding quality metrics")
+
     # consolidate
     p_consolidate = subparsers.add_parser(
         "consolidate", help="Promote inbox items to long-term memory"
@@ -885,6 +992,11 @@ def main():
         "--dry-run",
         action="store_true",
         help="Show what would happen without making changes",
+    )
+    p_consolidate.add_argument(
+        "--metrics",
+        action="store_true",
+        help="Compute and report embedding quality metrics after consolidation",
     )
 
     # learn
@@ -970,6 +1082,7 @@ def main():
         "init": cmd_init,
         "note": cmd_note,
         "inbox": cmd_inbox,
+        "embed": cmd_embed,
         "consolidate": cmd_consolidate,
         "learn": cmd_learn,
     }

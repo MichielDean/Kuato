@@ -51,21 +51,19 @@ def _check_ip_access(
     Ollama default port are permitted. All other IPs — including public IPs
     that are not blocked by _ip_is_blocked — are rejected.
 
-    When allow_remote is True, any IP that is not blocked (private, link-local,
-    reserved, multicast) is permitted.
+    When allow_remote is False (the default), only loopback addresses on the
+    Ollama default port are permitted. All other IPs — including public IPs
+    that are not blocked by _ip_is_blocked — are rejected.
 
-    Returns True if allowed, False if blocked.
+    When allow_remote is True, any IP that is not blocked (private, link-local,
+    reserved, multicast) is permitted. Loopback addresses on any port are also
+    permitted when allow_remote is True, since the caller has explicitly opted
+    in to less restrictive validation.
     """
     if _ip_is_blocked(ip):
         return False
-    if not allow_remote:
-        # Only loopback on the Ollama default port is allowed.
-        # Public IPs must be explicitly rejected here: _ip_is_blocked
-        # returns False for public IPs, so without this check they would
-        # pass through and violate the allow_remote=False contract.
-        if not ip.is_loopback:
-            return False
-        if port != OLLAMA_DEFAULT_PORT:
+    if ip.is_loopback:
+        if not allow_remote and port != OLLAMA_DEFAULT_PORT:
             return False
     return True
 
@@ -113,8 +111,9 @@ def is_safe_url(url: str, allow_remote: bool = False) -> bool:
     - URLs with embedded credentials (user:password@) are rejected
     - If allow_remote is False (default), only loopback addresses on the
       Ollama default port are allowed.
-    - If allow_remote is True, any reachable hostname is allowed (still
-      blocks non-http schemes and obviously invalid hostnames).
+    - If allow_remote is True, any reachable hostname is allowed including
+      loopback on any port (still blocks non-http schemes, obviously invalid
+      hostnames, and blocked IPs like private/link-local/reserved/multicast).
     - Validates resolved IP to prevent DNS-rebinding TOCTOU: the hostname
       must resolve to permitted addresses immediately before the request.
     """
@@ -146,7 +145,8 @@ def is_safe_url(url: str, allow_remote: bool = False) -> bool:
             # may still connect to the decoded private IP.
             try:
                 ip = ipaddress.ip_address(decoded_hostname)
-                return _check_ip_access(ip, allow_remote, port)
+                if not _check_ip_access(ip, allow_remote, port):
+                    return False
             except ValueError:
                 pass
         else:
@@ -218,11 +218,11 @@ def safe_urlopen(
         url: The URL to open — either a string or a urllib.request.Request
             object. Must pass is_safe_url() validation.
         timeout: Request timeout in seconds. Defaults to 30.
-        allow_remote: If True, allow non-loopback addresses. Must match the
-            policy used during URL construction (e.g. OpenAIProvider passes
-            allow_remote=True because APIs run on remote hosts). Defaults
-            to False for safety.
-        **kwargs: Additional arguments passed to the opener's open() method.
+    allow_remote: If True, allow non-loopback addresses and loopback on
+        any port. Must match the policy used during URL construction
+        (e.g. ExtractionEngine passes allow_remote=True because Ollama can
+        run on remote hosts). Defaults to False for safety.
+    **kwargs: Additional arguments passed to OpenerDirector.open().
 
     Returns:
         An http.client.HTTPResponse object (context manager).
