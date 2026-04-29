@@ -218,10 +218,6 @@ def get_ollama_url(config_path: Path | None = None, config: dict | None = None) 
         raise ValueError(
             f"llmem: config: Ollama URL blocked (unsafe address): {_strip_credentials(url)!r}"
         )
-    if not is_safe_url(url, allow_remote=True):
-        raise ValueError(
-            f"llmem: config: unsafe Ollama URL (rejected by URL validation): {url!r}"
-        )
     return url
 
 
