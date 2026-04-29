@@ -255,12 +255,18 @@ class TestMigration_006RefTypes:
         assert rel_id is not None
         store.close()
 
-    def test_006_is_ddl_only(self):
-        """Migration 006 contains DDL, no BEGIN TRANSACTION (DDL-only pattern)."""
+    def test_006_uses_transaction_for_table_recreation(self):
+        """Migration 006 wraps table recreation in a transaction for crash safety.
+
+        Because the migration recreates the relations table (DROP + RENAME),
+        it must be wrapped in BEGIN TRANSACTION / COMMIT so a crash mid-migration
+        rolls back to the original table state rather than leaving no table at all.
+        """
         import importlib.resources
 
         migrations_pkg = importlib.resources.files("llmem_migrations")
         sql_content = migrations_pkg.joinpath("006_add_ref_types.sql").read_text()
         assert "CREATE TABLE" in sql_content or "ALTER TABLE" in sql_content
-        # No transaction wrapping for DDL
-        assert "BEGIN TRANSACTION" not in sql_content
+        # Table recreation must be wrapped in a transaction for crash safety
+        assert "BEGIN TRANSACTION" in sql_content
+        assert "COMMIT" in sql_content

@@ -300,7 +300,7 @@ class Dreamer:
                         result.auto_linked_count += 1
                         existing_set.add(pair_key)
             except Exception as exc:
-                log.debug("llmem: dream: auto-link failed: %s", exc)
+                log.warning("llmem: dream: auto-link failed: %s", exc)
 
         return result
 

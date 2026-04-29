@@ -503,7 +503,6 @@ class TestStore_RelationsRefTypes:
         store.add_relation(mid1, mid2, "related_to")
         conn = store._connect()
         rows = conn.execute('SELECT "target_type" FROM "relations"').fetchall()
-        store.close() if False else None
         for row in rows:
             assert row[0] == "memory"
 

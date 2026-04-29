@@ -16,7 +16,6 @@ log = logging.getLogger(__name__)
 # Pattern: path:start_line:end_line (1-based, inclusive)
 _CODE_REF_PATTERN = re.compile(r"^([^:]+):(\d+):(\d+)$")
 
-DEFAULT_AUTO_LINK_THRESHOLD = 0.85
 DEFAULT_MAX_REF_DEPTH = 3
 
 

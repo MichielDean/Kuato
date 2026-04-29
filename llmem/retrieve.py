@@ -247,7 +247,7 @@ class Retriever:
                         results.append(related_memories[mid])
 
         if traverse_refs and results:
-            from .refs import resolve_code_ref, DEFAULT_MAX_REF_DEPTH
+            from .refs import resolve_code_ref
 
             effective_depth = min(max(max_ref_depth, 1), 5)
             mem_ids = [r["id"] for r in results if r.get("id")]
