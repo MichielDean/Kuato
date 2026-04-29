@@ -102,8 +102,8 @@ class TestGetEffectivePort:
 
 
 class TestCheckIpAccess:
-    """Verify _check_ip_access restricts loopback to Ollama port when allow_remote=False,
-    and allows loopback on any port when allow_remote=True.
+    """Verify _check_ip_access restricts loopback to Ollama port regardless
+    of allow_remote, and allows non-loopback IPs when allow_remote=True.
     """
 
     def test_loopback_on_ollama_port_allowed(self):
@@ -114,16 +114,15 @@ class TestCheckIpAccess:
         )
         assert _check_ip_access(ip, allow_remote=True, port=OLLAMA_DEFAULT_PORT) is True
 
-    def test_loopback_on_non_ollama_port_allowed_with_allow_remote(self):
-        """Loopback on a non-Ollama port is allowed when allow_remote=True.
+    def test_loopback_on_non_ollama_port_blocked_even_with_allow_remote(self):
+        """Loopback on a non-Ollama port is blocked regardless of allow_remote.
 
-        allow_remote=True means the caller has explicitly opted in to less
-        restrictive validation (e.g. providers connecting to local proxies on
-        non-standard ports). Loopback on non-Ollama ports is still blocked
-        when allow_remote=False (the default).
+        Loopback addresses are only allowed on the Ollama default port (11434).
+        This restriction applies even when allow_remote=True (security policy:
+        loopback is a special-case local address, not a remote one).
         """
         ip = ipaddress.ip_address("127.0.0.1")
-        assert _check_ip_access(ip, allow_remote=True, port=8080) is True
+        assert _check_ip_access(ip, allow_remote=True, port=8080) is False
         assert _check_ip_access(ip, allow_remote=False, port=8080) is False
 
     def test_public_ip_blocked_when_allow_remote_false(self):
@@ -232,9 +231,8 @@ class TestIsSafeURL_CredentialRejection:
 
 
 class TestIsSafeURL_LoopbackPortLogic:
-    """Loopback addresses are only permitted on the Ollama default port
-    when allow_remote=False (the default). When allow_remote=True, loopback
-    is permitted on any port (the caller explicitly opted in).
+    """Loopback addresses are only permitted on the Ollama default port,
+    regardless of the allow_remote setting.
     """
 
     def test_loopback_on_default_port_allowed(self):
@@ -243,14 +241,13 @@ class TestIsSafeURL_LoopbackPortLogic:
     def test_loopback_on_non_default_port_blocked(self):
         assert is_safe_url("http://127.0.0.1:8080") is False
 
-    def test_loopback_on_non_default_port_allowed_with_allow_remote(self):
-        """allow_remote=True permits loopback on arbitrary ports.
+    def test_loopback_on_non_default_port_blocked_even_with_allow_remote(self):
+        """Loopback on non-Ollama ports is blocked regardless of allow_remote.
 
-        This supports use cases like providers connecting to local development
-        proxies on non-standard ports. Loopback on non-Ollama ports is still
-        blocked when allow_remote=False (the default).
+        Security policy: loopback is only allowed on port 11434.
+        This applies even with allow_remote=True.
         """
-        assert is_safe_url("http://127.0.0.1:8080", allow_remote=True) is True
+        assert is_safe_url("http://127.0.0.1:8080", allow_remote=True) is False
         assert is_safe_url("http://127.0.0.1:8080", allow_remote=False) is False
 
     def test_localhost_on_default_port_allowed(self):
@@ -325,20 +322,20 @@ class TestIsSafeURL_DNSRebinding:
                 is_safe_url("http://evil.example.com:11434", allow_remote=True) is False
             )
 
-    def test_dns_resolving_to_loopback_allowed_on_non_default_port_with_allow_remote(
+    def test_dns_resolving_to_loopback_blocked_on_non_default_port_with_allow_remote(
         self,
     ):
-        """DNS resolving to loopback on non-Ollama port is allowed when allow_remote=True.
+        """DNS resolving to loopback on non-Ollama port is blocked regardless of allow_remote.
 
-        allow_remote=True permits loopback on any port (e.g. local development proxies).
-        Still blocked when allow_remote=False (the default).
+        Loopback is only allowed on port 11434. Still blocked when allow_remote=False
+        (the default).
         """
         with patch(
             "memory.url_validate._resolve_hostname",
             return_value=["127.0.0.1"],
         ):
             assert (
-                is_safe_url("http://evil.example.com:8080", allow_remote=True) is True
+                is_safe_url("http://evil.example.com:8080", allow_remote=True) is False
             )
             assert (
                 is_safe_url("http://evil.example.com:8080", allow_remote=False) is False
@@ -398,7 +395,7 @@ class TestIsSafeURL_DNSRebinding:
 
 class TestIsSafeURL_AllowRemote:
     """allow_remote=True allows any reachable hostname (still blocks blocked IPs).
-    Loopback on any port is also permitted with allow_remote=True.
+    Loopback is only permitted on the Ollama default port, even with allow_remote=True.
     """
 
     def test_public_ip_allowed_when_allow_remote(self):
@@ -414,9 +411,9 @@ class TestIsSafeURL_AllowRemote:
     def test_private_ip_still_blocked_with_allow_remote(self):
         assert is_safe_url("http://10.0.0.1:443", allow_remote=True) is False
 
-    def test_loopback_on_arbitrary_port_allowed_with_allow_remote(self):
-        """allow_remote=True permits loopback on arbitrary ports."""
-        assert is_safe_url("http://127.0.0.1:6379", allow_remote=True) is True
+    def test_loopback_on_arbitrary_port_blocked_even_with_allow_remote(self):
+        """Loopback is only allowed on Ollama default port, even with allow_remote=True."""
+        assert is_safe_url("http://127.0.0.1:6379", allow_remote=True) is False
 
     def test_loopback_on_arbitrary_port_blocked_by_default(self):
         """allow_remote=False (default) restricts loopback to Ollama port only."""
@@ -701,11 +698,10 @@ class TestSafeRedirectHandler:
         )
         assert result is None
 
-    def test_allows_redirect_to_non_ollama_loopback_port_with_allow_remote(self):
-        """Redirects to loopback on non-Ollama port are allowed with allow_remote=True.
+    def test_blocks_redirect_to_non_ollama_loopback_port_with_allow_remote(self):
+        """Redirects to loopback on non-Ollama port are blocked regardless of allow_remote.
 
-        allow_remote=True permits loopback on any port. Still blocked when
-        allow_remote=False (the default).
+        Loopback is only allowed on the Ollama default port, even with allow_remote=True.
         """
         handler = SafeRedirectHandler(allow_remote=True)
         req = MagicMock()
@@ -714,7 +710,7 @@ class TestSafeRedirectHandler:
         result = handler.redirect_request(
             req, MagicMock(), 302, "Found", MagicMock(), "http://127.0.0.1:6379/"
         )
-        assert result is not None  # Should be allowed with allow_remote=True
+        assert result is None  # Blocked — loopback on non-Ollama port
 
     def test_blocks_redirect_to_non_ollama_loopback_port_without_allow_remote(self):
         """Redirects to loopback on non-Ollama port are blocked when allow_remote=False."""
