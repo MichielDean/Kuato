@@ -103,10 +103,10 @@ function testPluginJsonHasSkills() {
     return;
   }
   var plugin = JSON.parse(fs.readFileSync(pluginPath, 'utf8'));
-  assert(plugin.skills === '../skills', 'plugin.json skills points to "../skills"');
-  // Verify the referenced skills directory exists
-  var skillsDir = path.join(ROOT_DIR, '..', 'skills');
-  assert(fs.existsSync(skillsDir), 'plugin.json skills "../skills" resolves to existing directory');
+  assert(plugin.skills === 'skills/', 'plugin.json skills points to "skills/"');
+  // Verify the referenced skills directory exists locally
+  var skillsDir = path.join(ROOT_DIR, 'skills');
+  assert(fs.existsSync(skillsDir) && fs.statSync(skillsDir).isDirectory(), 'plugin.json skills "skills/" resolves to existing local directory');
 }
 
 function testPluginJsonHasHooks() {
@@ -192,6 +192,22 @@ function testHooksAgentStop() {
   }
 }
 
+function testHooksSessionCompacting() {
+  var hooksPath = path.join(ROOT_DIR, 'hooks.json');
+  if (!fs.existsSync(hooksPath)) {
+    assert(false, 'hooks.json sessionCompacting: file missing');
+    return;
+  }
+  var hooks = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+  var sessionCompacting = hooks.hooks && hooks.hooks.sessionCompacting;
+  assert(sessionCompacting !== undefined, 'hooks.json has sessionCompacting hook');
+  if (sessionCompacting) {
+    assert(sessionCompacting.type === 'command', 'sessionCompacting hook has type: "command"');
+    assert(typeof sessionCompacting.bash === 'string' && sessionCompacting.bash.length > 0, 'sessionCompacting hook has bash field');
+    assert(sessionCompacting.bash.indexOf('--compacting') !== -1, 'sessionCompacting hook bash command uses --compacting flag');
+  }
+}
+
 function testHooksTimeout() {
   var hooksPath = path.join(ROOT_DIR, 'hooks.json');
   if (!fs.existsSync(hooksPath)) {
@@ -241,6 +257,8 @@ function testNoForbiddenRefs() {
   }
   // Check agents directory
   checkNoForbiddenRefsInDir(path.join(ROOT_DIR, 'agents'), 'agents');
+  // Check bundled skills directory
+  checkNoForbiddenRefsInDir(path.join(ROOT_DIR, 'skills'), 'skills');
 }
 
 // ── Agent Validation Tests ───────────────────────────────────────────────
@@ -348,6 +366,69 @@ function testPackageJsonName() {
   assert(pkg.scripts && pkg.scripts.test === 'node test.js', 'package.json has test script');
 }
 
+function testPackageJsonFilesExistLocally() {
+  var pkgPath = path.join(ROOT_DIR, 'package.json');
+  if (!fs.existsSync(pkgPath)) {
+    assert(false, 'package.json files exist: file missing');
+    return;
+  }
+  var pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  var files = pkg.files || [];
+  assert(files.length > 0, 'package.json has non-empty files array');
+  var allExist = true;
+  var missing = [];
+  for (var i = 0; i < files.length; i++) {
+    var filePath = path.join(ROOT_DIR, files[i]);
+    if (!fs.existsSync(filePath)) {
+      allExist = false;
+      missing.push(files[i]);
+    }
+  }
+  assert(allExist, 'package.json files all exist locally' + (missing.length > 0 ? ' (missing: ' + missing.join(', ') + ')' : ''));
+  // Ensure no src/ in files (this is a declarative plugin, no programmatic src/)
+  assert(files.indexOf('src/') === -1, 'package.json files does not include src/ (declarative plugin)');
+}
+
+function testInstallJsUsesLocalSkills() {
+  var installPath = path.join(ROOT_DIR, 'install.js');
+  if (!fs.existsSync(installPath)) {
+    assert(false, 'install.js uses local skills: file missing');
+    return;
+  }
+  var content = fs.readFileSync(installPath, 'utf8');
+  // install.js must NOT reference ../skills (would break standalone npm install)
+  assert(content.indexOf('..') === -1 || content.indexOf('..\\\' + \'skills') === -1,
+    'install.js does not reference ../skills (breaks standalone install)');
+  // Verify it references local skills directory
+  assert(content.indexOf("path.join(__dirname, 'skills')") !== -1,
+    'install.js references local skills/ directory');
+}
+
+function testBundledSkillsExist() {
+  var expectedSkills = ['llmem', 'introspection', 'introspection-review-tracker'];
+  var allPresent = true;
+  var missing = [];
+  for (var i = 0; i < expectedSkills.length; i++) {
+    var skillDir = path.join(ROOT_DIR, 'skills', expectedSkills[i]);
+    if (!fs.existsSync(skillDir) || !fs.statSync(skillDir).isDirectory()) {
+      allPresent = false;
+      missing.push(expectedSkills[i]);
+    }
+  }
+  assert(allPresent, 'bundled skills/ directory contains expected skills' + (missing.length > 0 ? ' (missing: ' + missing.join(', ') + ')' : ''));
+  // Each skill must have a SKILL.md
+  var allHaveSkillMd = true;
+  var missingMd = [];
+  for (var j = 0; j < expectedSkills.length; j++) {
+    var skillMd = path.join(ROOT_DIR, 'skills', expectedSkills[j], 'SKILL.md');
+    if (!fs.existsSync(skillMd)) {
+      allHaveSkillMd = false;
+      missingMd.push(expectedSkills[j]);
+    }
+  }
+  assert(allHaveSkillMd, 'each bundled skill has SKILL.md' + (missingMd.length > 0 ? ' (missing: ' + missingMd.join(', ') + ')' : ''));
+}
+
 // ── Powershell Field Validation ───────────────────────────────────────────
 
 function testHooksHavePowershell() {
@@ -383,6 +464,7 @@ testHooksJsonVersion();
 testHooksJsonHasHooks();
 testHooksSessionStart();
 testHooksAgentStop();
+testHooksSessionCompacting();
 testHooksTimeout();
 testHooksCallLlmemCli();
 testHooksHavePowershell();
@@ -406,6 +488,9 @@ console.log('\n=== copilot-llmem package.json Validation Tests ===\n');
 
 testPackageJsonExists();
 testPackageJsonName();
+testPackageJsonFilesExistLocally();
+testInstallJsUsesLocalSkills();
+testBundledSkillsExist();
 
 console.log('\n=== copilot-llmem Results ===\n');
 

@@ -780,6 +780,11 @@ function testCopilotLlmemNoForbiddenRefs() {
   if (fs.existsSync(agentsDir)) {
     checkNoPersonalReferences(agentsDir, 'copilot-llmem/agents');
   }
+  // Check bundled skills directory
+  var skillsDir = path.join(COPILOT_LLMEM_PKG_DIR, 'skills');
+  if (fs.existsSync(skillsDir)) {
+    checkNoPersonalReferences(skillsDir, 'copilot-llmem/skills');
+  }
 }
 
 function testCopilotLlmemInstallScript() {

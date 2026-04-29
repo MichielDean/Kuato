@@ -3,9 +3,9 @@
 /**
  * copilot-llmem postinstall script.
  *
- * Copies skill directories from the shared repo root into the user's
- * ~/.agents/skills/ directory so they are available to the Copilot CLI
- * plugin at runtime.
+ * Copies skill directories from the bundled skills/ directory into the
+ * user's ~/.agents/skills/ directory so they are available to the
+ * Copilot CLI plugin at runtime.
  *
  * Uses only Node.js built-in modules: fs, path, os.
  */
@@ -14,7 +14,7 @@ var fs = require('fs');
 var path = require('path');
 var os = require('os');
 
-var SKILLS_SRC_DIR = path.join(__dirname, '..', 'skills');
+var SKILLS_SRC_DIR = path.join(__dirname, 'skills');
 var AGENTS_SRC_DIR = path.join(__dirname, 'agents');
 var TARGET_SKILLS_DIR = path.join(os.homedir(), '.agents', 'skills');
 var TARGET_AGENTS_DIR = path.join(os.homedir(), '.agents', 'agents');
