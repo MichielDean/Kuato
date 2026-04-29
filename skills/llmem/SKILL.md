@@ -117,18 +117,8 @@ llmem extract "text to process"
 llmem extract --file path/to/file --source-id unique-source-id
 llmem extract --dry-run "text"  # preview without saving
 
-# Auto-extract from session transcripts
-llmem hook                          # process direct (user) sessions only (default)
-llmem hook --source direct          # same as default — only user sessions
-llmem hook --source all             # process all sessions (unfiltered)
-llmem hook --file transcript.md     # process a single file
-llmem hook --directory ~/sessions   # process a directory
-llmem hook --force                  # re-extract already-processed sessions
-llmem hook --no-embed               # skip embedding generation
-llmem hook --pattern "*.json"       # use a different file pattern
-llmem hook --introspect             # backward compat no-op (introspection runs by default)
-llmem hook --no-introspect          # skip introspection pass (use for trivial sessions)
-llmem hook --no-introspect --force  # force re-extract without introspection
+# Auto-extract from session transcripts (idle hook)
+llmem hook idle <session_id>        # trigger memory extraction and introspection for a session
 
 # Consolidate near-duplicates
 llmem consolidate --threshold 0.92
@@ -153,8 +143,11 @@ llmem merge <source-id> <target-id>
 llmem export --output memories.json
 llmem import memories.json
 
-# Generate context block for injection
-llmem context "what context is needed" --budget 4000
+# Inject memory context for a new session
+llmem context <session_id>
+
+# Inject key memories during session compaction
+llmem context --compacting <session_id>
 
 # Add a structured self_assessment memory (introspection, manual mode)
 llmem introspect --category NULL_SAFETY --what-happened "missing null check before property access" --context "handler.py:42" --caught-by self-review --proposed-update "always check for None before accessing .field"
@@ -325,8 +318,8 @@ retriever = Retriever(store, embedder=embedder, blend=0.5)
 - **Extraction** uses `qwen2.5:1.5b` by default. It runs locally via Ollama.
 - **Confidence** is 0.0-1.0. Higher = more certain. Facts from the user directly should be 0.9+, auto-extracted should be 0.7.
 - **Context generation** is what gets injected into the system prompt for context. Use `llmem context` to preview what gets injected.
-- **Auto-extraction** uses `llmem hook` to automatically extract memories from session transcripts. By default, only **direct** (user) sessions are processed — pipeline agent sessions (those in sandbox directories) are excluded because their self-assessments would be context-dependent. Use `--source all` for unfiltered behavior, or set `hook.source_filter` in config. Introspection runs by default on every invocation — use `--no-introspect` to skip it for trivial sessions. It uses the existing `extraction_log` table with `source_type='session'` to prevent re-extraction. The `auto_extract` flag in `~/.config/llmem/config.yaml` controls whether `llmem hook` runs extraction (defaults to true).
-- **Auto-introspection** runs by default with `llmem hook`, producing `self_assessment` memories from each session transcript. Use `--no-introspect` to skip introspection for trivial sessions. The `--introspect` flag is still accepted for backward compatibility but is a no-op (introspection is always on). For standalone introspection, use `llmem introspect --auto` or `--interactive` to analyze a single file. Both use `qwen2.5:1.5b` via Ollama and the `extraction_log` table with `source_type='introspection'` for deduplication. Use `--force` to re-analyze an already-processed file. Interactive mode presents the LLM analysis for user confirmation before storing.
+- **Auto-extraction** uses `llmem hook idle <session_id>` to extract memories from session transcripts. The idle hook processes the session's transcript, extracts memories, and runs introspection automatically. It uses the `extraction_log` table with `source_type='session'` to prevent re-extraction. The `auto_extract` flag in `~/.config/llmem/config.yaml` controls whether `llmem hook` runs extraction (defaults to true).
+- **Auto-introspection** runs by default with `llmem hook idle`, producing `self_assessment` memories from each session transcript. For standalone introspection, use `llmem introspect --auto` or `--interactive` to analyze a single file. Both use `qwen2.5:1.5b` via Ollama and the `extraction_log` table with `source_type='introspection'` for deduplication. Use `--force` to re-analyze an already-processed file. Interactive mode presents the LLM analysis for user confirmation before storing.
 - **Session hook** can be called from an agent's instructions or cron to make memory collection ambient — no need to remember `llmem extract` after every session.
 - **Access tracking** — `llmem get` is read-only and does not update `access_count` or `accessed_at`. Use the Python API `MemoryStore.get(id, track_access=True)` or `MemoryStore.touch(id)` to record access. **Search operations (`Retriever.search()` and `Retriever.hybrid_search()`) now automatically track access** — each returned result's `access_count` and `accessed_at` are updated (best-effort, errors are logged not raised). This ensures the recency and access frequency reranking signals stay current.
 - **Iteration count** — use `llmem introspect --iteration-count N` to record how many attempts before success. This feeds calibration tracking: if average iteration counts for a category decrease after a behavioral adaptation, the adaptation is marked effective.

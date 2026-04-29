@@ -998,6 +998,184 @@ def cmd_hook(args):
         sys.exit(1)
 
 
+def cmd_track_review(args):
+    """Persist review findings as self_assessment memories.
+
+    Three modes:
+    - Single finding: --category + --what-happened (optionally --severity, --caught-by)
+    - Batch from file: --finding-file (JSON array of finding objects)
+    - Clean review: no flags → creates a REVIEW_PASSED memory
+
+    --category and --finding-file are mutually exclusive.
+    Every invocation MUST produce at least one memory.
+
+    Args:
+        args: An argparse Namespace with attributes:
+            - context (str|None): File/task identifier.
+            - category (str|None): Error taxonomy category for single finding.
+            - what_happened (str|None): Behavioral description for single finding.
+            - severity (str|None): Severity tier (Blocking, Required, etc.).
+            - caught_by (str|None): How the finding was discovered.
+            - finding_file (str|None): Path to JSON file with findings array.
+            - db (Path): Database path.
+    """
+    from .taxonomy import (
+        ERROR_TAXONOMY,
+        REVIEW_SEVERITY_TAXONOMY,
+        SELF_ASSESSMENT_FIELDS,
+    )
+
+    store = MemoryStore(args.db)
+
+    if args.category and args.finding_file:
+        print(
+            "Error: --category and --finding-file are mutually exclusive",
+            file=sys.stderr,
+        )
+        store.close()
+        sys.exit(1)
+
+    if args.category:
+        # Single finding mode
+        category = args.category
+        if category not in ERROR_TAXONOMY:
+            print(
+                f"Error: unknown category '{category}'. "
+                f"Valid categories: {', '.join(ERROR_TAXONOMY.keys())}",
+                file=sys.stderr,
+            )
+            store.close()
+            sys.exit(1)
+
+        if not args.what_happened:
+            print("Error: --what-happened is required with --category", file=sys.stderr)
+            store.close()
+            sys.exit(1)
+
+        # Build structured content
+        content_lines = [f"Category: {category}"]
+        if args.context:
+            content_lines.append(f"Context: {args.context}")
+        content_lines.append(f"What_happened: {args.what_happened}")
+        content_lines.append(
+            "Outcomes: all clear"
+            if not args.severity
+            else f"Outcomes: {args.severity} finding"
+        )
+        if args.caught_by:
+            content_lines.append(f"What_caught_it: {args.caught_by}")
+        else:
+            content_lines.append("What_caught_it: self-review")
+        content_lines.append("Recurring: no")
+        content = "\n".join(content_lines)
+
+        mid = store.add(
+            type="self_assessment",
+            content=content,
+            source="review_tracker",
+            confidence=0.9,
+        )
+        print(f"Added self_assessment memory {mid} [{category}]")
+
+    elif args.finding_file:
+        # Batch mode from file
+        finding_path = Path(args.finding_file)
+        if not finding_path.exists():
+            print(
+                f"Error: llmem: track-review: finding file not found: {finding_path}",
+                file=sys.stderr,
+            )
+            store.close()
+            sys.exit(1)
+
+        try:
+            findings = json.loads(finding_path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            print(
+                f"Error: llmem: track-review: failed to read finding file: {e}",
+                file=sys.stderr,
+            )
+            store.close()
+            sys.exit(1)
+
+        if not isinstance(findings, list):
+            print(
+                "Error: llmem: track-review: finding file must contain a JSON array",
+                file=sys.stderr,
+            )
+            store.close()
+            sys.exit(1)
+
+        for finding in findings:
+            category = finding.get("category", "MISSING_VERIFICATION")
+            if category not in ERROR_TAXONOMY:
+                log.warning(
+                    "llmem: track-review: unknown category '%s', using MISSING_VERIFICATION",
+                    category,
+                )
+                category = "MISSING_VERIFICATION"
+
+            what_happened = finding.get(
+                "what_happened", finding.get("what_happened", "review finding")
+            )
+            severity = finding.get("severity", "")
+
+            content_lines = [f"Category: {category}"]
+            if args.context:
+                content_lines.append(f"Context: {args.context}")
+            content_lines.append(f"What_happened: {what_happened}")
+            if severity:
+                content_lines.append(f"Outcomes: {severity} finding")
+            content_lines.append("What_caught_it: self-review")
+            content_lines.append("Recurring: no")
+            content = "\n".join(content_lines)
+
+            mid = store.add(
+                type="self_assessment",
+                content=content,
+                source="review_tracker",
+                confidence=0.9,
+            )
+            print(f"Added self_assessment memory {mid} [{category}]")
+
+    else:
+        # Clean review — create REVIEW_PASSED memory
+        content_lines = ["Category: REVIEW_PASSED"]
+        if args.context:
+            content_lines.append(f"Context: {args.context}")
+        content_lines.append("What_happened: clean review — no findings")
+        content_lines.append("Outcomes: all clear")
+        content_lines.append("What_caught_it: self-review")
+        content_lines.append("Recurring: no")
+        content = "\n".join(content_lines)
+
+        mid = store.add(
+            type="self_assessment",
+            content=content,
+            source="review_tracker",
+            confidence=0.9,
+        )
+        print(f"Added self_assessment memory {mid} [REVIEW_PASSED]")
+
+    store.close()
+
+
+def cmd_suggest_categories(args):
+    """List error taxonomy categories applicable to a severity tier.
+
+    Args:
+        args: An argparse Namespace with attributes:
+            - tier (str): Severity tier name (Blocking, Required, etc.).
+
+    Prints one category per line for the given tier.
+    """
+    from .taxonomy import REVIEW_SEVERITY_TAXONOMY
+
+    categories = REVIEW_SEVERITY_TAXONOMY.get(args.tier, [])
+    for cat in categories:
+        print(cat)
+
+
 def main():
     """Entry point for the llmem CLI."""
     # Backward-compat: warn when invoked as 'lobmem'
@@ -1240,6 +1418,47 @@ def main():
         help="Ollama base URL (default: http://localhost:11434)",
     )
 
+    # track-review
+    p_track_review = subparsers.add_parser(
+        "track-review",
+        help="Persist review findings as self_assessment memories",
+    )
+    p_track_review.add_argument(
+        "--context",
+        help="File or task identifier (e.g. 'handler.py:42')",
+    )
+    p_track_review.add_argument(
+        "--category",
+        help="Error taxonomy category for a single finding (e.g. NULL_SAFETY)",
+    )
+    p_track_review.add_argument(
+        "--what-happened",
+        help="Behavioral description of the finding",
+    )
+    p_track_review.add_argument(
+        "--severity",
+        help="Severity tier (Blocking, Required, Strong Suggestions, Noted)",
+    )
+    p_track_review.add_argument(
+        "--caught-by",
+        help="How the finding was discovered (e.g. self-review, CI)",
+    )
+    p_track_review.add_argument(
+        "--finding-file",
+        help="Path to a JSON file with an array of finding objects",
+    )
+
+    # suggest-categories
+    p_suggest_categories = subparsers.add_parser(
+        "suggest-categories",
+        help="List error taxonomy categories for a severity tier",
+    )
+    p_suggest_categories.add_argument(
+        "tier",
+        choices=["Blocking", "Required", "Strong Suggestions", "Noted", "Passed"],
+        help="Severity tier to list categories for",
+    )
+
     # context
     p_context = subparsers.add_parser(
         "context",
@@ -1312,6 +1531,8 @@ def main():
         "learn": cmd_learn,
         "context": cmd_context,
         "hook": cmd_hook,
+        "track-review": cmd_track_review,
+        "suggest-categories": cmd_suggest_categories,
     }
 
     handler = commands.get(args.command)
