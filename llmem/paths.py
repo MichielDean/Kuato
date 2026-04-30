@@ -267,6 +267,15 @@ def get_dream_diary_path() -> Path:
     return get_llmem_home() / "dream-diary.md"
 
 
+def get_dream_report_path() -> Path:
+    """Return the path to the dream report.
+
+    Returns:
+        get_llmem_home() / "dream-report.html". No preconditions.
+    """
+    return get_llmem_home() / "dream-report.html"
+
+
 def get_context_dir() -> Path:
     """Return the path to the context directory.
 

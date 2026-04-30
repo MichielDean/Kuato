@@ -104,6 +104,7 @@ def _resolve_defaults() -> dict:
     from .paths import (
         get_db_path as _get_db_path,
         get_dream_diary_path,
+        get_dream_report_path as _paths_dream_report_path,
         get_context_dir,
     )
 
@@ -114,6 +115,7 @@ def _resolve_defaults() -> dict:
     defaults = copy.deepcopy(DEFAULTS)
     defaults["memory"]["db"] = str(_get_db_path())
     defaults["dream"]["diary_path"] = str(get_dream_diary_path())
+    defaults["dream"]["report_path"] = str(_paths_dream_report_path())
     defaults["opencode"]["context_dir"] = str(get_context_dir())
     _resolved_defaults_cache = defaults
     return defaults
