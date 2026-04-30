@@ -9,7 +9,6 @@ import yaml
 
 from .paths import (
     get_config_path as _get_config_path,
-    get_dream_diary_path,
     _validate_home_path,
 )
 from .url_validate import is_safe_url, _strip_credentials

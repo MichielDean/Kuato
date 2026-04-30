@@ -448,9 +448,6 @@ class Dreamer:
                     for m in already
                 )
                 if not already_proposed:
-                    sample_ctx = "; ".join(
-                        s["context"] for s in sample_snippets if s["context"]
-                    )
                     content_parts = [
                         existing_pattern,
                         f"When encountering {cat.lower()} situations, follow these detection rules:",
@@ -606,7 +603,7 @@ class Dreamer:
             entry += f"- Auto-linked: {result.deep.auto_linked_count}\n"
 
         if result.rem:
-            entry += f"\n### REM Phase\n\n"
+            entry += "\n### REM Phase\n\n"
             entry += f"- Total memories: {result.rem.total_memories}\n"
             entry += f"- Active memories: {result.rem.active_memories}\n"
             if result.rem.themes:
