@@ -1102,9 +1102,35 @@ def cmd_hook(args):
                 count,
                 args.session_id,
             )
+    elif args.hook_type == "ending":
+        try:
+            coordinator = create_session_hook_coordinator()
+        except Exception as e:
+            log.error("llmem: cli: hook: ending: failed to create coordinator: %s", e)
+            print(
+                f"Error: llmem: hook: ending: failed to initialize: {e}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        from .session_hooks import SESSION_ENDING_NO_TRANSCRIPT
+
+        result_type, count = coordinator.on_ending(args.session_id)
+        if result_type == SESSION_ENDING_NO_TRANSCRIPT:
+            log.debug(
+                "llmem: cli: hook: ending: no transcript for session %s",
+                args.session_id,
+            )
+        else:
+            log.info(
+                "llmem: cli: hook: ending: %s (%d total) for session %s",
+                result_type,
+                count,
+                args.session_id,
+            )
     else:
         print(
-            f"Error: unknown hook type '{args.hook_type}'. Supported: idle",
+            f"Error: unknown hook type '{args.hook_type}'. Supported: idle, ending",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1632,8 +1658,8 @@ def main():
     )
     p_hook.add_argument(
         "hook_type",
-        choices=["idle"],
-        help="Hook type to dispatch",
+        choices=["idle", "ending"],
+        help="Hook type to dispatch (idle: extract memories, ending: extract + introspect)",
     )
     p_hook.add_argument(
         "session_id",

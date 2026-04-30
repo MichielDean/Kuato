@@ -31,6 +31,8 @@ SESSION_IDLE_NO_TRANSCRIPT = "no_transcript"
 SESSION_COMPACTING_SUCCESS = "success"
 SESSION_COMPACTING_NO_MEMORIES = "no_memories"
 SESSION_COMPACTING_ERROR = "error"
+SESSION_ENDING_SUCCESS = "ending_success"
+SESSION_ENDING_NO_TRANSCRIPT = "ending_no_transcript"
 
 # Result constants for process_opencode_sessions
 # Following the pattern of PROCESS_RESULT_* in llmem/hooks.py
@@ -338,6 +340,67 @@ class SessionHookCoordinator:
             session_id,
         )
         return SESSION_COMPACTING_SUCCESS, str(context_file)
+
+    def on_ending(self, session_id: str) -> tuple[str, int]:
+        """Handle session.ending event: extract memories and run introspection.
+
+        Unlike on_idle (extraction only), on_ending also runs the
+        introspection pass to generate self_assessment memories from
+        the session transcript.
+
+        Args:
+            session_id: The OpenCode session ID.
+
+        Returns:
+            Tuple of (result_type, count). Count is the total number of
+            memories extracted + introspected.
+
+        Raises:
+            ValueError: If session_id contains path traversal characters.
+        """
+        validate_session_id(session_id)
+
+        transcript = self._adapter.get_session_transcript(session_id)
+        if not transcript:
+            log.debug(
+                "llmem: session_hooks: on_ending: no transcript for session %s",
+                session_id,
+            )
+            return SESSION_ENDING_NO_TRANSCRIPT, 0
+
+        result_type, count = self._session_hook.process_transcript(
+            source_id=session_id,
+            text=transcript,
+            source_type="session",
+        )
+
+        introspection_count = 0
+        try:
+            from .hooks import introspect_session
+
+            introspect_result = introspect_session(
+                source_id=session_id,
+                text=transcript,
+                store=self._store,
+            )
+            if introspect_result[0].startswith("introspect_success"):
+                introspection_count = 1
+        except Exception as e:
+            log.warning(
+                "llmem: session_hooks: on_ending: introspection failed for session %s: %s",
+                session_id,
+                e,
+            )
+
+        total = count + introspection_count
+        log.info(
+            "llmem: session_hooks: on_ending: extracted %d memories + %d introspections for session %s (result: %s)",
+            count,
+            introspection_count,
+            session_id,
+            result_type,
+        )
+        return result_type, total
 
     def _get_session_working_dir(self, session_id: str) -> str | None:
         """Try to determine a session's working directory from the adapter.
