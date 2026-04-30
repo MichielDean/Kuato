@@ -305,7 +305,7 @@ Produce a structured self-assessment or state "NO_ASSESSMENT" if nothing notable
     )
 
     try:
-        with safe_urlopen(req, allow_remote=True) as resp:
+        with safe_urlopen(req, allow_remote=True, timeout=300) as resp:
             data = json.loads(resp.read())
             assessment = data.get("response", "").strip()
     except Exception as e:

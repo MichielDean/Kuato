@@ -14,6 +14,9 @@ OLLAMA_DEFAULT_PORT = 11434
 
 # Default timeout for all urllib calls (seconds).
 # Prevents infinite hangs on unresponsive hosts.
+# 30s is enough for small models; larger models processing long
+# prompts need more time. Callers that need longer (extraction,
+# introspection, merge) should pass an explicit timeout.
 DEFAULT_URLOPEN_TIMEOUT = 30
 
 

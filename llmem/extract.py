@@ -58,7 +58,7 @@ class ExtractionEngine:
             url, data=payload, headers={"Content-Type": "application/json"}
         )
         try:
-            with safe_urlopen(req, allow_remote=True) as resp:
+            with safe_urlopen(req, allow_remote=True, timeout=300) as resp:
                 data = json.loads(resp.read())
                 response_text = data.get("response", "").strip()
         except (
@@ -127,7 +127,7 @@ class ExtractionEngine:
             url, data=payload, headers={"Content-Type": "application/json"}
         )
         try:
-            with safe_urlopen(req, allow_remote=True) as resp:
+            with safe_urlopen(req, allow_remote=True, timeout=600) as resp:
                 data = json.loads(resp.read())
                 return data.get("status") == "success"
         except Exception as e:

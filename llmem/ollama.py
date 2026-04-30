@@ -106,7 +106,7 @@ def _call_ollama_generate(
     model: str,
     prompt: str,
     base_url: str = DEFAULT_BASE,
-    timeout: int = 120,
+    timeout: int = 300,
 ) -> str | None:
     """Call Ollama generate API and return the response text.
 
@@ -137,7 +137,7 @@ def _call_ollama_generate(
         url, data=payload, headers={"Content-Type": "application/json"}
     )
     try:
-        with safe_urlopen(req, allow_remote=True) as resp:
+        with safe_urlopen(req, allow_remote=True, timeout=timeout) as resp:
             data = json.loads(resp.read())
             return data.get("response", "").strip()
     except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as e:
