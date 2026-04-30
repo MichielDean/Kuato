@@ -11,7 +11,6 @@ from llmem.paths import (
     get_config_path,
     get_db_path,
     get_dream_diary_path,
-    get_proposed_changes_path,
     get_context_dir,
     migrate_from_lobsterdog,
     _validate_home_path,
@@ -165,13 +164,6 @@ class TestPaths_DreamDiaryPath:
         with patch("llmem.paths.get_llmem_home", return_value=Path("/tmp/llmem")):
             result = get_dream_diary_path()
             assert result == Path("/tmp/llmem/dream-diary.md")
-
-
-class TestPaths_ProposedChangesPath:
-    def test_returns_proposed_changes(self):
-        with patch("llmem.paths.get_llmem_home", return_value=Path("/tmp/llmem")):
-            result = get_proposed_changes_path()
-            assert result == Path("/tmp/llmem/proposed-changes.md")
 
 
 class TestPaths_ContextDir:

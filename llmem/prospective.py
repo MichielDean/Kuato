@@ -8,7 +8,7 @@ from .ollama import _call_ollama_generate
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "qwen2.5:1.5b"
+DEFAULT_MODEL = "glm-5.1:cloud"
 DEFAULT_OLLAMA_BASE = "http://localhost:11434"
 
 

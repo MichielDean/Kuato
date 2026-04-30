@@ -782,9 +782,6 @@ def cmd_dream(args):
             diary_path=Path(dream_config["diary_path"])
             if dream_config.get("diary_path")
             else None,
-            proposed_changes_path=Path(dream_config["proposed_changes_path"])
-            if dream_config.get("proposed_changes_path")
-            else None,
         )
 
         result = dreamer.run(apply=args.apply, phase=args.phase)
@@ -813,6 +810,15 @@ def cmd_dream(args):
                 f"{prefix}  Total memories: {result.rem.total_memories}  "
                 f"Active: {result.rem.active_memories}"
             )
+            if result.rem.behavioral_insights:
+                print(f"{prefix}  Behavioral insights:")
+                for insight in result.rem.behavioral_insights:
+                    cat = insight.get("category", "?")
+                    count = insight.get("count", 0)
+                    iid = insight.get("insight_id", "not written")
+                    print(
+                        f"{prefix}    {cat}: {count} occurrences (id: {iid})"
+                    )
 
         # Generate report if requested
         if args.report:

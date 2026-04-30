@@ -4,11 +4,13 @@ Three phases:
   Light — sort + dedupe: find near-duplicates using cosine similarity
   Deep  — score + promote + decay + merge: quality-gated promotion, idle decay,
           frequent-access boost, LLM-assisted merge
-  REM   — reflect + cluster: extract themes, write dream diary (read-only)
+  REM   — reflect + cluster: extract themes from memory content, detect recurring
+          self_assessment patterns, write proposed procedural memories
 """
 
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -21,8 +23,9 @@ except ImportError:
     _HAS_FCNTL = False
 
 from .store import MemoryStore
-from .paths import get_dream_diary_path, get_proposed_changes_path, _is_blocked_path
+from .paths import get_dream_diary_path, _is_blocked_path
 from .registry import get_registered_dream_hooks
+from .taxonomy import ERROR_TAXONOMY
 
 log = logging.getLogger(__name__)
 
@@ -144,7 +147,6 @@ class Dreamer:
         embedder=None,
         behavioral_threshold: int = DEFAULT_BEHAVIORAL_THRESHOLD,
         behavioral_lookback_days: int = DEFAULT_BEHAVIORAL_LOOKBACK_DAYS,
-        proposed_changes_path: Path | None = None,
         calibration_enabled: bool = DEFAULT_CALIBRATION_ENABLED,
         stale_procedure_days: int = DEFAULT_STALE_PROCEDURE_DAYS,
         calibration_lookback_days: int = DEFAULT_CALIBRATION_LOOKBACK_DAYS,
@@ -168,9 +170,6 @@ class Dreamer:
         self._embedder = embedder
         self._behavioral_threshold = behavioral_threshold
         self._behavioral_lookback_days = behavioral_lookback_days
-        self._proposed_changes_path = (
-            proposed_changes_path or get_proposed_changes_path()
-        )
         self._calibration_enabled = calibration_enabled
         self._stale_procedure_days = stale_procedure_days
         self._calibration_lookback_days = calibration_lookback_days
@@ -306,15 +305,257 @@ class Dreamer:
         return result
 
     def _rem_phase(self, apply: bool = False) -> RemPhaseResult:
-        """Reflect and extract themes."""
+        """Reflect and extract themes and behavioral insights.
+
+        Clusters self_assessment memories by ERROR_TAXONOMY category within the
+        lookback window. When a category meets the behavioral_threshold, generates
+        a proposed procedural memory referencing the actual pattern. Writes
+        proposed procedures to the store (type=procedure, metadata contains
+        proposed=true and source=dream_rem).
+
+        Also extracts top-N content-word themes from all active memories.
+        """
         total = self._store.count()
         active = self._store.count(valid_only=True)
+
+        themes = self._extract_themes()
+
+        behavioral_insights = self._extract_behavioral_insights(
+            apply=apply,
+            lookback_days=self._behavioral_lookback_days,
+            threshold=self._behavioral_threshold,
+        )
+
         return RemPhaseResult(
             total_memories=total,
             active_memories=active,
-            themes=[],
-            behavioral_insights=[],
+            themes=themes,
+            behavioral_insights=behavioral_insights,
         )
+
+    def _extract_themes(self, top_n: int = 8) -> list[str]:
+        """Extract top-N content themes from active memories.
+
+        Groups memories by type and returns the most common types,
+        plus content-word clusters from the most frequent words.
+        """
+        type_counts = self._store.count_by_type(valid_only=True)
+        themes = []
+        for mem_type, count in sorted(
+            type_counts.items(), key=lambda x: x[1], reverse=True
+        )[:top_n]:
+            themes.append(f"{count} memories about {mem_type}")
+
+        memories = self._store.search(valid_only=True, limit=200)
+        word_freq: Counter[str] = Counter()
+        stop_words = {
+            "the", "a", "an", "is", "are", "was", "were", "be", "been",
+            "being", "have", "has", "had", "do", "does", "did", "will",
+            "would", "could", "should", "may", "might", "must", "shall",
+            "can", "need", "dare", "ought", "used", "to", "of", "in",
+            "for", "on", "with", "at", "by", "from", "as", "into", "and",
+            "or", "but", "not", "no", "nor", "so", "yet", "both", "either",
+            "neither", "each", "every", "all", "any", "few", "more", "most",
+            "other", "some", "such", "than", "too", "very", "just", "also",
+            "this", "that", "these", "those", "it", "its", "we", "our", "us",
+            "they", "them", "their", "i", "me", "my", "you", "your",
+        }
+        for m in memories:
+            content = m.get("content", "")
+            words = re.findall(r"[a-zA-Z_]{4,}", content.lower())
+            for w in words:
+                if w not in stop_words:
+                    word_freq[w] += 1
+        for word, count in word_freq.most_common(top_n):
+            if count >= 2:
+                themes.append(f"cluster: {count} memories involve '{word}'")
+        return themes
+
+    def _extract_behavioral_insights(
+        self,
+        apply: bool,
+        lookback_days: int,
+        threshold: int,
+    ) -> list[dict]:
+        """Detect recurring self_assessment patterns and generate insights.
+
+        For each ERROR_TAXONOMY category with >= threshold occurrences in the
+        lookback window, generate a proposed procedural memory that references
+        the actual pattern (specific category, occurrence count, and sample
+        content snippets). Optionally write proposed procedures to the store.
+
+        Returns:
+            List of insight dicts with keys: category, count, insight_id,
+            content_snippet.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        cutoff_iso = cutoff.isoformat()
+
+        self_assessments = self._store.search(
+            type="self_assessment",
+            valid_only=True,
+            limit=500,
+        )
+
+        recent: list[dict] = []
+        for m in self_assessments:
+            updated = m.get("updated_at", m.get("created_at", ""))
+            if updated and updated >= cutoff_iso:
+                recent.append(m)
+
+        category_counts: Counter[str] = Counter()
+        category_samples: dict[str, list[dict]] = {}
+        for m in recent:
+            content = m.get("content", "")
+            for cat in ERROR_TAXONOMY:
+                if f"Category: {cat}" in content:
+                    category_counts[cat] += 1
+                    category_samples.setdefault(cat, []).append(m)
+                    break
+
+        insights: list[dict] = []
+        for cat, count in category_counts.most_common():
+            if count < threshold:
+                continue
+
+            samples = category_samples.get(cat, [])
+            sample_snippets = []
+            for s in samples[:3]:
+                snippet = s.get("content", "")[:120].strip()
+                context = ""
+                for line in snippet.split("\n"):
+                    if line.strip().startswith("Context:"):
+                        context = line.strip().replace("Context:", "").strip()
+                        break
+                sample_snippets.append({"id": s["id"], "snippet": snippet, "context": context})
+
+            insight = {
+                "category": cat,
+                "count": count,
+                "insight_id": None,
+                "content_snippets": sample_snippets,
+            }
+
+            if apply:
+                existing_pattern = f"dream_rem:{cat}:{count}"
+                already = self._store.search(
+                    query=existing_pattern,
+                    valid_only=True,
+                    limit=5,
+                )
+                already_proposed = any(
+                    m.get("content", "").startswith(existing_pattern)
+                    for m in already
+                )
+                if not already_proposed:
+                    sample_ctx = "; ".join(
+                        s["context"] for s in sample_snippets if s["context"]
+                    )
+                    content_parts = [
+                        existing_pattern,
+                        f"When encountering {cat.lower()} situations, follow these detection rules:",
+                    ]
+                    for s in sample_snippets[:3]:
+                        ctx = s["context"]
+                        if ctx:
+                            content_parts.append(f"- seen in: {ctx}")
+                    description = ERROR_TAXONOMY.get(cat, cat)
+                    content_parts.append(f"Rule: {description}")
+
+                    proposed_id = self._store.add(
+                        type="procedure",
+                        content="\n".join(content_parts),
+                        confidence=0.85,
+                        source="dream_rem",
+                        metadata={
+                            "proposed": "true",
+                            "category": cat,
+                            "occurrence_count": str(count),
+                            "lookback_days": str(lookback_days),
+                        },
+                    )
+                    insight["insight_id"] = proposed_id
+
+            insights.append(insight)
+
+        if self._calibration_enabled:
+            self._run_calibration(apply=apply, insights=insights)
+
+        return insights
+
+    def _run_calibration(
+        self, apply: bool, insights: list[dict]
+    ) -> None:
+        """Check whether proposed procedures from previous dreams reduced error counts.
+
+        For each proposed procedure with metadata.proposed=true and
+        metadata.category set, compare the occurrence count in the current
+        lookback window against the count stored in metadata.occurrence_count.
+        Stores a calibration event memory.
+        """
+        proposed = self._store.search(
+            type="procedure",
+            valid_only=True,
+            limit=500,
+        )
+        proposed_procedures = [
+            m
+            for m in proposed
+            if m.get("metadata", {})
+            .get("proposed", "")
+            .lower()
+            .startswith("true")
+        ]
+
+        if not proposed_procedures:
+            return
+
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            days=self._calibration_lookback_days
+        )
+        cutoff_iso = cutoff.isoformat()
+
+        recent_assessments = self._store.search(
+            type="self_assessment",
+            valid_only=True,
+            limit=500,
+        )
+        recent_by_cat: Counter[str] = Counter()
+        for m in recent_assessments:
+            updated = m.get("updated_at", m.get("created_at", ""))
+            if updated and updated >= cutoff_iso:
+                content = m.get("content", "")
+                for cat in ERROR_TAXONOMY:
+                    if f"Category: {cat}" in content:
+                        recent_by_cat[cat] += 1
+                        break
+
+        for proc in proposed_procedures:
+            meta = proc.get("metadata", {})
+            cat = meta.get("category", "")
+            old_count = int(meta.get("occurrence_count", "0"))
+            new_count = recent_by_cat.get(cat, 0)
+
+            calibration_status = "stable"
+            if new_count < old_count:
+                calibration_status = "decreasing"
+            elif new_count > old_count:
+                calibration_status = "increasing"
+
+            if apply and calibration_status != "stable":
+                self._store.add(
+                    type="event",
+                    content=f"dream_calibration: {cat} occurrences {old_count}->{new_count} ({calibration_status})",
+                    confidence=0.8,
+                    source="dream_rem",
+                    metadata={
+                        "calibration": "true",
+                        "category": cat,
+                        "previous_count": str(old_count),
+                        "current_count": str(new_count),
+                        "status": calibration_status,
+                    },
+                )
 
     def _write_diary(self, result: DreamResult) -> None:
         """Append to the dream diary.
@@ -353,6 +594,9 @@ class Dreamer:
 
         entry = f"\n## Dream — {timestamp}\n\n"
 
+        if result.light:
+            entry += f"- Duplicate pairs: {result.light.duplicate_pairs}\n"
+
         if result.deep:
             entry += f"- Decayed: {result.deep.decayed_count}\n"
             entry += f"- Boosted: {result.deep.boosted_count}\n"
@@ -360,6 +604,22 @@ class Dreamer:
             entry += f"- Invalidated: {result.deep.invalidated_count}\n"
             entry += f"- Merged: {result.deep.merged_count}\n"
             entry += f"- Auto-linked: {result.deep.auto_linked_count}\n"
+
+        if result.rem:
+            entry += f"\n### REM Phase\n\n"
+            entry += f"- Total memories: {result.rem.total_memories}\n"
+            entry += f"- Active memories: {result.rem.active_memories}\n"
+            if result.rem.themes:
+                entry += "- Themes:\n"
+                for theme in result.rem.themes:
+                    entry += f"  - {theme}\n"
+            if result.rem.behavioral_insights:
+                entry += "- Behavioral insights:\n"
+                for insight in result.rem.behavioral_insights:
+                    cat = insight.get("category", "?")
+                    count = insight.get("count", 0)
+                    iid = insight.get("insight_id", "not written")
+                    entry += f"  - {cat}: {count} occurrences (insight_id: {iid})\n"
 
         with open(diary_path, "a") as f:
             if _HAS_FCNTL:

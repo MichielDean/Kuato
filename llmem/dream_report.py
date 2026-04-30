@@ -57,12 +57,24 @@ def generate_dream_report(result: DreamResult, report_path: Path) -> None:
             if result.rem.themes
             else "<li>No themes extracted</li>"
         )
+        insights_html = ""
+        if result.rem.behavioral_insights:
+            insights_html = "".join(
+                f"<li>{html.escape(insight.get('category', '?'))}: "
+                f"{insight.get('count', 0)} occurrences"
+                f"{' (insight written)' if insight.get('insight_id') else ' (below threshold)'}</li>"
+                for insight in result.rem.behavioral_insights
+            )
+        else:
+            insights_html = "<li>No behavioral insights</li>"
         rem_section = f"""<section>
 <h2>REM Phase</h2>
 <p>Total memories: {result.rem.total_memories}</p>
 <p>Active memories: {result.rem.active_memories}</p>
 <h3>Themes</h3>
 <ul>{themes_html}</ul>
+<h3>Behavioral Insights</h3>
+<ul>{insights_html}</ul>
 </section>"""
 
     html_output = f"""<!DOCTYPE html>

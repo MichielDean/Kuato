@@ -1,4 +1,4 @@
-"""Memory extraction using local Ollama (qwen2.5:1.5b)."""
+"""Memory extraction using Ollama (glm-5.1:cloud)."""
 
 import json
 import logging
@@ -12,7 +12,7 @@ from .url_validate import validate_base_url
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "qwen2.5:1.5b"
+DEFAULT_MODEL = "glm-5.1:cloud"
 OLLAMA_BASE = "http://localhost:11434"
 
 _SA_FIELD_LINES = "\n".join(f"{name}: {desc}" for name, desc in SELF_ASSESSMENT_FIELDS)

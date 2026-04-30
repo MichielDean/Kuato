@@ -267,15 +267,6 @@ def get_dream_diary_path() -> Path:
     return get_llmem_home() / "dream-diary.md"
 
 
-def get_proposed_changes_path() -> Path:
-    """Return the path to the proposed changes file.
-
-    Returns:
-        get_llmem_home() / "proposed-changes.md". No preconditions.
-    """
-    return get_llmem_home() / "proposed-changes.md"
-
-
 def get_context_dir() -> Path:
     """Return the path to the context directory.
 

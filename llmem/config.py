@@ -9,6 +9,7 @@ import yaml
 
 from .paths import (
     get_config_path as _get_config_path,
+    get_dream_diary_path,
     _validate_home_path,
 )
 from .url_validate import is_safe_url, _strip_credentials
@@ -38,8 +39,8 @@ DEFAULTS = {
         "db": None,  # Resolved from get_db_path() at access time
         "ollama_url": "http://localhost:11434",
         "embed_model": "nomic-embed-text",
-        "extract_model": "qwen2.5:1.5b",
-        "prospective_model": "qwen2.5:1.5b",
+        "extract_model": "glm-5.1:cloud",
+        "prospective_model": "glm-5.1:cloud",
         "context_budget": 4000,
         "auto_extract": True,
         "max_file_size": 10 * 1024 * 1024,
@@ -64,7 +65,6 @@ DEFAULTS = {
         "report_path": None,  # Resolved from get_dream_report_path()
         "behavioral_threshold": 3,
         "behavioral_lookback_days": 30,
-        "proposed_changes_path": None,  # Resolved from get_proposed_changes_path()
         "calibration_enabled": True,
         "stale_procedure_days": 30,
         "calibration_lookback_days": 90,
@@ -104,7 +104,6 @@ def _resolve_defaults() -> dict:
     from .paths import (
         get_db_path as _get_db_path,
         get_dream_diary_path,
-        get_proposed_changes_path,
         get_context_dir,
     )
 
@@ -115,7 +114,6 @@ def _resolve_defaults() -> dict:
     defaults = copy.deepcopy(DEFAULTS)
     defaults["memory"]["db"] = str(_get_db_path())
     defaults["dream"]["diary_path"] = str(get_dream_diary_path())
-    defaults["dream"]["proposed_changes_path"] = str(get_proposed_changes_path())
     defaults["opencode"]["context_dir"] = str(get_context_dir())
     _resolved_defaults_cache = defaults
     return defaults
