@@ -168,9 +168,21 @@ class SessionHookCoordinator:
             )
             return SESSION_CREATED_ALREADY_PROCESSED, None
 
-        # Try to determine the session's working directory from the adapter
+        # Try to determine the session's working directory from the adapter.
+        # Fall back to CWD if no adapter or no session found — this gives
+        # project-scoped context rather than searching for a useless UUID.
         working_dir = self._get_session_working_dir(session_id)
-        query = working_dir or session_id
+        if working_dir:
+            query = working_dir
+        else:
+            import os
+
+            query = os.getcwd()
+            log.debug(
+                "llmem: session_hooks: on_created: no working directory for session %s, using CWD: %s",
+                session_id,
+                query,
+            )
 
         context = self._retriever.format_context(query)
         if not context:

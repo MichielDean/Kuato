@@ -509,8 +509,14 @@ class Retriever:
     def format_context(
         self, query: str, budget: int = 4000, type_filter: str | None = None
     ) -> str:
-        """Format search results as context for LLM injection."""
-        results = self.search(query, limit=20, type_filter=type_filter)
+        """Format search results as context for LLM injection.
+
+        Uses hybrid search (FTS5 + semantic) when embeddings are available,
+        falling back to FTS5-only when they are not.
+        """
+        results = self.hybrid_search(
+            query, limit=20, type_filter=type_filter, search_mode="hybrid"
+        )
         if not results:
             return ""
         lines = []
