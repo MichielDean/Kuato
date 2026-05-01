@@ -151,7 +151,7 @@ llmem import backup.json
 python -m pytest
 ```
 
-1181 Python tests and 65 JavaScript tests (copilot-llmem) covering all providers, URL validation, configuration, security, session hooks, CLI commands (context, hook, track-review, suggest-categories), and edge cases.
+1349 Python tests and 208 JavaScript tests (142 root + 66 copilot-llmem) covering all providers, session adapters (OpenCode, Copilot, none), URL validation, configuration, security, session hooks, CLI commands, and edge cases.
 
 ## License
 

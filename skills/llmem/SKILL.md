@@ -20,9 +20,28 @@ LLMem is a structured memory system. It stores factual memories in SQLite with o
 ## Installation
 
 - **CLI:** `~/.local/bin/llmem`
-- **Config:** `~/.config/llmem/config.yaml` (memory section)
+- **Config:** `~/.config/llmem/config.yaml`
 - **DB:** `~/.config/llmem/memory.db`
 - **Ollama:** `http://localhost:11434` (local, for embeddings)
+
+## Session Adapter Configuration
+
+LLMem uses a session adapter to read conversation transcripts for memory extraction. Set `session.adapter` in config.yaml:
+
+- `opencode` (default) — reads from `~/.local/share/opencode/opencode.db`. Auto-selected if the database exists.
+- `copilot` — reads from `~/.copilot/session-state/`. Auto-selected if only Copilot session data exists. Full transcripts require `--share`.
+- `none` — no adapter. Context injection still works, but transcript extraction returns `no_transcript`.
+
+```yaml
+# For Copilot CLI:
+session:
+  adapter: copilot
+copilot:
+  state_dir: ~/.copilot/session-state
+  share_dir: .
+```
+
+`llmem init` auto-detects the adapter type based on which session state directory exists.
 
 ## Memory Types
 

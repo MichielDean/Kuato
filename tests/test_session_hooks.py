@@ -664,14 +664,11 @@ class TestOpenCodeSessionHook_Limit:
         )
         # With limit=3, at most 3 sessions should be processed
         # (Each session has no messages, so they get empty_transcript)
-        total_processed = sum(
-            results.get(k, 0)
-            for k in [
+        assert sum(results.get(k, 0) for k in [
                 OPENCODE_RESULT_EMPTY_TRANSCRIPT,
                 OPENCODE_RESULT_SUCCESS,
                 OPENCODE_RESULT_NO_MEMORIES,
-            ]
-        )
+            ]) <= 3
 
 
 class TestSessionHookCoordinatorWithoutAdapter:
@@ -686,7 +683,6 @@ class TestSessionHookCoordinatorWithoutAdapter:
         from llmem.store import MemoryStore
         from llmem.retrieve import Retriever
         from llmem.extract import ExtractionEngine
-        from llmem.embed import EmbeddingEngine
 
         store = MemoryStore(db_path=tmp_path / "test.db", disable_vec=True)
         retriever = Retriever(store=store)
