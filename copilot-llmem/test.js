@@ -325,7 +325,7 @@ function testInstallCopiesFiles() {
       stdio: 'pipe'
     });
     var targetSkillsDir = path.join(fakeHome, '.agents', 'skills');
-    var expectedSkills = ['llmem', 'introspection', 'introspection-review-tracker'];
+    var expectedSkills = ['llmem', 'llmem-setup', 'introspection', 'introspection-review-tracker'];
     var allPresent = true;
     var missing = [];
     for (var i = 0; i < expectedSkills.length; i++) {
@@ -405,7 +405,7 @@ function testInstallJsUsesLocalSkills() {
 }
 
 function testBundledSkillsExist() {
-  var expectedSkills = ['llmem', 'introspection', 'introspection-review-tracker'];
+  var expectedSkills = ['llmem', 'llmem-setup', 'introspection', 'introspection-review-tracker'];
   var allPresent = true;
   var missing = [];
   for (var i = 0; i < expectedSkills.length; i++) {

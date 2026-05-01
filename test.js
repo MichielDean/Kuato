@@ -27,6 +27,7 @@ const EXPECTED_SKILLS = [
   'pre-pr-review',
   'visual-explainer',
   'llmem',
+  'llmem-setup',
   'introspection',
   'introspection-review-tracker'
 ];

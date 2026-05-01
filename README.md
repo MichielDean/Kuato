@@ -42,6 +42,7 @@ For detailed installation options (extras, plugins, requirements), see [docs/INS
 | Skill | Description |
 |-------|-------------|
 | **llmem** | Manage LLMem memories — add, search, consolidate, dream, introspect, and track review outcomes. |
+| **llmem-setup** | Install and configure LLMem for an agent harness — provider setup, skill registration, harness integration. |
 | **introspection** | Operational reference for the introspection framework — self-assessment, sampajanna checks, error taxonomy. |
 | **introspection-review-tracker** | Reference for the automated ReviewOutcomeTracker hook that persists review findings as self_assessment memories. |
 | **git-sync** | Sync git repos before editing. Fetch, rebase, stash, and detect conflicts. |
