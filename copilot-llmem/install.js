@@ -19,7 +19,7 @@ var AGENTS_SRC_DIR = path.join(__dirname, 'agents');
 var TARGET_SKILLS_DIR = path.join(os.homedir(), '.agents', 'skills');
 var TARGET_AGENTS_DIR = path.join(os.homedir(), '.agents', 'agents');
 
-var EXPECTED_SKILLS = ['llmem', 'introspection', 'introspection-review-tracker'];
+var EXPECTED_SKILLS = ['llmem', 'llmem-setup', 'introspection', 'introspection-review-tracker'];
 
 function copyDirRecursive(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
