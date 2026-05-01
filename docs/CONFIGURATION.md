@@ -58,6 +58,33 @@ opencode:
   context_dir: null           # Auto-resolved from get_context_dir()
   db_path: ~/.local/share/opencode/opencode.db
 
+session:
+  adapter: opencode            # Which session adapter to use: opencode, copilot, or none
+
+copilot:
+  state_dir: ~/.copilot/session-state
+  share_dir: .                 # Directory where --share markdown files are written
+
 correction_detection:
   enabled: true
 ```
+
+## Session Adapter Configuration
+
+LLMem uses a session adapter to read conversation transcripts for memory extraction and context injection. The adapter type determines where session data comes from:
+
+| Adapter | Source | Full transcripts? | Use when |
+|---------|--------|-------------------|----------|
+| `opencode` | `~/.local/share/opencode/opencode.db` (SQLite) | Yes | Running with OpenCode (default) |
+| `copilot` | `~/.copilot/session-state/` (YAML + markdown) | Only if `--share` is used | Running with GitHub Copilot CLI |
+| `none` | No adapter | No | Running standalone, no session data |
+
+**Key behavior differences:**
+
+- `llmem context` (session.created) — works with all adapters, including `none`. Injects relevant memories without needing session transcripts.
+- `llmem hook idle` (session.idle) — requires transcript access. Returns `no_transcript` when no adapter is configured or no share file exists.
+- `llmem context --compacting` (session.compacting) — works with all adapters. Reads from MemoryStore, not the session DB.
+
+**Copilot adapter and transcripts:** Copilot CLI does not persist conversation transcripts to a database. The adapter reads session metadata from `workspace.yaml` files in `~/.copilot/session-state/`. Full transcripts are only available when the user runs Copilot with `--share`, which writes a markdown file. Without `--share`, `on_idle` and `on_ending` return `no_transcript` gracefully.
+
+**Auto-detection:** `llmem init` auto-detects the adapter type based on which session state directory exists. If `~/.local/share/opencode/opencode.db` exists, it uses `opencode`. If only `~/.copilot/session-state/` exists, it uses `copilot`.

@@ -253,6 +253,32 @@ The plugin registers three session lifecycle hooks in `hooks.json`:
 
 Each hook extracts the `session_id` from the incoming JSON via `python3 -c`, passes it to the `llmem` CLI, and degrades gracefully on errors.
 
+### Copilot Session Adapter
+
+Copilot CLI does not persist conversation transcripts to a database like OpenCode does. LLMem uses the `CopilotAdapter` to read session metadata from `~/.copilot/session-state/` and optional `--share` markdown files.
+
+Set the adapter in `~/.config/llmem/config.yaml`:
+
+```yaml
+session:
+  adapter: copilot
+copilot:
+  state_dir: ~/.copilot/session-state
+  share_dir: .
+```
+
+`llmem init` auto-detects the adapter type. If `~/.copilot/session-state/` exists and `~/.local/share/opencode/opencode.db` doesn't, it selects `copilot`.
+
+**Transcript availability:** Without `--share`, the adapter can only read session metadata (working directory, branch). Memory extraction from session transcripts (`llmem hook idle`) returns `no_transcript` gracefully. Context injection (`llmem context`) works regardless — it queries MemoryStore, not the session DB.
+
+To enable full transcript extraction, configure Copilot to share session transcripts:
+
+```bash
+copilot -p "your prompt" --share --allow-all-tools
+```
+
+This writes a markdown file that the adapter reads for full conversation transcripts.
+
 ### Plugin Structure
 
 ```

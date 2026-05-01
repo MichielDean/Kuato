@@ -269,7 +269,9 @@ token = get_server_auth_token()
 
 ### Session Adapters
 
-`SessionAdapter` is an abstract base class for reading session transcripts. `OpenCodeAdapter` is the built-in implementation that reads from the OpenCode SQLite database.
+`SessionAdapter` is an abstract base class for reading session transcripts. Two built-in implementations are available:
+
+**OpenCodeAdapter** reads from the OpenCode SQLite database:
 
 ```python
 from llmem.adapters import OpenCodeAdapter
@@ -283,6 +285,36 @@ adapter.close()
 ```
 
 `OpenCodeAdapter.__init__` validates `db_path` for security: it rejects paths containing `..` traversal, paths targeting system directories (`/etc`, `/var`, etc.), and symlink paths. Paths that cannot be accessed (e.g. permission denied) also raise `ValueError`.
+
+**CopilotAdapter** reads from the Copilot CLI session state directory:
+
+```python
+from llmem.adapters import CopilotAdapter
+
+adapter = CopilotAdapter(
+    state_dir="~/.copilot/session-state",  # session metadata
+    share_dir=".",                          # --share markdown files
+)
+sessions = adapter.list_sessions(limit=10)
+transcript = adapter.get_session_transcript(session_id)  # None if no --share file
+adapter.close()
+```
+
+Copilot CLI does not persist conversation transcripts to a database. The adapter reads session metadata from `workspace.yaml` files and full transcripts from `--share` markdown files. Without `--share`, `get_session_transcript()` returns `None` and `on_idle` returns `no_transcript` gracefully.
+
+**No adapter** — The `SessionHookCoordinator` accepts `adapter=None`. In this mode, `on_idle` and `on_ending` return `no_transcript`, while `on_created` and `on_compacting` still work (they query MemoryStore, not the session DB).
+
+```python
+from llmem.session_hooks import create_session_hook_coordinator
+
+# Auto-detect: uses OpenCodeAdapter if opencode.db exists,
+# CopilotAdapter if only copilot session-state exists, else None
+coordinator = create_session_hook_coordinator()
+
+# Explicit adapter choice via config
+config = {"session": {"adapter": "copilot"}, "copilot": {"state_dir": "..."}}
+coordinator = create_session_hook_coordinator(config=config)
+```
 
 ### Session Extraction Pipeline
 
