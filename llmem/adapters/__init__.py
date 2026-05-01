@@ -1,9 +1,10 @@
 """Session adapter interface for llmem."""
 
 from .base import SessionAdapter
+from .copilot import CopilotAdapter
 from .opencode import OpenCodeAdapter
 
-__all__ = ["SessionAdapter", "OpenCodeAdapter"]
+__all__ = ["SessionAdapter", "OpenCodeAdapter", "CopilotAdapter"]
 
 
 def get_registered_adapters():

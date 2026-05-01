@@ -73,6 +73,13 @@ DEFAULTS = {
         "context_dir": None,  # Resolved from get_context_dir()
         "db_path": str(Path("~/.local/share/opencode/opencode.db").expanduser()),
     },
+    "session": {
+        "adapter": "opencode",
+    },
+    "copilot": {
+        "state_dir": str(Path("~/.copilot/session-state").expanduser()),
+        "share_dir": ".",
+    },
     "correction_detection": {
         "enabled": True,
     },

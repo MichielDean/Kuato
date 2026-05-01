@@ -14,6 +14,7 @@ from .store import MemoryStore
 from .retrieve import Retriever
 from .extract import ExtractionEngine
 from .embed import EmbeddingEngine
+from .adapters.base import SessionAdapter
 from .adapters.opencode import OpenCodeAdapter, OPENCODE_SESSION_SOURCE_TYPE
 from .hooks import SessionHook
 from .config import load_config
@@ -106,7 +107,7 @@ class SessionEventManager:
 
 
 class SessionHookCoordinator:
-    """Orchestrate memory injection and extraction for OpenCode session events.
+    """Orchestrate memory injection and extraction for session events.
 
     Handles three session lifecycle hooks:
     - session.created: inject relevant memory context into the session
@@ -118,7 +119,9 @@ class SessionHookCoordinator:
         retriever: Retriever instance for searching/formatting memories.
         extractor: ExtractionEngine for extracting memories from transcripts.
         embedder: Optional EmbeddingEngine for embedding extracted memories.
-        adapter: OpenCodeAdapter for reading session content.
+        adapter: Optional SessionAdapter for reading session content. If None,
+            on_idle and on_ending return no_transcript (no session DB available),
+            and on_created falls back to session_id as the query.
     """
 
     def __init__(
@@ -127,7 +130,7 @@ class SessionHookCoordinator:
         retriever: Retriever,
         extractor: ExtractionEngine,
         embedder: EmbeddingEngine | None,
-        adapter: OpenCodeAdapter,
+        adapter: SessionAdapter | None = None,
     ):
         self._store = store
         self._retriever = retriever
@@ -244,6 +247,13 @@ class SessionHookCoordinator:
             del self._last_idle_time[k]
 
         # Get session transcript from the adapter
+        if self._adapter is None:
+            log.debug(
+                "llmem: session_hooks: on_idle: no adapter configured for session %s",
+                session_id,
+            )
+            return SESSION_IDLE_NO_TRANSCRIPT, 0
+
         transcript = self._adapter.get_session_transcript(session_id)
         if not transcript:
             log.debug(
@@ -360,6 +370,13 @@ class SessionHookCoordinator:
         """
         validate_session_id(session_id)
 
+        if self._adapter is None:
+            log.debug(
+                "llmem: session_hooks: on_ending: no adapter configured for session %s",
+                session_id,
+            )
+            return SESSION_ENDING_NO_TRANSCRIPT, 0
+
         transcript = self._adapter.get_session_transcript(session_id)
         if not transcript:
             log.debug(
@@ -406,11 +423,14 @@ class SessionHookCoordinator:
         """Try to determine a session's working directory from the adapter.
 
         Args:
-            session_id: The OpenCode session ID.
+            session_id: The session ID.
 
         Returns:
-            The working directory string, or None if not found.
+            The working directory string, or None if not found or no adapter.
         """
+        if self._adapter is None:
+            return None
+
         try:
             sessions = self._adapter.list_sessions(limit=100)
             for s in sessions:
@@ -431,8 +451,11 @@ def create_session_hook_coordinator(
     """Factory function for creating a SessionHookCoordinator.
 
     Wires up MemoryStore, Retriever, ExtractionEngine, EmbeddingEngine,
-    and OpenCodeAdapter from config defaults. If config is None, calls
-    load_config().
+    and optionally a SessionAdapter from config. If config is None, calls
+    load_config(). The adapter type is determined by the ``session.adapter``
+    config key (``"opencode"`` or ``"copilot"``). If the configured adapter's
+    data source does not exist, the adapter is set to None and the
+    coordinator operates without session transcript access.
 
     Args:
         config: Optional pre-loaded config dict.
@@ -451,8 +474,33 @@ def create_session_hook_coordinator(
     ollama_url = get_ollama_url(config=resolved_config)
     extractor = ExtractionEngine(base_url=ollama_url)
     retriever = Retriever(store=store)
-    opencode_db = get_opencode_db_path(config=resolved_config)
-    adapter = OpenCodeAdapter(db_path=opencode_db)
+
+    adapter = None
+    adapter_type = resolved_config.get("session", {}).get("adapter", "opencode")
+
+    if adapter_type == "opencode":
+        opencode_db = get_opencode_db_path(config=resolved_config)
+        if opencode_db.exists():
+            adapter = OpenCodeAdapter(db_path=opencode_db)
+        else:
+            log.debug(
+                "llmem: session_hooks: opencode database not found at %s, running without session adapter",
+                opencode_db,
+            )
+    elif adapter_type == "copilot":
+        from .adapters.copilot import CopilotAdapter
+
+        copilot_config = resolved_config.get("copilot", {})
+        state_dir = copilot_config.get("state_dir")
+        share_dir = copilot_config.get("share_dir")
+        adapter = CopilotAdapter(state_dir=state_dir, share_dir=share_dir)
+    elif adapter_type == "none":
+        pass
+    else:
+        log.warning(
+            "llmem: session_hooks: unknown adapter type %r, running without session adapter",
+            adapter_type,
+        )
 
     return SessionHookCoordinator(
         store=store,

@@ -882,6 +882,18 @@ def cmd_init(args):
     if detection["provider"] != "none":
         config["memory"]["provider"] = detection["provider"]
 
+    # Detect session adapter automatically
+    opencode_db = Path("~/.local/share/opencode/opencode.db").expanduser()
+    copilot_state = Path("~/.copilot/session-state").expanduser()
+    if not opencode_db.exists() and copilot_state.is_dir():
+        config["session"] = {"adapter": "copilot"}
+        config["copilot"] = {
+            "state_dir": str(copilot_state),
+            "share_dir": ".",
+        }
+    else:
+        config["session"] = {"adapter": "opencode"}
+
     # Interactive prompts (unless --non-interactive)
     if not args.non_interactive:
         try:
@@ -904,6 +916,34 @@ def cmd_init(args):
             )
             if dream_input not in ("", "y", "yes"):
                 config["dream"]["enabled"] = False
+
+            # Detect session adapter
+            adapter_default = "opencode"
+            opencode_db = Path(
+                "~/.local/share/opencode/opencode.db"
+            ).expanduser()
+            copilot_state = Path("~/.copilot/session-state").expanduser()
+            if not opencode_db.exists() and copilot_state.is_dir():
+                adapter_default = "copilot"
+            adapter_input = (
+                input(
+                    f"Session adapter (opencode/copilot/none) [{adapter_default}]: "
+                )
+                .strip()
+                .lower()
+            )
+            if adapter_input in ("opencode", "copilot", "none"):
+                adapter_type = adapter_input
+            elif adapter_input == "":
+                adapter_type = adapter_default
+            else:
+                adapter_type = adapter_default
+            config["session"] = {"adapter": adapter_type}
+            if adapter_type == "copilot":
+                config["copilot"] = {
+                    "state_dir": str(copilot_state),
+                    "share_dir": ".",
+                }
         except KeyboardInterrupt:
             print("\nInit cancelled.")
             sys.exit(1)
@@ -943,6 +983,8 @@ def cmd_init(args):
     print(f"  Config: {config_path}")
     print(f"  Database: {db_path}")
     print(f"  Provider: {detection['provider']}")
+    adapter_type = config.get("session", {}).get("adapter", "opencode")
+    print(f"  Session adapter: {adapter_type}")
 
 
 def cmd_context(args):
