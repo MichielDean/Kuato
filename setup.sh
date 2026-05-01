@@ -290,7 +290,7 @@ if [[ $NEED_NPM -eq 1 ]]; then
     echo ""
     echo "Skills:"
     SKILLS_DIR="$HOME/.agents/skills"
-    for skill in llmem introspection git-sync task-intake test-and-verify branch-strategy critical-code-reviewer pre-pr-review visual-explainer introspection-review-tracker; do
+    for skill in llmem llmem-setup introspection git-sync task-intake test-and-verify branch-strategy critical-code-reviewer pre-pr-review visual-explainer introspection-review-tracker; do
         if [[ -d "${SKILLS_DIR}/${skill}" ]]; then
             echo "  ${skill}: OK"
         else
