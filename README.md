@@ -39,19 +39,14 @@ For detailed installation options (extras, plugins, requirements), see [docs/INS
 
 ## Skills
 
+LLMem ships four skills focused on memory management. Agent workflow skills (git-sync, task-intake, test-and-verify, branch-strategy, critical-code-reviewer, pre-pr-review, visual-explainer) are distributed separately as part of agent harnesses.
+
 | Skill | Description |
 |-------|-------------|
 | **llmem** | Manage LLMem memories — add, search, consolidate, dream, introspect, and track review outcomes. |
 | **llmem-setup** | Install and configure LLMem for an agent harness — provider setup, skill registration, harness integration. |
 | **introspection** | Operational reference for the introspection framework — self-assessment, sampajanna checks, error taxonomy. |
 | **introspection-review-tracker** | Reference for the automated ReviewOutcomeTracker hook that persists review findings as self_assessment memories. |
-| **git-sync** | Sync git repos before editing. Fetch, rebase, stash, and detect conflicts. |
-| **task-intake** | Discover project stack, test commands, and conventions before making changes. |
-| **test-and-verify** | Run quality gates (format, lint, typecheck, test) after code changes. |
-| **branch-strategy** | Enforce consistent branching, commit messages, and push strategies. |
-| **critical-code-reviewer** | Adversarial code reviews with zero tolerance for mediocrity. |
-| **pre-pr-review** | Pre-PR code review via isolated subagent before pushing to GitHub. |
-| **visual-explainer** | Generate self-contained HTML diagrams, reviews, and slide decks. |
 
 ## Templates
 

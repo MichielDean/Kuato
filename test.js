@@ -19,13 +19,6 @@ const SKILLS_DIR = path.join(__dirname, 'skills');
 const TEMPLATES_DIR = path.join(__dirname, 'templates');
 const TOOLS_DIR = path.join(__dirname, '.opencode', 'tools');
 const EXPECTED_SKILLS = [
-  'git-sync',
-  'task-intake',
-  'test-and-verify',
-  'branch-strategy',
-  'critical-code-reviewer',
-  'pre-pr-review',
-  'visual-explainer',
   'llmem',
   'llmem-setup',
   'introspection',
@@ -387,7 +380,7 @@ function testInstallOverwritesExisting() {
       stdio: 'pipe'
     });
     // Create a stale file in a skill directory to verify overwrite
-    var staleFileDir = path.join(fakeHome, '.agents', 'skills', 'git-sync');
+    var staleFileDir = path.join(fakeHome, '.agents', 'skills', 'llmem');
     var staleFilePath = path.join(staleFileDir, 'stale-marker.txt');
     fs.writeFileSync(staleFilePath, 'old content');
     // Second install — should overwrite

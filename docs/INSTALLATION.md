@@ -55,7 +55,7 @@ llmem stats
 
 ### Option 2: OpenCode plugin (skills + session hooks)
 
-This installs the LLMem skills (llmem, introspection, git-sync, etc.) and session hooks into OpenCode.
+This installs the LLMem skills (llmem, llmem-setup, introspection, introspection-review-tracker) and session hooks into OpenCode.
 
 ```bash
 cd LLMem/opencode-llmem
