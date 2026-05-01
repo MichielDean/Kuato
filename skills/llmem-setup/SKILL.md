@@ -179,6 +179,18 @@ Copilot CLI agents need the `copilot-llmem` plugin (installed in Step 1). It reg
 
 Skills are installed to `~/.agents/skills/`. The agent discovers them via Copilot's skill discovery.
 
+**Config:** Set `session.adapter: copilot` in `~/.config/llmem/config.yaml` so LLMem uses the Copilot session adapter instead of OpenCode:
+
+```yaml
+session:
+  adapter: copilot
+copilot:
+  state_dir: ~/.copilot/session-state
+  share_dir: .
+```
+
+Copilot does not persist session transcripts to a database. For `agentStop`/`on_idle` extraction to work, configure Copilot with `--share` to write transcripts to the `share_dir`. Without transcripts, memory extraction gracefully skips (returns `no_transcript`).
+
 ### Step 5: Verify
 
 Run these checks to confirm everything works:

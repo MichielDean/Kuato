@@ -711,9 +711,9 @@ class TestInit_CmdInit:
                             "provider": "ollama",
                             "ollama_url": "http://localhost:11434",
                                                                                 }
-                        # User types a valid URL, then accepts default for dream
+                        # User types a valid URL, then accepts defaults for dream and adapter
                         args = _make_args(non_interactive=False)
-                        with patch("builtins.input", side_effect=[custom_url, ""]):
+                        with patch("builtins.input", side_effect=[custom_url, "", ""]):
                             cmd_init(args)
 
         config_path = home / "config.yaml"

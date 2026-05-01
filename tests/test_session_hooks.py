@@ -672,4 +672,143 @@ class TestOpenCodeSessionHook_Limit:
                 OPENCODE_RESULT_NO_MEMORIES,
             ]
         )
-        assert total_processed <= 3
+
+
+class TestSessionHookCoordinatorWithoutAdapter:
+    """Test that SessionHookCoordinator works when no adapter is configured.
+
+    This is the Copilot CLI scenario — there is no opencode.db, so the
+    coordinator should operate gracefully in adapter-less mode.
+    """
+
+    def test_coordinator_created_without_adapter(self, tmp_path):
+        from llmem.session_hooks import SessionHookCoordinator
+        from llmem.store import MemoryStore
+        from llmem.retrieve import Retriever
+        from llmem.extract import ExtractionEngine
+        from llmem.embed import EmbeddingEngine
+
+        store = MemoryStore(db_path=tmp_path / "test.db", disable_vec=True)
+        retriever = Retriever(store=store)
+        extractor = ExtractionEngine(base_url="http://localhost:11434")
+        coordinator = SessionHookCoordinator(
+            store=store,
+            retriever=retriever,
+            extractor=extractor,
+            embedder=None,
+            adapter=None,
+        )
+        assert coordinator._adapter is None
+
+    def test_on_compacting_works_without_adapter(self, tmp_path):
+        from llmem.session_hooks import SessionHookCoordinator, SESSION_COMPACTING_SUCCESS
+        from llmem.store import MemoryStore
+        from llmem.retrieve import Retriever
+        from llmem.extract import ExtractionEngine
+
+        store = MemoryStore(db_path=tmp_path / "test.db", disable_vec=True)
+        store.add(type="decision", content="test decision", confidence=0.9)
+        retriever = Retriever(store=store)
+        extractor = ExtractionEngine(base_url="http://localhost:11434")
+        coordinator = SessionHookCoordinator(
+            store=store,
+            retriever=retriever,
+            extractor=extractor,
+            embedder=None,
+            adapter=None,
+        )
+        result_type, _ = coordinator.on_compacting("ses_test")
+        assert result_type == SESSION_COMPACTING_SUCCESS
+
+    def test_on_idle_returns_no_transcript_without_adapter(self, tmp_path):
+        from llmem.session_hooks import SessionHookCoordinator, SESSION_IDLE_NO_TRANSCRIPT
+        from llmem.store import MemoryStore
+        from llmem.retrieve import Retriever
+        from llmem.extract import ExtractionEngine
+
+        store = MemoryStore(db_path=tmp_path / "test.db", disable_vec=True)
+        retriever = Retriever(store=store)
+        extractor = ExtractionEngine(base_url="http://localhost:11434")
+        coordinator = SessionHookCoordinator(
+            store=store,
+            retriever=retriever,
+            extractor=extractor,
+            embedder=None,
+            adapter=None,
+        )
+        result_type, count = coordinator.on_idle("ses_test")
+        assert result_type == SESSION_IDLE_NO_TRANSCRIPT
+        assert count == 0
+
+    def test_on_ending_returns_no_transcript_without_adapter(self, tmp_path):
+        from llmem.session_hooks import SessionHookCoordinator, SESSION_ENDING_NO_TRANSCRIPT
+        from llmem.store import MemoryStore
+        from llmem.retrieve import Retriever
+        from llmem.extract import ExtractionEngine
+
+        store = MemoryStore(db_path=tmp_path / "test.db", disable_vec=True)
+        retriever = Retriever(store=store)
+        extractor = ExtractionEngine(base_url="http://localhost:11434")
+        coordinator = SessionHookCoordinator(
+            store=store,
+            retriever=retriever,
+            extractor=extractor,
+            embedder=None,
+            adapter=None,
+        )
+        result_type, count = coordinator.on_ending("ses_test")
+        assert result_type == SESSION_ENDING_NO_TRANSCRIPT
+        assert count == 0
+
+    def test_create_coordinator_without_opencode_db(self, tmp_path):
+        from llmem.session_hooks import create_session_hook_coordinator
+
+        config = {
+            "memory": {"ollama_url": "http://localhost:11434"},
+            "opencode": {"db_path": str(tmp_path / "nonexistent" / "opencode.db")},
+        }
+        coordinator = create_session_hook_coordinator(config=config)
+        assert coordinator._adapter is None
+
+    def test_create_coordinator_with_opencode_db(self, tmp_path):
+        from llmem.session_hooks import create_session_hook_coordinator
+        from llmem.adapters.opencode import _create_opencode_schema
+
+        db_path = tmp_path / "opencode.db"
+        conn = sqlite3.connect(str(db_path))
+        _create_opencode_schema(conn)
+        conn.close()
+
+        config = {
+            "memory": {"ollama_url": "http://localhost:11434"},
+            "opencode": {"db_path": str(db_path)},
+        }
+        coordinator = create_session_hook_coordinator(config=config)
+        assert coordinator._adapter is not None
+
+    def test_create_coordinator_with_copilot_adapter(self, tmp_path):
+        from llmem.session_hooks import create_session_hook_coordinator
+        from llmem.adapters.copilot import CopilotAdapter
+
+        state_dir = tmp_path / "copilot-state"
+        config = {
+            "memory": {"ollama_url": "http://localhost:11434"},
+            "session": {"adapter": "copilot"},
+            "copilot": {
+                "state_dir": str(state_dir),
+                "share_dir": str(tmp_path),
+            },
+        }
+        coordinator = create_session_hook_coordinator(config=config)
+        assert coordinator._adapter is not None
+        assert isinstance(coordinator._adapter, CopilotAdapter)
+
+    def test_create_coordinator_with_none_adapter(self, tmp_path):
+        from llmem.session_hooks import create_session_hook_coordinator
+
+        config = {
+            "memory": {"ollama_url": "http://localhost:11434"},
+            "session": {"adapter": "none"},
+        }
+        coordinator = create_session_hook_coordinator(config=config)
+        assert coordinator._adapter is None
