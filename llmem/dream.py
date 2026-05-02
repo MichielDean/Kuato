@@ -251,6 +251,9 @@ class Dreamer:
 
         # Decay idle memories — use created_at (not updated_at) so that
         # boosts and other updates don't reset the decay clock.
+        # Frequently-accessed memories decay slower: memories at or above
+        # boost_threshold are immune to decay (still actively used),
+        # and decay_rate scales down linearly for moderate access counts.
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(days=self._decay_interval_days)
         memories = self._store.search(valid_only=True, limit=500)
@@ -260,8 +263,18 @@ class Dreamer:
                 try:
                     created_dt = datetime.fromisoformat(created)
                     if created_dt < cutoff:
+                        access_count = m.get("access_count", 0)
+                        if access_count >= self._boost_threshold:
+                            continue
+                        if self._boost_threshold > 0:
+                            scale = 1.0 - (access_count / self._boost_threshold)
+                        else:
+                            scale = 1.0
+                        effective_decay = self._decay_rate * max(scale, 0.0)
+                        if effective_decay <= 0:
+                            continue
                         new_conf = max(
-                            m.get("confidence", 0.8) - self._decay_rate,
+                            m.get("confidence", 0.8) - effective_decay,
                             self._decay_floor,
                         )
                         if new_conf < self._confidence_floor:
