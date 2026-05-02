@@ -195,3 +195,163 @@ class TestDream_DeepPhaseAutoLink:
         dreamer = Dreamer(store=store)
         assert dreamer._auto_link_threshold == 0.85
         store.close()
+
+
+class TestDream_DecayUsesCreatedAt:
+    """Decay uses created_at, not updated_at, to prevent boost-immunity."""
+
+    def test_decay_uses_created_at_not_updated_at(self, tmp_path):
+        """A memory with old created_at but recent updated_at should still decay."""
+        store = MemoryStore(db_path=Path(":memory:"), disable_vec=True)
+        old_ts = "2025-01-01T00:00:00+00:00"
+        mem_id = store.add(
+            type="fact",
+            content="stale memory",
+            confidence=0.7,
+        )
+        # Manually set created_at and updated_at to simulate an old memory
+        # that was recently boosted (updated_at is recent but created_at is old)
+        conn = store._connect()
+        conn.execute(
+            'UPDATE "memories" SET "created_at" = ?, "updated_at" = ? WHERE "id" = ?',
+            (old_ts, "2026-05-01T00:00:00+00:00", mem_id),
+        )
+        conn.commit()
+
+        # Decay interval = 1 day, so a memory from Jan 2025 should definitely decay
+        dreamer = Dreamer(
+            store=store,
+            decay_interval_days=1,
+            decay_rate=0.2,
+            decay_floor=0.1,
+            confidence_floor=0.3,
+        )
+        result = dreamer.run(apply=True, phase="deep")
+
+        assert result.deep is not None
+        assert result.deep.decayed_count >= 1
+
+        # Verify the memory was actually decayed
+        mem = store.get(mem_id)
+        assert mem is not None
+        assert mem["confidence"] < 0.7
+        store.close()
+
+    def test_recent_memory_does_not_decay(self, tmp_path):
+        """A memory with recent created_at should NOT decay."""
+        store = MemoryStore(db_path=Path(":memory:"), disable_vec=True)
+        store.add(type="fact", content="fresh memory", confidence=0.7)
+
+        dreamer = Dreamer(
+            store=store,
+            decay_interval_days=30,
+            decay_rate=0.2,
+            decay_floor=0.1,
+            confidence_floor=0.3,
+        )
+        result = dreamer.run(apply=True, phase="deep")
+
+        assert result.deep is not None
+        assert result.deep.decayed_count == 0
+        store.close()
+
+
+class TestDream_DeepPhaseMerge:
+    """Test merge of near-duplicates in dream deep phase."""
+
+    def test_merge_near_duplicates_in_deep_phase(self):
+        """Light phase finds duplicates; deep phase merges them (invalidate loser, add supersedes relation)."""
+        import struct
+
+        store = MemoryStore(db_path=Path(":memory:"), disable_vec=True)
+        emb = struct.pack("3f", 0.9, 0.1, 0.1)
+        # Higher-confidence memory
+        mid_high = store.add(
+            type="fact", content="python is great", confidence=0.9, embedding=emb
+        )
+        # Lower-confidence duplicate
+        mid_low = store.add(
+            type="fact", content="python is awesome", confidence=0.7, embedding=emb
+        )
+
+        dreamer = Dreamer(
+            store=store,
+            similarity_threshold=0.85,
+            decay_interval_days=999,  # Skip decay for this test
+            boost_threshold=999,  # Skip boost for this test
+        )
+        result = dreamer.run(apply=True)
+
+        assert result.deep is not None
+        assert result.deep.merged_count >= 1
+
+        # Verify the loser was invalidated
+        all_memories = store.search(valid_only=False, limit=10, query="python")
+        valid = [m for m in all_memories if m.get("valid_until") is None]
+        # Only the keeper should remain valid
+        assert len(valid) <= 1
+
+        # Verify supersedes relation was created
+        relations = store.get_relations(mid_high)
+        supersedes = [r for r in relations if r["relation_type"] == "supersedes"]
+        assert len(supersedes) >= 1
+        store.close()
+
+    def test_merge_dry_run_does_not_invalidate(self):
+        """With apply=False, merge should not invalidate memories."""
+        import struct
+
+        store = MemoryStore(db_path=Path(":memory:"), disable_vec=True)
+        emb = struct.pack("3f", 0.9, 0.1, 0.1)
+        store.add(type="fact", content="python is great", confidence=0.9, embedding=emb)
+        store.add(type="fact", content="python is awesome", confidence=0.7, embedding=emb)
+
+        dreamer = Dreamer(
+            store=store,
+            similarity_threshold=0.85,
+            decay_interval_days=999,
+            boost_threshold=999,
+        )
+        result = dreamer.run(apply=False)
+
+        assert result.deep is not None
+        assert result.deep.merged_count >= 1
+
+        # But no memories should actually be invalidated
+        all_valid = store.search(valid_only=True, limit=10, query="python")
+        assert len(all_valid) >= 2
+        store.close()
+
+    def test_merge_prefers_higher_confidence_as_keeper(self):
+        """When merging, the higher-confidence memory should be kept."""
+        import struct
+
+        store = MemoryStore(db_path=Path(":memory:"), disable_vec=True)
+        emb = struct.pack("3f", 0.9, 0.1, 0.1)
+        mid_low = store.add(
+            type="fact", content="python is great", confidence=0.6, embedding=emb
+        )
+        mid_high = store.add(
+            type="fact", content="python is awesome", confidence=0.95, embedding=emb
+        )
+
+        dreamer = Dreamer(
+            store=store,
+            similarity_threshold=0.85,
+            decay_interval_days=999,
+            boost_threshold=999,
+        )
+        result = dreamer.run(apply=True)
+
+        assert result.deep.merged_count >= 1
+
+        # The higher-confidence memory should still be valid
+        high_mem = store.get(mid_high)
+        assert high_mem is not None
+        assert high_mem.get("valid_until") is None
+
+        # The lower-confidence memory should be invalidated
+        low_mem = store.get(mid_low)
+        assert low_mem is not None
+        assert low_mem.get("valid_until") is not None
+        store.close()
