@@ -209,29 +209,26 @@ class TestDream_DecayUsesCreatedAt:
             content="stale memory",
             confidence=0.7,
         )
-        # Manually set created_at and updated_at to simulate an old memory
-        # that was recently boosted (updated_at is recent but created_at is old)
         conn = store._connect()
         conn.execute(
-            'UPDATE "memories" SET "created_at" = ?, "updated_at" = ? WHERE "id" = ?',
+            'UPDATE "memories" SET "created_at" = ?, "updated_at" = ?, "access_count" = 0 WHERE "id" = ?',
             (old_ts, "2026-05-01T00:00:00+00:00", mem_id),
         )
         conn.commit()
 
-        # Decay interval = 1 day, so a memory from Jan 2025 should definitely decay
         dreamer = Dreamer(
             store=store,
             decay_interval_days=1,
             decay_rate=0.2,
             decay_floor=0.1,
             confidence_floor=0.3,
+            boost_threshold=5,
         )
         result = dreamer.run(apply=True, phase="deep")
 
         assert result.deep is not None
         assert result.deep.decayed_count >= 1
 
-        # Verify the memory was actually decayed
         mem = store.get(mem_id)
         assert mem is not None
         assert mem["confidence"] < 0.7
@@ -248,11 +245,81 @@ class TestDream_DecayUsesCreatedAt:
             decay_rate=0.2,
             decay_floor=0.1,
             confidence_floor=0.3,
+            boost_threshold=5,
         )
         result = dreamer.run(apply=True, phase="deep")
 
         assert result.deep is not None
         assert result.deep.decayed_count == 0
+        store.close()
+
+    def test_frequently_accessed_memory_immune_to_decay(self, tmp_path):
+        """Memories at or above boost_threshold should NOT decay."""
+        store = MemoryStore(db_path=Path(":memory:"), disable_vec=True)
+        old_ts = "2025-01-01T00:00:00+00:00"
+        mem_id = store.add(
+            type="fact",
+            content="popular but old memory",
+            confidence=0.7,
+        )
+        conn = store._connect()
+        conn.execute(
+            'UPDATE "memories" SET "created_at" = ?, "access_count" = ? WHERE "id" = ?',
+            (old_ts, 10, mem_id),
+        )
+        conn.commit()
+
+        dreamer = Dreamer(
+            store=store,
+            decay_interval_days=1,
+            decay_rate=0.2,
+            decay_floor=0.1,
+            confidence_floor=0.3,
+            boost_threshold=5,
+        )
+        result = dreamer.run(apply=True, phase="deep")
+
+        assert result.deep.decayed_count == 0
+
+        mem = store.get(mem_id)
+        # Not decayed (confidence unchanged by decay), but may have been boosted
+        assert mem["confidence"] >= 0.7
+        store.close()
+
+    def test_moderately_accessed_memory_decays_slower(self, tmp_path):
+        """Memories with moderate access counts should decay at a reduced rate."""
+        store = MemoryStore(db_path=Path(":memory:"), disable_vec=True)
+        old_ts = "2025-01-01T00:00:00+00:00"
+
+        mem_zero = store.add(type="fact", content="never accessed", confidence=0.8)
+        mem_mid = store.add(type="fact", content="moderately accessed", confidence=0.8)
+        conn = store._connect()
+        conn.execute(
+            'UPDATE "memories" SET "created_at" = ?, "access_count" = ? WHERE "id" = ?',
+            (old_ts, 0, mem_zero),
+        )
+        conn.execute(
+            'UPDATE "memories" SET "created_at" = ?, "access_count" = ? WHERE "id" = ?',
+            (old_ts, 3, mem_mid),
+        )
+        conn.commit()
+
+        dreamer = Dreamer(
+            store=store,
+            decay_interval_days=1,
+            decay_rate=0.2,
+            decay_floor=0.1,
+            confidence_floor=0.3,
+            boost_threshold=5,
+        )
+        result = dreamer.run(apply=True, phase="deep")
+
+        mem_zero_after = store.get(mem_zero)
+        mem_mid_after = store.get(mem_mid)
+
+        # Both should decay, but the moderately-accessed one less
+        # 0 accesses: full decay (0.2), 3 accesses: scale = 1.0 - 3/5 = 0.4, decay = 0.08
+        assert mem_zero_after["confidence"] < mem_mid_after["confidence"]
         store.close()
 
 
