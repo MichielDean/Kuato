@@ -2,10 +2,11 @@
 
 Three phases:
   Light — sort + dedupe: find near-duplicates using cosine similarity
-  Deep  — score + promote + decay + merge: quality-gated promotion, idle decay,
-          frequent-access boost, LLM-assisted merge
-  REM   — reflect + cluster: extract themes from memory content, detect recurring
-          self_assessment patterns, write proposed procedural memories
+  Deep  — decay + boost + merge + promote: idle decay using created_at
+          (not updated_at), frequent-access boost, near-duplicate merge,
+          inbox promotion, auto-linking
+  REM   — reflect + cluster: extract themes, behavioral insights,
+          proposed procedural memories
 """
 
 import logging
@@ -166,7 +167,7 @@ class Dreamer:
         self._boost_on_promote = boost_on_promote
         self._merge_model = merge_model
         self._ollama_url = ollama_url
-        self._diary_path = diary_path or get_dream_diary_path()
+        self._diary_path = Path(diary_path) if diary_path else get_dream_diary_path()
         self._embedder = embedder
         self._behavioral_threshold = behavioral_threshold
         self._behavioral_lookback_days = behavioral_lookback_days
@@ -192,7 +193,12 @@ class Dreamer:
             self._run_hooks("light", result, apply)
 
         if phase is None or phase == "deep":
-            result.deep = self._deep_phase(apply=apply)
+            merge_candidates = (
+                result.light.merge_candidates if result.light else []
+            )
+            result.deep = self._deep_phase(
+                apply=apply, merge_candidates=merge_candidates
+            )
             self._run_hooks("deep", result, apply)
 
         if phase is None or phase == "rem":
@@ -229,20 +235,31 @@ class Dreamer:
             merge_candidates=pairs[:20],
         )
 
-    def _deep_phase(self, apply: bool = False) -> DeepPhaseResult:
-        """Decay, boost, promote, and merge."""
+    def _deep_phase(
+        self,
+        apply: bool = False,
+        merge_candidates: list[dict] | None = None,
+    ) -> DeepPhaseResult:
+        """Decay, boost, merge, promote, and auto-link.
+
+        Args:
+            apply: If True, apply changes. If False, dry run (count only).
+            merge_candidates: Pairs from light phase to merge. When None,
+                no merging occurs (backward compat for single-phase runs).
+        """
         result = DeepPhaseResult()
 
-        # Decay idle memories
+        # Decay idle memories — use created_at (not updated_at) so that
+        # boosts and other updates don't reset the decay clock.
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(days=self._decay_interval_days)
         memories = self._store.search(valid_only=True, limit=500)
         for m in memories:
-            updated = m.get("updated_at", "")
-            if updated:
+            created = m.get("created_at", "")
+            if created:
                 try:
-                    updated_dt = datetime.fromisoformat(updated)
-                    if updated_dt < cutoff:
+                    created_dt = datetime.fromisoformat(created)
+                    if created_dt < cutoff:
                         new_conf = max(
                             m.get("confidence", 0.8) - self._decay_rate,
                             self._decay_floor,
@@ -268,6 +285,31 @@ class Dreamer:
                 if apply:
                     self._store.update(m["id"], confidence=new_conf)
                 result.boosted_count += 1
+
+        # Merge near-duplicate pairs found by the light phase
+        if merge_candidates:
+            for pair in merge_candidates:
+                src_id = pair["source"]
+                tgt_id = pair["target"]
+                src_mem = self._store.get(src_id)
+                tgt_mem = self._store.get(tgt_id)
+                if not src_mem or not tgt_mem:
+                    continue
+                if src_mem.get("valid_until") or tgt_mem.get("valid_until"):
+                    continue
+                src_conf = src_mem.get("confidence", 0.8)
+                tgt_conf = tgt_mem.get("confidence", 0.8)
+                if src_conf >= tgt_conf:
+                    keeper, loser = src_id, tgt_id
+                else:
+                    keeper, loser = tgt_id, src_id
+                if apply:
+                    self._store.invalidate(
+                        loser,
+                        reason=f"Dream merge: superseded by {keeper}",
+                    )
+                    self._store.add_relation(keeper, loser, "supersedes")
+                result.merged_count += 1
 
         # Promote inbox items to long-term memory
         inbox_count = self._store.inbox_count()
