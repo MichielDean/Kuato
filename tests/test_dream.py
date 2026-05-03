@@ -90,42 +90,6 @@ class TestDream_HookIntegration:
         store.close()
 
 
-class TestDream_DeepPhasePromotesInbox:
-    """Dream deep phase with apply=True promotes inbox items."""
-
-    def test_dream_deep_phase_promotes_inbox_items(self):
-        """When apply=True and inbox has items, deep phase promotes them."""
-        store = MemoryStore(db_path=Path(":memory:"), disable_vec=True)
-        # Add items to inbox
-        store.add_to_inbox(content="important observation", attention_score=0.8)
-        store.add_to_inbox(content="tentative note", attention_score=0.3)
-
-        dreamer = Dreamer(store=store)
-        result = dreamer.run(apply=True, phase="deep")
-
-        # Items with attention_score >= min_score (default 0.5) should be promoted
-        assert result.deep is not None
-        assert result.deep.promoted_count >= 1
-        # Inbox should be empty after consolidation (all items either promoted or evicted)
-        assert store.inbox_count() == 0
-        # The high-score item should now be in long-term memory
-        memories = store.search(query="important observation")
-        assert len(memories) >= 1
-        store.close()
-
-    def test_dream_deep_phase_dry_run_does_not_promote(self):
-        """When apply=False, deep phase does not actually promote inbox items."""
-        store = MemoryStore(db_path=Path(":memory:"), disable_vec=True)
-        store.add_to_inbox(content="tentative note", attention_score=0.7)
-
-        dreamer = Dreamer(store=store)
-        dreamer.run(apply=False, phase="deep")
-
-        # dry_run=True should not clear the inbox
-        assert store.inbox_count() == 1
-        store.close()
-
-
 class TestDream_DeepPhaseAutoLink:
     """Test auto-linking in dream deep phase with consolidate_duplicates."""
 
@@ -361,7 +325,7 @@ class TestDream_DeepPhaseMerge:
             type="fact", content="python is great", confidence=0.9, embedding=emb
         )
         # Lower-confidence duplicate
-        mid_low = store.add(
+        store.add(
             type="fact", content="python is awesome", confidence=0.7, embedding=emb
         )
 

@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from .store import MemoryStore, register_memory_type, get_registered_types
+from .store import MemoryStore, get_registered_types
 from .metrics import (
     compute_metrics,
     bytes_to_vec,
@@ -22,15 +22,6 @@ from .config import write_config_yaml, get_dream_config, get_ollama_url
 from .ollama import ProviderDetector
 from .paths import migrate_from_lobsterdog
 from .url_validate import is_safe_url
-from .chunking import (
-    ParagraphChunking,
-    FixedLineChunking,
-    detect_language,
-    walk_code_files,
-    _DEFAULT_MAX_FILE_SIZE,
-    _DEFAULT_MAX_DEPTH,
-)
-from .code_index import CodeIndex
 
 log = logging.getLogger(__name__)
 
@@ -168,7 +159,6 @@ def cmd_get(args):
 
 
 def cmd_search(args):
-    from .store import MemoryStore
     from .retrieve import Retriever
     from .embed import EmbeddingEngine
 
@@ -182,25 +172,8 @@ def cmd_search(args):
     else:
         search_mode = "hybrid"
 
-    # Create embedder based on --provider flag or legacy Ollama logic
     embedder = None
-    provider_name = getattr(args, "provider", None)
-
-    if provider_name and search_mode != "fts":
-        try:
-            from memory.providers import resolve_provider
-
-            embed_provider, _ = resolve_provider(
-                {"provider": {"default": provider_name}}
-            )
-            embedder = embed_provider
-        except Exception:
-            log.warning(
-                "llmem: cli: --provider %s failed, falling back to FTS5-only",
-                provider_name,
-            )
-            embedder = None
-    elif search_mode != "fts":
+    if search_mode != "fts":
         try:
             ollama_url = getattr(args, "ollama_url", None) or "http://localhost:11434"
             embedder = EmbeddingEngine(base_url=ollama_url)
@@ -449,220 +422,6 @@ def cmd_import(args):
     store.close()
 
 
-def cmd_learn(args):
-    """Ingest a codebase directory into the code index.
-
-    Walks the directory at <path> respecting .gitignore, chunks files
-    using the selected strategy, embeds each chunk, and stores them
-    in the code_chunks table.
-
-    Args:
-        args: An argparse Namespace with attributes:
-            - path (str): Root directory to ingest.
-            - db (Path): Database path.
-            - strategy (str): "paragraph" or "fixed".
-            - window_size (int): Window size for fixed strategy.
-            - overlap (int): Overlap for fixed strategy.
-            - no_embed (bool): If True, skip embedding step.
-            - ollama_url (str): Ollama base URL for embedding.
-    """
-    root_path = Path(args.path).resolve()
-    if not root_path.is_dir():
-        print(f"Error: {args.path} is not a directory", file=sys.stderr)
-        sys.exit(1)
-
-    # Select chunking strategy
-    if args.strategy == "fixed":
-        chunker = FixedLineChunking(window_size=args.window_size, overlap=args.overlap)
-    else:
-        chunker = ParagraphChunking()
-
-    # Walk directory for files to index (symlinks are always skipped to
-    # prevent path traversal; size and depth limits prevent resource exhaustion)
-    max_file_size = getattr(args, "max_file_size", None)
-    if max_file_size is None:
-        max_file_size = _DEFAULT_MAX_FILE_SIZE
-    max_depth = getattr(args, "max_depth", None)
-    if max_depth is None:
-        max_depth = _DEFAULT_MAX_DEPTH
-
-    code_files = walk_code_files(
-        root_path, max_file_size=max_file_size, max_depth=max_depth
-    )
-    if not code_files:
-        print("No code files found to index.")
-        return
-
-    # Initialize code index (shares the same database as MemoryStore)
-    # NOTE: disable_vec controls sqlite-vec extension loading only.
-    # --no-embed skips embedding generation but should NOT disable vec,
-    # since vec triggers are needed for existing embedding searches.
-    code_index = CodeIndex(db_path=args.db)
-    total_chunks = 0
-    total_files = 0
-    embedder = None
-
-    # Create embedder for embedding chunks
-    if not hasattr(args, "no_embed") or not args.no_embed:
-        try:
-            from .embed import EmbeddingEngine
-
-            ollama_url = getattr(args, "ollama_url", None) or "http://localhost:11434"
-            embedder = EmbeddingEngine(base_url=ollama_url)
-        except Exception as e:
-            log.warning("llmem: cli: learn: embedding engine unavailable: %s", e)
-            embedder = None
-
-    try:
-        for file_path in code_files:
-            try:
-                content = file_path.read_text(encoding="utf-8", errors="replace")
-            except OSError as e:
-                log.debug("llmem: cli: learn: cannot read %s: %s", file_path, e)
-                continue
-
-            if not content.strip():
-                continue
-
-            # Chunk the file
-            rel_path = str(file_path.relative_to(root_path))
-            language = detect_language(rel_path)
-            chunks = chunker.chunk(rel_path, content, language=language)
-
-            if not chunks:
-                continue
-
-            # Remove stale chunks for this file before re-inserting,
-            # making cmd_learn idempotent for re-indexing.
-            code_index.remove_by_path(rel_path)
-
-            # Add chunks to the index (without embeddings first)
-            chunk_ids = code_index.add_chunks(chunks)
-
-            # Embed and update each chunk if embedder is available
-            if embedder is not None:
-                conn = code_index._connect()
-                for chunk, chunk_id in zip(chunks, chunk_ids):
-                    try:
-                        vec = embedder.embed(chunk.content)
-
-                        embedding_bytes = EmbeddingEngine.vec_to_bytes(vec)
-                        conn.execute(
-                            'UPDATE "code_chunks" SET "embedding" = ? WHERE "id" = ?',
-                            (embedding_bytes, chunk_id),
-                        )
-                    except Exception as e:
-                        log.warning(
-                            "llmem: cli: learn: failed to embed chunk %s: %s",
-                            chunk_id,
-                            e,
-                        )
-                conn.commit()
-
-            total_chunks += len(chunks)
-            total_files += 1
-
-        print(f"Ingested {total_chunks} chunks from {total_files} files")
-    finally:
-        code_index.close()
-
-
-def cmd_register_type(args):
-    try:
-        register_memory_type(args.type_name)
-        print(f"Registered type '{args.type_name}'")
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-def cmd_types(args):
-    """List all registered memory types."""
-    types = sorted(get_registered_types())
-    print("Registered memory types:")
-    for t in types:
-        print(f"  {t}")
-
-
-def cmd_note(args):
-    """Add content to the working memory inbox.
-
-    Args:
-        args: argparse Namespace with attributes:
-            - content (str): The note content text.
-            - source (str): Source of the note. Default: 'note'.
-            - attention_score (float): Attention score 0-1. Default: 0.5.
-            - metadata (str or None): JSON metadata string.
-
-    Prints the new inbox item ID and exits with 0 on success.
-    Prints to stderr and exits with 1 on validation error.
-    """
-    store = MemoryStore(args.db)
-    src = args.source
-    score = args.attention_score
-    metadata = json.loads(args.metadata) if args.metadata else None
-
-    if src not in ("note", "learn", "extract", "consolidation"):
-        print(
-            f"Error: invalid source '{src}'. Must be note, learn, extract, or consolidation",
-            file=sys.stderr,
-        )
-        store.close()
-        sys.exit(1)
-
-    if score < 0.0 or score > 1.0:
-        print(
-            f"Error: attention-score must be between 0.0 and 1.0, got {score}",
-            file=sys.stderr,
-        )
-        store.close()
-        sys.exit(1)
-
-    try:
-        inbox_id = store.add_to_inbox(
-            content=args.content,
-            source=src,
-            attention_score=score,
-            metadata=metadata,
-        )
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        store.close()
-        sys.exit(1)
-
-    print(f"Added to inbox {inbox_id} [source={src}] score={score}")
-    store.close()
-
-
-def cmd_inbox(args):
-    """List items in the working memory inbox.
-
-    Args:
-        args: argparse Namespace with attributes:
-            - limit (int): Maximum items to show. Default: 20.
-            - json (bool): If True, output full JSON.
-
-    Prints each inbox item's id, source, attention_score, content (truncated),
-    and created_at. With --json, outputs full JSON.
-    """
-    store = MemoryStore(args.db)
-    items = store.list_inbox(limit=args.limit)
-    if args.json:
-        print(json.dumps(items, indent=2, default=str))
-    else:
-        if not items:
-            print("Inbox is empty.")
-        else:
-            for item in items:
-                content_preview = item["content"][:120]
-                print(
-                    f"  {item['id']}  [source={item['source']}]  "
-                    f"score={item['attention_score']:.2f}  "
-                    f"{content_preview}  {item['created_at']}"
-                )
-    store.close()
-
-
 def cmd_embed(args):
     """Report embedding quality metrics for existing embeddings.
 
@@ -682,45 +441,6 @@ def cmd_embed(args):
     """
     store = MemoryStore(args.db)
     _report_embedding_metrics(store)
-    store.close()
-
-
-def cmd_consolidate(args):
-    """Promote inbox items to long-term memory.
-
-    Args:
-        args: argparse Namespace with attributes:
-            - min_score (float): Minimum attention_score for promotion. Default: 0.0.
-            - dry_run (bool): If True, show what would happen without making changes.
-            - metrics (bool): If True, compute and report embedding metrics after
-              consolidation.
-
-    Prints the number of promoted and evicted items.
-    """
-    store = MemoryStore(args.db)
-    result = store.consolidate(min_score=args.min_score, dry_run=args.dry_run)
-
-    prefix = "[DRY RUN] " if args.dry_run else ""
-    promoted = result["promoted"]
-    evicted = result["evicted"]
-
-    print(f"{prefix}Promoted: {len(promoted)} items")
-    print(f"{prefix}Evicted: {len(evicted)} items")
-
-    for item in promoted:
-        content_preview = item["content"][:80]
-        mem_id = item.get("memory_id", "?")
-        print(f"{prefix}  promoted: {item['id']} -> {mem_id}  {content_preview}")
-
-    for item in evicted:
-        content_preview = item["content"][:80]
-        print(f"{prefix}  evicted: {item['id']}  {content_preview}")
-
-    # Report embedding metrics if requested
-    if getattr(args, "metrics", False):
-        print()
-        _report_embedding_metrics(store)
-
     store.close()
 
 
@@ -775,13 +495,7 @@ def cmd_dream(args):
             ollama_url=ollama_url,
             behavioral_threshold=dream_config.get("behavioral_threshold", 3),
             behavioral_lookback_days=dream_config.get("behavioral_lookback_days", 30),
-            calibration_enabled=dream_config.get("calibration_enabled", True),
-            stale_procedure_days=dream_config.get("stale_procedure_days", 30),
-            calibration_lookback_days=dream_config.get("calibration_lookback_days", 90),
             auto_link_threshold=dream_config.get("auto_link_threshold", 0.85),
-            diary_path=Path(dream_config["diary_path"])
-            if dream_config.get("diary_path")
-            else None,
         )
 
         result = dreamer.run(apply=args.apply, phase=args.phase)
@@ -1360,22 +1074,6 @@ def cmd_track_review(args):
     store.close()
 
 
-def cmd_suggest_categories(args):
-    """List error taxonomy categories applicable to a severity tier.
-
-    Args:
-        args: An argparse Namespace with attributes:
-            - tier (str): Severity tier name (Blocking, Required, etc.).
-
-    Prints one category per line for the given tier.
-    """
-    from .taxonomy import REVIEW_SEVERITY_TAXONOMY
-
-    categories = REVIEW_SEVERITY_TAXONOMY.get(args.tier, [])
-    for cat in categories:
-        print(cat)
-
-
 def main():
     """Entry point for the llmem CLI."""
     # Backward-compat: warn when invoked as 'lobmem'
@@ -1441,11 +1139,6 @@ def main():
         default=3,
         help="Max depth for ref expansion (default: 3)",
     )
-    p_search.add_argument(
-        "--provider",
-        choices=["ollama", "openai", "local", "none"],
-        help="Embedding provider to use (overrides config-based selection)",
-    )
     search_mode_group = p_search.add_mutually_exclusive_group()
     search_mode_group.add_argument(
         "--fts-only", action="store_true", help="FTS5 keyword search only"
@@ -1489,13 +1182,6 @@ def main():
     p_import = subparsers.add_parser("import", help="Import memories from JSON")
     p_import.add_argument("file", help="JSON file to import")
 
-    # register-type
-    p_reg = subparsers.add_parser("register-type", help="Register a new memory type")
-    p_reg.add_argument("type_name", help="Type name to register")
-
-    # types
-    subparsers.add_parser("types", help="List registered memory types")
-
     # init
     p_init = subparsers.add_parser("init", help="Initialize the llmem memory system")
     p_init.add_argument(
@@ -1514,63 +1200,8 @@ def main():
         help="Overwrite existing config.yaml",
     )
 
-    # note
-    p_note = subparsers.add_parser(
-        "note", help="Add a note to the working memory inbox"
-    )
-    p_note.add_argument("content", help="Note content text")
-    p_note.add_argument(
-        "--source",
-        default="note",
-        help="Source of the note (default: note)",
-    )
-    p_note.add_argument(
-        "--attention-score",
-        type=float,
-        default=0.5,
-        help="Attention score 0-1 (default: 0.5)",
-    )
-    p_note.add_argument("--metadata", help="JSON metadata")
-
-    # inbox
-    p_inbox = subparsers.add_parser(
-        "inbox", help="List items in the working memory inbox"
-    )
-    p_inbox.add_argument(
-        "--limit",
-        type=int,
-        default=20,
-        help="Maximum items to show (default: 20)",
-    )
-    p_inbox.add_argument(
-        "--json",
-        action="store_true",
-        help="Output as JSON",
-    )
-
     # embed
     subparsers.add_parser("embed", help="Report embedding quality metrics")
-
-    # consolidate
-    p_consolidate = subparsers.add_parser(
-        "consolidate", help="Promote inbox items to long-term memory"
-    )
-    p_consolidate.add_argument(
-        "--min-score",
-        type=float,
-        default=0.0,
-        help="Minimum attention score for promotion (default: 0.0)",
-    )
-    p_consolidate.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would happen without making changes",
-    )
-    p_consolidate.add_argument(
-        "--metrics",
-        action="store_true",
-        help="Compute and report embedding quality metrics after consolidation",
-    )
 
     # dream
     p_dream = subparsers.add_parser("dream", help="Run dream consolidation cycle")
@@ -1589,52 +1220,6 @@ def main():
         "--report",
         default=None,
         help="Path to write an HTML dream report",
-    )
-
-    # learn
-    p_learn = subparsers.add_parser(
-        "learn", help="Ingest a codebase into the code index"
-    )
-    p_learn.add_argument("path", help="Root directory to ingest")
-    p_learn.add_argument(
-        "--strategy",
-        choices=["paragraph", "fixed"],
-        default="paragraph",
-        help="Chunking strategy (default: paragraph)",
-    )
-    p_learn.add_argument(
-        "--window-size",
-        type=int,
-        default=50,
-        help="Window size for fixed-line chunking (default: 50)",
-    )
-    p_learn.add_argument(
-        "--overlap",
-        type=int,
-        default=10,
-        help="Overlap for fixed-line chunking (default: 10)",
-    )
-    p_learn.add_argument(
-        "--no-embed",
-        action="store_true",
-        help="Skip embedding generation (store chunks only)",
-    )
-    p_learn.add_argument(
-        "--max-file-size",
-        type=int,
-        default=None,
-        help="Maximum file size in bytes to index (default: 1048576 = 1 MiB)",
-    )
-    p_learn.add_argument(
-        "--max-depth",
-        type=int,
-        default=None,
-        help="Maximum directory recursion depth (default: 50)",
-    )
-    p_learn.add_argument(
-        "--ollama-url",
-        default=None,
-        help="Ollama base URL (default: http://localhost:11434)",
     )
 
     # track-review
@@ -1665,17 +1250,6 @@ def main():
     p_track_review.add_argument(
         "--finding-file",
         help="Path to a JSON file with an array of finding objects",
-    )
-
-    # suggest-categories
-    p_suggest_categories = subparsers.add_parser(
-        "suggest-categories",
-        help="List error taxonomy categories for a severity tier",
-    )
-    p_suggest_categories.add_argument(
-        "tier",
-        choices=["Blocking", "Required", "Strong Suggestions", "Noted", "Passed"],
-        help="Severity tier to list categories for",
     )
 
     # context
@@ -1740,19 +1314,12 @@ def main():
         "delete": cmd_delete,
         "export": cmd_export,
         "import": cmd_import,
-        "register-type": cmd_register_type,
-        "types": cmd_types,
         "init": cmd_init,
-        "note": cmd_note,
-        "inbox": cmd_inbox,
         "embed": cmd_embed,
-        "consolidate": cmd_consolidate,
         "dream": cmd_dream,
-        "learn": cmd_learn,
         "context": cmd_context,
         "hook": cmd_hook,
         "track-review": cmd_track_review,
-        "suggest-categories": cmd_suggest_categories,
     }
 
     handler = commands.get(args.command)

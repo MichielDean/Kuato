@@ -63,15 +63,13 @@ class TestConfig_OpencodeContextDir:
 class TestConfig_ResolveDefaults_DeepCopy:
     """Test that _resolve_defaults() does not share mutable references with DEFAULTS."""
 
-    def test_correction_detection_not_shared_with_defaults(self):
+    def test_memory_section_not_shared_with_defaults(self):
         """Mutating a copy of resolved defaults should not affect the module DEFAULTS."""
         from llmem.config import DEFAULTS, _resolve_defaults
 
         resolved = copy.deepcopy(_resolve_defaults())
-        # Mutate the independent copy
-        resolved["correction_detection"]["enabled"] = False
-        # The module-level DEFAULTS must NOT be affected
-        assert DEFAULTS["correction_detection"]["enabled"] is True
+        resolved["memory"]["auto_extract"] = False
+        assert DEFAULTS["memory"]["auto_extract"] is True
 
     def test_no_session_dirs_in_defaults(self):
         """session_dirs key must be removed from DEFAULTS — replaced by DB-based discovery."""

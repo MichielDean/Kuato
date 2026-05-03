@@ -2,9 +2,9 @@
 
 Three phases:
   Light — sort + dedupe: find near-duplicates using cosine similarity
-  Deep  — decay + boost + merge + promote: idle decay using created_at
+  Deep  — decay + boost + merge: idle decay using created_at
           (not updated_at), frequent-access boost, near-duplicate merge,
-          inbox promotion, auto-linking
+          auto-linking
   REM   — reflect + cluster: extract themes, behavioral insights,
           proposed procedural memories
 """
@@ -45,9 +45,6 @@ DEFAULT_MERGE_MODEL = "qwen2.5:1.5b"
 DEFAULT_OLLAMA_BASE = "http://localhost:11434"
 DEFAULT_BEHAVIORAL_THRESHOLD = 3
 DEFAULT_BEHAVIORAL_LOOKBACK_DAYS = 30
-DEFAULT_CALIBRATION_ENABLED = True
-DEFAULT_STALE_PROCEDURE_DAYS = 30
-DEFAULT_CALIBRATION_LOOKBACK_DAYS = 90
 DEFAULT_AUTO_LINK_THRESHOLD = 0.85
 
 
@@ -144,14 +141,9 @@ class Dreamer:
         boost_on_promote: float = DEFAULT_BOOST_ON_PROMOTE,
         merge_model: str = DEFAULT_MERGE_MODEL,
         ollama_url: str = DEFAULT_OLLAMA_BASE,
-        diary_path: Path | None = None,
-        embedder=None,
+        auto_link_threshold: float = DEFAULT_AUTO_LINK_THRESHOLD,
         behavioral_threshold: int = DEFAULT_BEHAVIORAL_THRESHOLD,
         behavioral_lookback_days: int = DEFAULT_BEHAVIORAL_LOOKBACK_DAYS,
-        calibration_enabled: bool = DEFAULT_CALIBRATION_ENABLED,
-        stale_procedure_days: int = DEFAULT_STALE_PROCEDURE_DAYS,
-        calibration_lookback_days: int = DEFAULT_CALIBRATION_LOOKBACK_DAYS,
-        auto_link_threshold: float = DEFAULT_AUTO_LINK_THRESHOLD,
     ):
         self._store = store
         self._similarity_threshold = similarity_threshold
@@ -167,13 +159,9 @@ class Dreamer:
         self._boost_on_promote = boost_on_promote
         self._merge_model = merge_model
         self._ollama_url = ollama_url
-        self._diary_path = Path(diary_path) if diary_path else get_dream_diary_path()
-        self._embedder = embedder
+        self._diary_path = get_dream_diary_path()
         self._behavioral_threshold = behavioral_threshold
         self._behavioral_lookback_days = behavioral_lookback_days
-        self._calibration_enabled = calibration_enabled
-        self._stale_procedure_days = stale_procedure_days
-        self._calibration_lookback_days = calibration_lookback_days
         self._auto_link_threshold = auto_link_threshold
 
     def run(self, apply: bool = False, phase: str | None = None) -> DreamResult:
@@ -318,14 +306,6 @@ class Dreamer:
                     )
                     self._store.add_relation(keeper, loser, "supersedes")
                 result.merged_count += 1
-
-        # Promote inbox items to long-term memory
-        inbox_count = self._store.inbox_count()
-        if inbox_count > 0:
-            consolidate_result = self._store.consolidate(
-                min_score=self._min_score, dry_run=not apply
-            )
-            result.promoted_count += len(consolidate_result["promoted"])
 
         # Auto-link similar memories using consolidate_duplicates
         if apply:
@@ -493,11 +473,11 @@ class Dreamer:
                     valid_only=True,
                     limit=5,
                 )
-                already_proposed = any(
+                already_written = any(
                     m.get("content", "").startswith(existing_pattern)
                     for m in already
                 )
-                if not already_proposed:
+                if not already_written:
                     content_parts = [
                         existing_pattern,
                         f"When encountering {cat.lower()} situations, follow these detection rules:",
@@ -515,7 +495,6 @@ class Dreamer:
                         confidence=0.85,
                         source="dream_rem",
                         metadata={
-                            "proposed": "true",
                             "category": cat,
                             "occurrence_count": str(count),
                             "lookback_days": str(lookback_days),
@@ -525,84 +504,7 @@ class Dreamer:
 
             insights.append(insight)
 
-        if self._calibration_enabled:
-            self._run_calibration(apply=apply, insights=insights)
-
         return insights
-
-    def _run_calibration(
-        self, apply: bool, insights: list[dict]
-    ) -> None:
-        """Check whether proposed procedures from previous dreams reduced error counts.
-
-        For each proposed procedure with metadata.proposed=true and
-        metadata.category set, compare the occurrence count in the current
-        lookback window against the count stored in metadata.occurrence_count.
-        Stores a calibration event memory.
-        """
-        proposed = self._store.search(
-            type="procedure",
-            valid_only=True,
-            limit=500,
-        )
-        proposed_procedures = [
-            m
-            for m in proposed
-            if m.get("metadata", {})
-            .get("proposed", "")
-            .lower()
-            .startswith("true")
-        ]
-
-        if not proposed_procedures:
-            return
-
-        cutoff = datetime.now(timezone.utc) - timedelta(
-            days=self._calibration_lookback_days
-        )
-        cutoff_iso = cutoff.isoformat()
-
-        recent_assessments = self._store.search(
-            type="self_assessment",
-            valid_only=True,
-            limit=500,
-        )
-        recent_by_cat: Counter[str] = Counter()
-        for m in recent_assessments:
-            updated = m.get("updated_at", m.get("created_at", ""))
-            if updated and updated >= cutoff_iso:
-                content = m.get("content", "")
-                for cat in ERROR_TAXONOMY:
-                    if f"Category: {cat}" in content:
-                        recent_by_cat[cat] += 1
-                        break
-
-        for proc in proposed_procedures:
-            meta = proc.get("metadata", {})
-            cat = meta.get("category", "")
-            old_count = int(meta.get("occurrence_count", "0"))
-            new_count = recent_by_cat.get(cat, 0)
-
-            calibration_status = "stable"
-            if new_count < old_count:
-                calibration_status = "decreasing"
-            elif new_count > old_count:
-                calibration_status = "increasing"
-
-            if apply and calibration_status != "stable":
-                self._store.add(
-                    type="event",
-                    content=f"dream_calibration: {cat} occurrences {old_count}->{new_count} ({calibration_status})",
-                    confidence=0.8,
-                    source="dream_rem",
-                    metadata={
-                        "calibration": "true",
-                        "category": cat,
-                        "previous_count": str(old_count),
-                        "current_count": str(new_count),
-                        "status": calibration_status,
-                    },
-                )
 
     def _write_diary(self, result: DreamResult) -> None:
         """Append to the dream diary.

@@ -39,11 +39,9 @@ DEFAULTS = {
         "ollama_url": "http://localhost:11434",
         "embed_model": "nomic-embed-text",
         "extract_model": "glm-5.1:cloud",
-        "prospective_model": "glm-5.1:cloud",
         "context_budget": 4000,
         "auto_extract": True,
         "max_file_size": 10 * 1024 * 1024,
-        "inbox_capacity": 7,
     },
     "dream": {
         "enabled": True,
@@ -76,15 +74,6 @@ DEFAULTS = {
     "session": {
         "adapter": "opencode",
     },
-    "copilot": {
-        "state_dir": str(Path("~/.copilot/session-state").expanduser()),
-        "share_dir": ".",
-    },
-    "correction_detection": {
-        "enabled": True,
-    },
-    # NOTE: "resume" and "hook.source_filter" sections are NOT included.
-    # These are extension concerns, not core llmem config.
 }
 
 
@@ -256,37 +245,6 @@ def get_max_file_size(
     return int(size)
 
 
-def get_inbox_capacity(
-    config_path: Path | None = None, config: dict | None = None
-) -> int:
-    """Return the inbox capacity from config, defaulting to 7.
-
-    Args:
-        config_path: Optional path to config.yaml.
-        config: Optional pre-loaded config dict.
-
-    Returns:
-        Inbox capacity as a positive integer.
-    """
-    config = _resolve_config(config_path, config)
-    defaults = _resolve_defaults()
-    capacity = config.get("memory", {}).get("inbox_capacity")
-    if capacity is None:
-        return defaults["memory"]["inbox_capacity"]
-    return int(capacity)
-
-
-def get_prospective_model(
-    config_path: Path | None = None, config: dict | None = None
-) -> str:
-    config = _resolve_config(config_path, config)
-    defaults = _resolve_defaults()
-    return (
-        config.get("memory", {}).get("prospective_model")
-        or defaults["memory"]["prospective_model"]
-    )
-
-
 def get_dream_config(
     config_path: Path | None = None, config: dict | None = None
 ) -> dict:
@@ -405,27 +363,6 @@ def get_opencode_db_path(
     # Validate the path before resolving — _validate_home_path checks for
     # '..' traversal, symlinks, and system directory targeting.
     return _validate_home_path(candidate, "opencode.db_path")
-
-
-def is_correction_detection_enabled(
-    config_path: Path | None = None, config: dict | None = None
-) -> bool:
-    """Return whether correction detection is enabled.
-
-    Args:
-        config_path: Optional path to config.yaml.
-        config: Optional pre-loaded config dict.
-
-    Returns:
-        True when the key is absent or set to a truthy value.
-        False only when explicitly set to false, 0, no, or off.
-    """
-    config = _resolve_config(config_path, config)
-    defaults = _resolve_defaults()
-    val = config.get("correction_detection", {}).get("enabled")
-    if val is None:
-        return defaults["correction_detection"]["enabled"]
-    return _as_bool(val)
 
 
 def write_config_yaml(path: Path, config: dict, force: bool = False) -> bool:

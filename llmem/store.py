@@ -33,14 +33,6 @@ _DEFAULT_TYPES: frozenset[str] = frozenset(
     }
 )
 
-# Default inbox capacity (Miller's 7±2). Can be overridden via config.
-DEFAULT_INBOX_CAPACITY: int = 7
-
-# Valid sources for inbox items.
-_VALID_INBOX_SOURCES: frozenset[str] = frozenset(
-    {"note", "learn", "extract", "consolidation"}
-)
-
 
 def register_memory_type(type_name: str) -> None:
     """Register a new memory type for use with MemoryStore.add().
@@ -279,7 +271,6 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             (1, "001_initial_schema.sql"),
             (2, "002_add_hints.sql"),
             (3, "003_register_default_types.sql"),
-            (4, "004_add_inbox.sql"),
             (5, "005_add_code_chunks.sql"),
             (6, "006_add_ref_types.sql"),
         ]
@@ -347,20 +338,9 @@ class MemoryStore:
         db_path: Path | None = None,
         vec_dimensions: int = 768,
         disable_vec: bool = False,
-        capacity: int | None = None,
     ):
         self.db_path = db_path or get_db_path()
         self._vec_dimensions = int(vec_dimensions)
-        # Inbox capacity defaults to DEFAULT_INBOX_CAPACITY if not specified.
-        # Uses config override via get_inbox_capacity() when capacity is None.
-        if capacity is not None and capacity <= 0:
-            raise ValueError(f"capacity must be positive, got {capacity}")
-        if capacity is None:
-            from .config import get_inbox_capacity
-
-            self._capacity: int = get_inbox_capacity()
-        else:
-            self._capacity = capacity
         if self._vec_dimensions <= 0:
             raise ValueError(
                 f"vec_dimensions must be positive, got {self._vec_dimensions}"
@@ -1257,8 +1237,6 @@ class MemoryStore:
     ) -> list[dict]:
         """Find near-duplicate pairs using cosine similarity on embeddings.
 
-        Renamed from ``consolidate`` to avoid collision with inbox consolidation.
-
         Args:
             similarity_threshold: Minimum cosine similarity to consider a pair.
             limit: Maximum number of memories to scan.
@@ -1296,243 +1274,6 @@ class MemoryStore:
                     seen.add(r1["id"])
                     seen.add(r2["id"])
         return pairs
-
-    # ---- Inbox methods ----
-
-    def add_to_inbox(
-        self,
-        content: str,
-        source: str = "note",
-        attention_score: float = 0.5,
-        metadata: dict | None = None,
-    ) -> str:
-        """Add an item to the working memory inbox.
-
-        Args:
-            content: The memory content text.
-            source: Origin of the inbox item. Must be one of
-                'note', 'learn', 'extract', 'consolidation'.
-            attention_score: Float in [0.0, 1.0]. Default is 0.5.
-            metadata: Optional JSON-serializable metadata dict.
-
-        Returns:
-            The inbox item ID string (UUID).
-
-        Raises:
-            ValueError: If source is invalid or attention_score is out of range.
-        """
-        if source not in _VALID_INBOX_SOURCES:
-            raise ValueError(
-                f"llmem: store: add_to_inbox: invalid source {source!r}. "
-                f"Must be one of {sorted(_VALID_INBOX_SOURCES)}"
-            )
-        if attention_score < 0.0 or attention_score > 1.0:
-            raise ValueError(
-                f"llmem: store: add_to_inbox: attention_score must be in "
-                f"[0.0, 1.0], got {attention_score}"
-            )
-        # Evict before insertion if at capacity
-        self._evict_lowest_inbox_if_full(self._capacity)
-        inbox_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
-        conn = self._connect()
-        conn.execute(
-            'INSERT INTO "inbox" ("id", "content", "source", "attention_score", "created_at", "metadata") '
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                inbox_id,
-                content,
-                source,
-                attention_score,
-                now,
-                json.dumps(metadata or {}),
-            ),
-        )
-        conn.commit()
-        return inbox_id
-
-    def get_from_inbox(self, inbox_id: str) -> dict | None:
-        """Retrieve an inbox item by ID.
-
-        Args:
-            inbox_id: The inbox item ID.
-
-        Returns:
-            A dict with keys id, content, source, attention_score,
-            created_at, metadata (parsed from JSON), or None if not found.
-        """
-        conn = self._connect()
-        row = conn.execute(
-            'SELECT * FROM "inbox" WHERE "id" = ?', (inbox_id,)
-        ).fetchone()
-        if not row:
-            return None
-        return self._inbox_row_to_dict(row)
-
-    def list_inbox(self, limit: int = 100) -> list[dict]:
-        """List inbox items ordered by attention_score DESC, created_at ASC.
-
-        Args:
-            limit: Maximum number of items to return. Defaults to 100.
-
-        Returns:
-            List of inbox item dicts. Always returns a list (possibly empty).
-        """
-        conn = self._connect()
-        rows = conn.execute(
-            'SELECT * FROM "inbox" ORDER BY "attention_score" DESC, "created_at" ASC LIMIT ?',
-            (limit,),
-        ).fetchall()
-        return [self._inbox_row_to_dict(r) for r in rows]
-
-    def inbox_count(self) -> int:
-        """Return the number of items in the inbox.
-
-        Returns:
-            Non-negative integer count of inbox items.
-        """
-        conn = self._connect()
-        row = conn.execute('SELECT COUNT(*) FROM "inbox"').fetchone()
-        return row[0]
-
-    def remove_from_inbox(self, inbox_id: str) -> bool:
-        """Delete an inbox item by ID.
-
-        Args:
-            inbox_id: The inbox item ID to delete.
-
-        Returns:
-            True if the item existed and was deleted, False if not found.
-        """
-        conn = self._connect()
-        cursor = conn.execute('DELETE FROM "inbox" WHERE "id" = ?', (inbox_id,))
-        conn.commit()
-        return cursor.rowcount > 0
-
-    def update_inbox_attention_score(
-        self, inbox_id: str, attention_score: float
-    ) -> bool:
-        """Update the attention_score of an inbox item.
-
-        Args:
-            inbox_id: The inbox item ID.
-            attention_score: New attention_score, must be in [0.0, 1.0].
-
-        Returns:
-            True if the item existed and was updated, False if not found.
-
-        Raises:
-            ValueError: If attention_score is not in [0.0, 1.0].
-        """
-        if attention_score < 0.0 or attention_score > 1.0:
-            raise ValueError(
-                f"llmem: store: update_inbox_attention_score: attention_score "
-                f"must be in [0.0, 1.0], got {attention_score}"
-            )
-        conn = self._connect()
-        row = conn.execute(
-            'SELECT 1 FROM "inbox" WHERE "id" = ?', (inbox_id,)
-        ).fetchone()
-        if not row:
-            return False
-        conn.execute(
-            'UPDATE "inbox" SET "attention_score" = ? WHERE "id" = ?',
-            (attention_score, inbox_id),
-        )
-        conn.commit()
-        return True
-
-    def consolidate(self, min_score: float = 0.0, dry_run: bool = False) -> dict:
-        """Promote inbox items to long-term memory.
-
-        Items with attention_score >= min_score are promoted (copied to the
-        memories table with source='consolidation' and confidence=attention_score).
-        Items with attention_score < min_score are evicted (discarded from inbox).
-
-        After consolidate(), the inbox contains zero items (all promoted or evicted).
-
-        Args:
-            min_score: Minimum attention_score threshold for promotion.
-                Items below this threshold are evicted instead of promoted.
-                Defaults to 0.0 (promote everything).
-            dry_run: If True, compute what would happen but make no changes.
-
-        Returns:
-            Dict with keys:
-            - "promoted": list of dicts for items moved to memories (includes new memory id)
-            - "evicted": list of dicts for items removed from inbox
-        """
-        conn = self._connect()
-        rows = conn.execute(
-            'SELECT * FROM "inbox" ORDER BY "attention_score" DESC, "created_at" ASC'
-        ).fetchall()
-        promoted: list[dict] = []
-        evicted: list[dict] = []
-        for row in rows:
-            item = self._inbox_row_to_dict(row)
-            if item["attention_score"] >= min_score:
-                # Promote to memories table
-                if not dry_run:
-                    mem_id = self.add(
-                        type="fact",
-                        content=item["content"],
-                        source="consolidation",
-                        confidence=item["attention_score"],
-                        metadata=item.get("metadata") or {},
-                    )
-                    item["memory_id"] = mem_id
-                promoted.append(item)
-                if not dry_run:
-                    conn.execute('DELETE FROM "inbox" WHERE "id" = ?', (item["id"],))
-            else:
-                evicted.append(item)
-                if not dry_run:
-                    conn.execute('DELETE FROM "inbox" WHERE "id" = ?', (item["id"],))
-        if not dry_run:
-            conn.commit()
-        return {"promoted": promoted, "evicted": evicted}
-
-    def _evict_lowest_inbox_if_full(self, capacity: int) -> dict | None:
-        """Evict the lowest-scoring inbox item if at or over capacity.
-
-        If the inbox count >= capacity, deletes the item with the lowest
-        attention_score (tiebreak: earliest created_at) and returns the
-        evicted item dict. Returns None if no eviction is needed.
-
-        Args:
-            capacity: Maximum inbox capacity.
-
-        Returns:
-            The evicted item dict, or None if no eviction was needed.
-        """
-        conn = self._connect()
-        count = conn.execute('SELECT COUNT(*) FROM "inbox"').fetchone()[0]
-        if count < capacity:
-            return None
-        # Find lowest attention_score, tiebreak by earliest created_at
-        row = conn.execute(
-            'SELECT * FROM "inbox" ORDER BY "attention_score" ASC, "created_at" ASC LIMIT 1'
-        ).fetchone()
-        if not row:
-            return None
-        item = self._inbox_row_to_dict(row)
-        logger.info(
-            "llmem: store: inbox: evicted item %s (score=%.3f)",
-            item["id"],
-            item["attention_score"],
-        )
-        conn.execute('DELETE FROM "inbox" WHERE "id" = ?', (item["id"],))
-        conn.commit()
-        return item
-
-    def _inbox_row_to_dict(self, row: sqlite3.Row) -> dict:
-        """Convert an inbox sqlite3.Row to a dict with parsed metadata."""
-        d = dict(row)
-        try:
-            d["metadata"] = json.loads(d.get("metadata") or "{}")
-        except (json.JSONDecodeError, TypeError):
-            d["metadata"] = {}
-        return d
 
     def export_all(self, limit: int | None = 10000) -> list[dict]:
         """Export all memories, optionally capped by a limit.

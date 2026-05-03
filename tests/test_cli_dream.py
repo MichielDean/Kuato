@@ -3,7 +3,6 @@
 import argparse
 import io
 import sys
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -44,10 +43,11 @@ class TestCliDream_DryRun:
         assert "[DRY RUN]" in captured.out
 
     def test_dry_run_does_not_modify_database(self, tmp_path, capsys):
-        """cmd_dream with apply=False should not promote inbox items."""
+        """cmd_dream with apply=False should not modify memories."""
         db = tmp_path / "test.db"
         store = MemoryStore(db_path=db, disable_vec=True)
-        store.add_to_inbox(content="should not be promoted", attention_score=0.9)
+        mem_id = store.add(type="fact", content="should not be decayed", confidence=0.9)
+        initial_confidence = store.get(mem_id)["confidence"]
         store.close()
 
         args = argparse.Namespace(
@@ -65,9 +65,10 @@ class TestCliDream_DryRun:
         ):
             cmd_dream(args)
 
-        # Verify inbox still has the item (dry run)
+        # Verify memory was not modified (dry run)
         store2 = MemoryStore(db_path=db, disable_vec=True)
-        assert store2.inbox_count() == 1
+        after_confidence = store2.get(mem_id)["confidence"]
+        assert after_confidence == initial_confidence
         store2.close()
 
 
@@ -78,7 +79,7 @@ class TestCliDream_Apply:
         """cmd_dream with apply=True prints results without [DRY RUN] prefix."""
         db = tmp_path / "test.db"
         store = MemoryStore(db_path=db, disable_vec=True)
-        store.add_to_inbox(content="promote me", attention_score=0.9)
+        store.add(type="fact", content="test memory for dream")
         store.close()
 
         args = argparse.Namespace(
@@ -99,11 +100,9 @@ class TestCliDream_Apply:
         captured = capsys.readouterr()
         # Should not have [DRY RUN] prefix when apply=True
         assert "[DRY RUN]" not in captured.out
-        # Should have some output about phases
         assert (
             "Dream complete" in captured.out
             or "Phase" in captured.out.lower()
-            or "promoted" in captured.out.lower()
             or "Duplicate pairs" in captured.out
         )
 
@@ -143,7 +142,7 @@ class TestCliDream_PhaseDeep:
         """cmd_dream with phase='deep' only runs the deep phase."""
         db = tmp_path / "test.db"
         store = MemoryStore(db_path=db, disable_vec=True)
-        store.add_to_inbox(content="promote me", attention_score=0.8)
+        store.add(type="fact", content="test memory for deep phase")
         store.close()
 
         args = argparse.Namespace(
@@ -162,7 +161,7 @@ class TestCliDream_PhaseDeep:
             cmd_dream(args)
 
         captured = capsys.readouterr()
-        assert "Promoted" in captured.out or "Decayed" in captured.out
+        assert "Decayed" in captured.out or "Dream complete" in captured.out
 
 
 class TestCliDream_PhaseRem:
@@ -501,14 +500,9 @@ class TestCliDream_AutoLinkThresholdInConfig:
                 "min_unique_queries": 1,
                 "boost_on_promote": 0.1,
                 "merge_model": "qwen2.5:1.5b",
-                "diary_path": str(tmp_path / "diary.md"),
                 "report_path": str(tmp_path / "report.html"),
                 "behavioral_threshold": 3,
                 "behavioral_lookback_days": 30,
-                "proposed_changes_path": str(tmp_path / "proposed.json"),
-                "calibration_enabled": True,
-                "stale_procedure_days": 30,
-                "calibration_lookback_days": 90,
                 "auto_link_threshold": custom_threshold,
             },
         ):
@@ -526,120 +520,4 @@ class TestCliDream_AutoLinkThresholdInConfig:
                     assert call_kwargs["auto_link_threshold"] == custom_threshold
 
 
-class TestCliDream_DiaryPathFromConfig:
-    """Test that cmd_dream passes diary_path from dream_config to Dreamer.
 
-    Regression test for ll-kingr-4vmi8: cmd_dream did not pass diary_path
-    from dream_config to Dreamer.__init__, so user config for this path
-    was silently ignored. Dreamer defaulted to None, which triggered its
-    own hardcoded path resolution inside the constructor, writing diary
-    entries to the wrong location.
-    """
-
-    def test_diary_path_passed_from_config(self, tmp_path, capsys):
-        """cmd_dream passes diary_path from dream_config to Dreamer as a Path."""
-        db = tmp_path / "test.db"
-        store = MemoryStore(db_path=db, disable_vec=True)
-        store.close()
-
-        custom_diary = str(tmp_path / "custom-diary.md")
-        args = argparse.Namespace(
-            db=db,
-            apply=False,
-            phase="light",
-            report=None,
-        )
-
-        with patch(
-            "llmem.cli.get_dream_config",
-            return_value={
-                "enabled": True,
-                "schedule": "*-*-* 03:00:00",
-                "similarity_threshold": 0.92,
-                "decay_rate": 0.05,
-                "decay_interval_days": 30,
-                "decay_floor": 0.3,
-                "confidence_floor": 0.3,
-                "boost_threshold": 5,
-                "boost_amount": 0.05,
-                "min_score": 0.5,
-                "min_recall_count": 3,
-                "min_unique_queries": 1,
-                "boost_on_promote": 0.1,
-                "merge_model": "qwen2.5:1.5b",
-                "diary_path": custom_diary,
-                "report_path": str(tmp_path / "report.html"),
-                "behavioral_threshold": 3,
-                "behavioral_lookback_days": 30,
-                "calibration_enabled": True,
-                "stale_procedure_days": 30,
-                "calibration_lookback_days": 90,
-                "auto_link_threshold": 0.85,
-            },
-        ):
-            with patch(
-                "llmem.cli.MemoryStore",
-                side_effect=lambda db_path, **kw: MemoryStore(
-                    db_path=db_path, disable_vec=True
-                ),
-            ):
-                with patch("llmem.dream.Dreamer") as MockDreamer:
-                    mock_result = DreamResult(light=LightPhaseResult())
-                    MockDreamer.return_value.run.return_value = mock_result
-                    cmd_dream(args)
-                    call_kwargs = MockDreamer.call_args[1]
-                    assert call_kwargs["diary_path"] == Path(custom_diary)
-
-    def test_diary_and_paths_none_when_not_in_config(self, tmp_path, capsys):
-        """cmd_dream passes None for diary_path when config value is None,
-        letting Dreamer use its own default path resolution."""
-        db = tmp_path / "test.db"
-        store = MemoryStore(db_path=db, disable_vec=True)
-        store.close()
-
-        args = argparse.Namespace(
-            db=db,
-            apply=False,
-            phase="light",
-            report=None,
-        )
-
-        with patch(
-            "llmem.cli.get_dream_config",
-            return_value={
-                "enabled": True,
-                "schedule": "*-*-* 03:00:00",
-                "similarity_threshold": 0.92,
-                "decay_rate": 0.05,
-                "decay_interval_days": 30,
-                "decay_floor": 0.3,
-                "confidence_floor": 0.3,
-                "boost_threshold": 5,
-                "boost_amount": 0.05,
-                "min_score": 0.5,
-                "min_recall_count": 3,
-                "min_unique_queries": 1,
-                "boost_on_promote": 0.1,
-                "merge_model": "qwen2.5:1.5b",
-                "diary_path": None,
-                "report_path": str(tmp_path / "report.html"),
-                "behavioral_threshold": 3,
-                "behavioral_lookback_days": 30,
-                "calibration_enabled": True,
-                "stale_procedure_days": 30,
-                "calibration_lookback_days": 90,
-                "auto_link_threshold": 0.85,
-            },
-        ):
-            with patch(
-                "llmem.cli.MemoryStore",
-                side_effect=lambda db_path, **kw: MemoryStore(
-                    db_path=db_path, disable_vec=True
-                ),
-            ):
-                with patch("llmem.dream.Dreamer") as MockDreamer:
-                    mock_result = DreamResult(light=LightPhaseResult())
-                    MockDreamer.return_value.run.return_value = mock_result
-                    cmd_dream(args)
-                    call_kwargs = MockDreamer.call_args[1]
-                    assert call_kwargs["diary_path"] is None
