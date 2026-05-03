@@ -177,7 +177,7 @@ class TestMigration_CodeChunksTable:
 
 
 class TestMigration_006RefTypes:
-    """Test that migration 006 adds target_type column and extends relation_type CHECK."""
+    """Test migration 006 — now superseded by 007 which removes target_type."""
 
     def test_006_ref_types_migration_applied(self, tmp_path):
         """Migration 006 is tracked in _schema_migrations."""
@@ -191,41 +191,26 @@ class TestMigration_006RefTypes:
         store.close()
         assert 6 in versions
 
-    def test_006_relations_has_target_type_column(self, tmp_path):
-        """relations table has a target_type column."""
+    def test_006_target_type_removed_by_007(self, tmp_path):
+        """Migration 007 removes the target_type column from relations."""
         db = tmp_path / "test.db"
         store = MemoryStore(db_path=db, disable_vec=True)
         conn = store._connect()
         cursor = conn.execute("PRAGMA table_info('relations')")
         columns = {row[1] for row in cursor.fetchall()}
         store.close()
-        assert "target_type" in columns
-
-    def test_006_target_type_default_is_memory(self, tmp_path):
-        """Existing relation rows have target_type='memory'."""
-        db = tmp_path / "test.db"
-        store = MemoryStore(db_path=db, disable_vec=True)
-        # Add a relation to test default
-        mid1 = store.add(type="fact", content="memory A")
-        mid2 = store.add(type="fact", content="memory B")
-        rel_id = store.add_relation(mid1, mid2, "related_to")
-        conn = store._connect()
-        rows = conn.execute(
-            'SELECT "target_type" FROM "relations" WHERE "id" = ?',
-            (rel_id,),
-        ).fetchall()
-        store.close()
-        assert all(row[0] == "memory" for row in rows)
+        assert "target_type" not in columns
 
     def test_006_relation_type_includes_references(self, tmp_path):
-        """The CHECK constraint on relation_type includes 'references'."""
+        """After migration 007, 'references' is no longer a valid relation type."""
+        import pytest
+
         db = tmp_path / "test.db"
         store = MemoryStore(db_path=db, disable_vec=True)
         mid1 = store.add(type="fact", content="memory A")
         mid2 = store.add(type="fact", content="memory B")
-        # This would raise if 'references' is not in the CHECK constraint
-        rel_id = store.add_relation(mid1, mid2, "references")
-        assert rel_id is not None
+        with pytest.raises(ValueError, match="invalid relation_type"):
+            store.add_relation(mid1, mid2, "references")
         store.close()
 
     def test_006_table_recreation_is_atomic(self, tmp_path):
@@ -239,16 +224,11 @@ class TestMigration_006RefTypes:
         db = tmp_path / "test.db"
         store = MemoryStore(db_path=db, disable_vec=True)
         conn = store._connect()
-        # Verify relations table exists after migration (table recreation succeeded)
         result = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='relations'"
         ).fetchone()
-        # Verify target_type column exists (proves migration 006 completed)
-        cursor = conn.execute("PRAGMA table_info('relations')")
-        columns = {row[1] for row in cursor.fetchall()}
         store.close()
         assert result is not None
-        assert "target_type" in columns
 
 
 class TestMigration_SplitSqlStatements:
@@ -381,3 +361,65 @@ class TestMigration_SplitSqlStatements:
         for trig in trigger_stmts:
             assert "BEGIN" in trig
             assert "INSERT INTO" in trig
+
+
+class TestMigration_007Cleanup:
+    """Test migration 007 drops inbox table and narrows relation types."""
+
+    def test_migration_007_applied(self, tmp_path):
+        """Migration 007 is tracked in _schema_migrations."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        conn = store._connect()
+        rows = conn.execute(
+            'SELECT "version" FROM "_schema_migrations" ORDER BY "version"'
+        ).fetchall()
+        versions = [row[0] for row in rows]
+        store.close()
+        assert 7 in versions
+
+    def test_inbox_table_dropped(self, tmp_path):
+        """The inbox table no longer exists after migration 007."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        conn = store._connect()
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='inbox'"
+        ).fetchone()
+        store.close()
+        assert result is None
+
+    def test_contradicts_not_accepted(self, tmp_path):
+        """After migration 007, 'contradicts' is not a valid relation type."""
+        import pytest
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        mid1 = store.add(type="fact", content="memory A")
+        mid2 = store.add(type="fact", content="memory B")
+        with pytest.raises(ValueError, match="invalid relation_type"):
+            store.add_relation(mid1, mid2, "contradicts")
+        store.close()
+
+    def test_depends_on_not_accepted(self, tmp_path):
+        """After migration 007, 'depends_on' is not a valid relation type."""
+        import pytest
+
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        mid1 = store.add(type="fact", content="memory A")
+        mid2 = store.add(type="fact", content="memory B")
+        with pytest.raises(ValueError, match="invalid relation_type"):
+            store.add_relation(mid1, mid2, "depends_on")
+        store.close()
+
+    def test_valid_relation_types_still_work(self, tmp_path):
+        """supersedes, related_to, derived_from still work after migration 007."""
+        db = tmp_path / "test.db"
+        store = MemoryStore(db_path=db, disable_vec=True)
+        mid1 = store.add(type="fact", content="memory A")
+        mid2 = store.add(type="fact", content="memory B")
+        for rtype in ("supersedes", "related_to", "derived_from"):
+            rel_id = store.add_relation(mid1, mid2, rtype)
+            assert rel_id is not None
+        store.close()

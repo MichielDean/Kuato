@@ -360,7 +360,7 @@ def cmd_import(args):
     store.close()
 
 
-def cmd_embed(args):
+def cmd_metrics(args):
     """Report embedding quality metrics for existing embeddings.
 
     Computes anisotropy, similarity range, and discrimination gap
@@ -1111,8 +1111,8 @@ def main():
         help="Overwrite existing config.yaml",
     )
 
-    # embed
-    subparsers.add_parser("embed", help="Report embedding quality metrics")
+    # metrics
+    subparsers.add_parser("metrics", help="Report embedding quality metrics")
 
     # dream
     p_dream = subparsers.add_parser("dream", help="Run dream consolidation cycle")
@@ -1225,13 +1225,13 @@ def main():
         "delete": cmd_delete,
         "export": cmd_export,
         "import": cmd_import,
-        "init": cmd_init,
-        "embed": cmd_embed,
-        "dream": cmd_dream,
-        "context": cmd_context,
-        "hook": cmd_hook,
-        "track-review": cmd_track_review,
-    }
+         "init": cmd_init,
+         "metrics": cmd_metrics,
+         "dream": cmd_dream,
+         "context": cmd_context,
+         "hook": cmd_hook,
+         "track-review": cmd_track_review,
+     }
 
     handler = commands.get(args.command)
     if handler:
