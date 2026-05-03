@@ -272,6 +272,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             (3, "003_register_default_types.sql"),
             (5, "005_add_code_chunks.sql"),
             (6, "006_add_ref_types.sql"),
+            (7, "007_cleanup_dead_schema.sql"),
         ]
 
     migration_files.sort()
@@ -543,7 +544,6 @@ class MemoryStore:
         summary: str | None = None,
         source: str = "manual",
         confidence: float = 0.8,
-        valid_from: str | None = None,
         valid_until: str | None = None,
         metadata: dict | None = None,
         embedding: bytes | None = None,
@@ -558,7 +558,6 @@ class MemoryStore:
             summary: Optional short summary of the content.
             source: Origin of the memory (default: 'manual').
             confidence: Confidence score 0.0–1.0 (default: 0.8).
-            valid_from: ISO timestamp for when the memory becomes valid.
             valid_until: ISO timestamp for when the memory expires.
             metadata: Optional JSON-serializable metadata dict.
             embedding: Optional embedding vector as bytes.
@@ -602,7 +601,7 @@ class MemoryStore:
                 json.dumps(hints or []),
                 source,
                 confidence,
-                valid_from or now,
+                now,
                 valid_until,
                 now,
                 now,
@@ -1008,13 +1007,22 @@ class MemoryStore:
 
         Returns:
             The relation ID (UUID string).
+
+        Raises:
+            ValueError: If relation_type is not a valid type.
         """
+        valid_types = {"supersedes", "related_to", "derived_from"}
+        if relation_type not in valid_types:
+            raise ValueError(
+                f"llmem: store: add_relation: invalid relation_type "
+                f"'{relation_type}', must be one of {sorted(valid_types)}"
+            )
         rel_id = id or str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         conn = self._connect()
         conn.execute(
-            'INSERT INTO "relations" ("id", "source_id", "target_id", "relation_type", "target_type", "created_at") VALUES (?,?,?,?,?,?)',
-            (rel_id, source_id, target_id, relation_type, "memory", now),
+            'INSERT INTO "relations" ("id", "source_id", "target_id", "relation_type", "created_at") VALUES (?,?,?,?,?)',
+            (rel_id, source_id, target_id, relation_type, now),
         )
         conn.commit()
         return rel_id

@@ -347,11 +347,11 @@ class TestCli_PluginsLoadedViaRegistry:
 
 
 class TestCli_EmbedMetrics:
-    """Test cmd_embed reports anisotropy and similarity range."""
+    """Test cmd_metrics reports anisotropy and similarity range."""
 
     def test_embed_reports_anisotropy_and_similarity_range(self, tmp_path, capsys):
-        """cmd_embed reports anisotropy and similarity range values."""
-        from llmem.cli import cmd_embed
+        """cmd_metrics reports anisotropy and similarity range values."""
+        from llmem.cli import cmd_metrics
         from llmem.embed import EmbeddingEngine
         from llmem.store import MemoryStore
 
@@ -381,7 +381,7 @@ class TestCli_EmbedMetrics:
                 db_path=db_path, disable_vec=True
             ),
         ):
-            cmd_embed(args)
+            cmd_metrics(args)
 
         captured = capsys.readouterr()
         assert "Anisotropy" in captured.out
@@ -390,15 +390,14 @@ class TestCli_EmbedMetrics:
         assert "3 vectors" in captured.out
 
     def test_embed_warns_on_high_anisotropy(self, tmp_path, capsys):
-        """cmd_embed warns when anisotropy exceeds 0.5."""
-        from llmem.cli import cmd_embed
+        """cmd_metrics warns when anisotropy exceeds 0.5."""
+        from llmem.cli import cmd_metrics
         from llmem.embed import EmbeddingEngine
         from llmem.store import MemoryStore
 
         db = tmp_path / "test.db"
         store = MemoryStore(db_path=db, disable_vec=True)
 
-        # Identical vectors → anisotropy = 1.0, which exceeds threshold
         emb = EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0])
         store.add(type="fact", content="test1", embedding=emb)
         store.add(type="fact", content="test2", embedding=emb)
@@ -412,7 +411,7 @@ class TestCli_EmbedMetrics:
                 db_path=db_path, disable_vec=True
             ),
         ):
-            cmd_embed(args)
+            cmd_metrics(args)
 
         captured = capsys.readouterr()
         assert "Anisotropy" in captured.out
@@ -420,15 +419,14 @@ class TestCli_EmbedMetrics:
         assert "anisotropy" in captured.err.lower() or "Anisotropy" in captured.err
 
     def test_embed_warns_on_low_similarity_range(self, tmp_path, capsys):
-        """cmd_embed warns when similarity_range is below 0.1."""
-        from llmem.cli import cmd_embed
+        """cmd_metrics warns when similarity_range is below 0.1."""
+        from llmem.cli import cmd_metrics
         from llmem.embed import EmbeddingEngine
         from llmem.store import MemoryStore
 
         db = tmp_path / "test.db"
         store = MemoryStore(db_path=db, disable_vec=True)
 
-        # Identical vectors → similarity_range = 0.0, below threshold
         emb = EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0])
         store.add(type="fact", content="test1", embedding=emb)
         store.add(type="fact", content="test2", embedding=emb)
@@ -441,26 +439,21 @@ class TestCli_EmbedMetrics:
                 db_path=db_path, disable_vec=True
             ),
         ):
-            cmd_embed(args)
+            cmd_metrics(args)
 
         captured = capsys.readouterr()
         assert "WARNING" in captured.err
-        # Both high anisotropy and low similarity range should warn
         assert "poor quality" in captured.err
 
     def test_embed_no_warning_on_good_embeddings(self, tmp_path, capsys):
-        """cmd_embed does not warn when metrics are within thresholds."""
-        from llmem.cli import cmd_embed
+        """cmd_metrics does not warn when metrics are within thresholds."""
+        from llmem.cli import cmd_metrics
         from llmem.embed import EmbeddingEngine
         from llmem.store import MemoryStore
 
         db = tmp_path / "test.db"
         store = MemoryStore(db_path=db, disable_vec=True)
 
-        # Vectors with diverse orientations and non-zero spread:
-        # [1,0,0], [1,1,0], [0,1,0] → pairwise cosines are 0.707, 0.0, 0.707
-        # anisotropy ≈ avg(0.707, 0.0, 0.707) / 3 ≈ 0.47 < 0.5
-        # similarity_range = 0.707 - 0.0 = 0.707 > 0.1
         store.add(
             type="fact",
             content="test fact",
@@ -485,7 +478,7 @@ class TestCli_EmbedMetrics:
                 db_path=db_path, disable_vec=True
             ),
         ):
-            cmd_embed(args)
+            cmd_metrics(args)
 
         captured = capsys.readouterr()
         assert "Anisotropy" in captured.out
@@ -493,8 +486,8 @@ class TestCli_EmbedMetrics:
         assert "WARNING" not in captured.err
 
     def test_embed_always_reports_metrics(self, tmp_path, capsys):
-        """cmd_embed always reports metrics — no --metrics flag needed."""
-        from llmem.cli import cmd_embed
+        """cmd_metrics always reports metrics — no --metrics flag needed."""
+        from llmem.cli import cmd_metrics
         from llmem.embed import EmbeddingEngine
         from llmem.store import MemoryStore
 
@@ -507,7 +500,6 @@ class TestCli_EmbedMetrics:
         )
         store.close()
 
-        # No metrics attribute on args — embed always reports
         args = argparse.Namespace(db=db)
         with patch(
             "llmem.cli.MemoryStore",
@@ -515,25 +507,24 @@ class TestCli_EmbedMetrics:
                 db_path=db_path, disable_vec=True
             ),
         ):
-            cmd_embed(args)
+            cmd_metrics(args)
 
         captured = capsys.readouterr()
         assert "Anisotropy" in captured.out
         assert "Similarity range" in captured.out
 
     def test_embed_does_not_generate_new_embeddings(self, tmp_path, capsys):
-        """cmd_embed only analyses existing embeddings — it never creates new ones.
+        """cmd_metrics only analyses existing embeddings — it never creates new ones.
 
-        Verifies that calling cmd_embed on memories without embeddings
+        Verifies that calling cmd_metrics on memories without embeddings
         does not add embeddings, and that the function merely reads
         what is already stored.
         """
-        from llmem.cli import cmd_embed
+        from llmem.cli import cmd_metrics
         from llmem.store import MemoryStore
 
         db = tmp_path / "test.db"
         store = MemoryStore(db_path=db, disable_vec=True)
-        # Add memories WITHOUT embeddings
         mid = store.add(type="fact", content="unembedded fact")
         assert store.get(mid)["embedding"] is None
         store.close()
@@ -545,13 +536,12 @@ class TestCli_EmbedMetrics:
                 db_path=db_path, disable_vec=True
             ),
         ):
-            cmd_embed(args)
+            cmd_metrics(args)
 
-        # Verify no embeddings were generated — the memory still has none
         store2 = MemoryStore(db_path=db, disable_vec=True)
         mem = store2.get(mid)
         assert mem["embedding"] is None, (
-            "cmd_embed should not generate embeddings, but embedding was created"
+            "cmd_metrics should not generate embeddings, but embedding was created"
         )
         store2.close()
 
