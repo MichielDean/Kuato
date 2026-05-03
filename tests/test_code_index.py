@@ -611,7 +611,7 @@ class TestCodeIndex_DuplicateChunkHandling:
     add_chunk() uses INSERT on a TEXT PRIMARY KEY (chunk_id). Re-indexing
     the same file with the same chunk boundaries produces duplicate IDs,
     causing uncaught sqlite3.IntegrityError. The fix must handle duplicates
-    gracefully so that cmd_learn is idempotent.
+    gracefully so that re-indexing is idempotent.
     """
 
     def test_add_chunk_duplicate_id_skips_gracefully(self, tmp_path):
@@ -663,55 +663,6 @@ class TestCodeIndex_DuplicateChunkHandling:
         # Insert same chunks again — must not crash
         idx.add_chunks(chunks)
         idx.close()
-
-    def test_cmd_learn_twice_on_same_codebase_succeeds(self, tmp_path):
-        """Running cmd_learn twice on the same directory is idempotent.
-
-        The second run should remove stale chunks per file before
-        re-inserting, ensuring a clean re-index without IntegrityError.
-        """
-        from llmem.cli import cmd_learn
-        import argparse
-        import io
-        import sys
-
-        code_dir = tmp_path / "code"
-        code_dir.mkdir()
-        (code_dir / "hello.py").write_text("def hello():\n    print('hello')\n")
-
-        db = tmp_path / "learn_test.db"
-
-        args = argparse.Namespace(
-            path=str(code_dir),
-            db=db,
-            strategy="paragraph",
-            window_size=50,
-            overlap=10,
-            no_embed=True,
-            ollama_url=None,
-        )
-
-        # First learn
-        old_stdout = sys.stdout
-        sys.stdout = io.StringIO()
-        try:
-            cmd_learn(args)
-        finally:
-            output1 = sys.stdout.getvalue()
-            sys.stdout = old_stdout
-
-        assert "Ingested" in output1
-
-        # Second learn — must not crash with IntegrityError
-        sys.stdout = io.StringIO()
-        try:
-            cmd_learn(args)
-        finally:
-            output2 = sys.stdout.getvalue()
-            sys.stdout = old_stdout
-
-        assert "Ingested" in output2
-
 
 class TestCodeIndex_ExtensionLoadingDisabled:
     """Test that SQLite extension loading is disabled after CodeIndex init."""

@@ -112,33 +112,6 @@ class TestMigration_DDLDMLSeparated:
         assert "COMMIT" in sql_content
 
 
-class TestMigration_004Inbox:
-    """Test that migration 004 creates the inbox table."""
-
-    def test_004_inbox_migration_applied(self, tmp_path):
-        """Migration 004 should be tracked in _schema_migrations."""
-        db = tmp_path / "test.db"
-        store = MemoryStore(db_path=db, disable_vec=True)
-        conn = store._connect()
-        rows = conn.execute(
-            'SELECT "version" FROM "_schema_migrations" ORDER BY "version"'
-        ).fetchall()
-        versions = [row[0] for row in rows]
-        store.close()
-        assert 4 in versions
-
-    def test_004_is_ddl_only(self):
-        """Migration 004 should be DDL-only (no INSERT INTO data tables)."""
-        import importlib.resources
-
-        migrations_pkg = importlib.resources.files("llmem_migrations")
-        sql_content = migrations_pkg.joinpath("004_add_inbox.sql").read_text()
-        assert "CREATE TABLE" in sql_content
-        # Should NOT contain data DML (no INSERT INTO memories, etc.)
-        # But it does contain the schema_migrations version insert which is fine
-        assert "BEGIN TRANSACTION" not in sql_content  # No transaction wrapping for DDL
-
-
 class TestMigration_CodeChunksTable:
     """Test that migration 005 creates the code_chunks table properly."""
 

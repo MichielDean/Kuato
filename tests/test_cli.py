@@ -15,7 +15,6 @@ class TestCli_EntryPoint:
     def test_cli_help(self):
         """CLI --help outputs usage info with llmem branding."""
         from llmem.cli import main
-        import io
 
         old_stdout = sys.stdout
         sys.stdout = io.StringIO()
@@ -32,7 +31,6 @@ class TestCli_EntryPoint:
     def test_cli_prog_name(self):
         """CLI prog name is 'llmem'."""
         from llmem.cli import main
-        import io
 
         old_stdout = sys.stdout
         sys.stdout = io.StringIO()
@@ -53,7 +51,6 @@ class TestCli_LobmemCompat:
     def test_lobmem_compat_deprecation_warning(self):
         """When invoked as 'lobmem', main() prints deprecation warning to stderr."""
         from llmem.cli import main
-        import io
 
         old_stdout = sys.stdout
         old_stderr = sys.stderr
@@ -80,7 +77,6 @@ class TestCli_LobmemCompat:
     def test_llmem_no_deprecation_warning(self):
         """When invoked as 'llmem', no deprecation warning is emitted."""
         from llmem.cli import main
-        import io
 
         old_stdout = sys.stdout
         old_stderr = sys.stderr
@@ -237,7 +233,6 @@ class TestCli_PluginsLoadedViaRegistry:
         from llmem.registry import _reset_registries
 
         _reset_registries()
-        import io
 
         old_stdout = sys.stdout
         old_stderr = sys.stderr
@@ -261,7 +256,6 @@ class TestCli_PluginsLoadedViaRegistry:
         from llmem.registry import _reset_registries
 
         _reset_registries()
-        import io
 
         old_stdout = sys.stdout
         old_stderr = sys.stderr
@@ -284,7 +278,6 @@ class TestCli_PluginsLoadedViaRegistry:
         from llmem.registry import _reset_registries
 
         _reset_registries()
-        import io
 
         old_stdout = sys.stdout
         old_stderr = sys.stderr
@@ -308,7 +301,6 @@ class TestCli_PluginsLoadedViaRegistry:
             register_cli_plugin,
             _reset_registries,
         )
-        import io
 
         _reset_registries()
 
@@ -334,7 +326,6 @@ class TestCli_PluginsLoadedViaRegistry:
         """A faulty plugin setup function does not crash main()."""
         from llmem.cli import main
         from llmem.registry import register_cli_plugin, _reset_registries
-        import io
 
         _reset_registries()
 
@@ -353,297 +344,6 @@ class TestCli_PluginsLoadedViaRegistry:
             pass
         finally:
             sys.stdout = old_stdout
-
-
-class TestCli_Note:
-    """Test cmd_note adds content to the inbox."""
-
-    def test_cmd_note_adds_to_inbox(self, tmp_path):
-        """cmd_note with content adds an item to the inbox."""
-        from llmem.cli import cmd_note
-        from llmem.store import MemoryStore
-
-        db = tmp_path / "test.db"
-        args = argparse.Namespace(
-            db=db,
-            content="test note content",
-            source="note",
-            attention_score=0.5,
-            metadata=None,
-        )
-        with patch(
-            "llmem.cli.MemoryStore",
-            side_effect=lambda db_path, **kw: MemoryStore(
-                db_path=db_path, disable_vec=True
-            ),
-        ):
-            cmd_note(args)
-
-        # Verify the note was added
-        store = MemoryStore(db_path=db, disable_vec=True)
-        items = store.list_inbox()
-        assert len(items) == 1
-        assert items[0]["content"] == "test note content"
-        assert items[0]["source"] == "note"
-        store.close()
-
-
-class TestCli_Inbox:
-    """Test cmd_inbox lists inbox items."""
-
-    def test_cmd_inbox_lists_items(self, tmp_path, capsys):
-        """cmd_inbox lists inbox items to stdout."""
-        from llmem.cli import cmd_inbox
-        from llmem.store import MemoryStore
-
-        db = tmp_path / "test.db"
-        # Pre-populate inbox
-        store = MemoryStore(db_path=db, disable_vec=True)
-        store.add_to_inbox(content="test note", source="note", attention_score=0.7)
-        store.close()
-
-        args = argparse.Namespace(
-            db=db,
-            limit=20,
-            json=False,
-        )
-        with patch(
-            "llmem.cli.MemoryStore",
-            side_effect=lambda db_path, **kw: MemoryStore(
-                db_path=db_path, disable_vec=True
-            ),
-        ):
-            cmd_inbox(args)
-
-        captured = capsys.readouterr()
-        assert "test note" in captured.out
-
-
-class TestCli_Consolidate:
-    """Test cmd_consolidate promotes inbox items."""
-
-    def test_cmd_consolidate_promotes(self, tmp_path, capsys):
-        """cmd_consolidate consolidates inbox items."""
-        from llmem.cli import cmd_consolidate
-        from llmem.store import MemoryStore
-
-        db = tmp_path / "test.db"
-        # Pre-populate inbox
-        store = MemoryStore(db_path=db, disable_vec=True)
-        store.add_to_inbox(content="promote me", attention_score=0.8)
-        store.close()
-
-        args = argparse.Namespace(
-            db=db,
-            min_score=0.0,
-            dry_run=False,
-        )
-        with patch(
-            "llmem.cli.MemoryStore",
-            side_effect=lambda db_path, **kw: MemoryStore(
-                db_path=db_path, disable_vec=True
-            ),
-        ):
-            cmd_consolidate(args)
-
-        captured = capsys.readouterr()
-        assert "Promoted: 1 items" in captured.out
-
-    def test_cmd_consolidate_dry_run(self, tmp_path, capsys):
-        """cmd_consolidate --dry-run shows plan without changes."""
-        from llmem.cli import cmd_consolidate
-        from llmem.store import MemoryStore
-
-        db = tmp_path / "test.db"
-        # Pre-populate inbox
-        store = MemoryStore(db_path=db, disable_vec=True)
-        store.add_to_inbox(content="maybe later", attention_score=0.6)
-        store.close()
-
-        args = argparse.Namespace(
-            db=db,
-            min_score=0.0,
-            dry_run=True,
-        )
-        with patch(
-            "llmem.cli.MemoryStore",
-            side_effect=lambda db_path, **kw: MemoryStore(
-                db_path=db_path, disable_vec=True
-            ),
-        ):
-            cmd_consolidate(args)
-
-        captured = capsys.readouterr()
-        assert "[DRY RUN]" in captured.out
-        # Inbox should still have the item (dry run)
-        store2 = MemoryStore(db_path=db, disable_vec=True)
-        assert store2.inbox_count() == 1
-        store2.close()
-
-
-class TestCli_Learn:
-    """Test the cmd_learn CLI handler."""
-
-    def test_learn_processes_directory(self, tmp_path):
-        """cmd_learn processes a directory and reports chunk count."""
-        from llmem.cli import cmd_learn
-
-        # Create a small code directory
-        code_dir = tmp_path / "code"
-        code_dir.mkdir()
-        (code_dir / "hello.py").write_text("def hello():\n    print('hello')\n")
-        (code_dir / "world.py").write_text("def world():\n    print('world')\n")
-
-        db = tmp_path / "learn_test.db"
-        import argparse
-
-        args = argparse.Namespace(
-            path=str(code_dir),
-            db=db,
-            strategy="paragraph",
-            window_size=50,
-            overlap=10,
-            no_embed=True,
-            ollama_url=None,
-        )
-
-        # Capture stdout
-        import io
-
-        old_stdout = sys.stdout
-        sys.stdout = io.StringIO()
-        try:
-            cmd_learn(args)
-        finally:
-            output = sys.stdout.getvalue()
-            sys.stdout = old_stdout
-
-        assert "Ingested" in output
-        assert "chunks" in output
-
-    def test_learn_with_fixed_strategy(self, tmp_path):
-        """cmd_learn with --strategy=fixed uses FixedLineChunking."""
-        from llmem.cli import cmd_learn
-
-        code_dir = tmp_path / "code"
-        code_dir.mkdir()
-        (code_dir / "app.py").write_text("\n".join(f"line{i}" for i in range(20)))
-
-        db = tmp_path / "learn_fixed.db"
-        import argparse
-
-        args = argparse.Namespace(
-            path=str(code_dir),
-            db=db,
-            strategy="fixed",
-            window_size=10,
-            overlap=2,
-            no_embed=True,
-            ollama_url=None,
-        )
-
-        import io
-
-        old_stdout = sys.stdout
-        sys.stdout = io.StringIO()
-        try:
-            cmd_learn(args)
-        finally:
-            output = sys.stdout.getvalue()
-            sys.stdout = old_stdout
-
-        assert "Ingested" in output
-
-    def test_learn_nonexistent_directory_exits(self, tmp_path):
-        """cmd_learn exits with error for non-existent directory."""
-        from llmem.cli import cmd_learn
-
-        import argparse
-
-        args = argparse.Namespace(
-            path=str(tmp_path / "nonexistent"),
-            db=tmp_path / "test.db",
-            strategy="paragraph",
-            window_size=50,
-            overlap=10,
-            no_embed=True,
-            ollama_url=None,
-        )
-
-        with pytest.raises(SystemExit):
-            cmd_learn(args)
-
-    def test_search_include_code_flag(self, tmp_path):
-        """The search command accepts --include-code flag."""
-        from llmem.cli import main
-
-        # Just verify the flag is recognized in the parser
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        sys.stdout = io.StringIO()
-        sys.stderr = io.StringIO()
-        try:
-            sys.argv = ["llmem", "search", "--help"]
-            main()
-        except SystemExit:
-            pass
-        finally:
-            output = sys.stdout.getvalue()
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-
-        assert "--include-code" in output
-
-    def test_learn_no_embed_does_not_disable_vec(self, tmp_path):
-        """Issue ll-67q3p-6prmn: --no-embed must not conflate with disable_vec.
-
-        The --no-embed flag should only skip embedding generation, not
-        disable the vec extension entirely. This test verifies that cmd_learn
-        no longer passes disable_vec=args.no_embed to CodeIndex.
-        """
-        from llmem.cli import cmd_learn
-
-        code_dir = tmp_path / "code"
-        code_dir.mkdir()
-        (code_dir / "hello.py").write_text("def hello():\n    print('hello')\n")
-
-        db = tmp_path / "test.db"
-        import argparse
-
-        args = argparse.Namespace(
-            path=str(code_dir),
-            db=db,
-            strategy="paragraph",
-            window_size=50,
-            overlap=10,
-            no_embed=True,
-            ollama_url=None,
-        )
-
-        import io
-
-        old_stdout = sys.stdout
-        sys.stdout = io.StringIO()
-        try:
-            cmd_learn(args)
-        finally:
-            output = sys.stdout.getvalue()
-            sys.stdout = old_stdout
-
-        assert "Ingested" in output
-        # Verify the database was created and FTS triggers exist
-        # (if disable_vec had been True AND it dropped triggers, they'd be gone)
-        import sqlite3
-
-        conn = sqlite3.connect(str(db))
-        triggers = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='trigger'"
-            ).fetchall()
-        }
-        conn.close()
-        assert "code_chunks_fts_insert" in triggers
 
 
 class TestCli_SearchCodeInterleaving:
@@ -951,53 +651,6 @@ class TestCli_EmbedMetrics:
 
         captured = capsys.readouterr()
         assert "No embedded memories found" in captured.out
-
-
-class TestCli_ConsolidateMetrics:
-    """Test cmd_consolidate --metrics reports embedding quality metrics."""
-
-    def test_consolidate_with_metrics_reports_metrics(self, tmp_path, capsys):
-        """cmd_consolidate --metrics reports anisotropy and similarity range."""
-        from llmem.cli import cmd_consolidate
-        from llmem.embed import EmbeddingEngine
-        from llmem.store import MemoryStore
-
-        db = tmp_path / "test.db"
-        # Pre-populate inbox and embeddings
-        store = MemoryStore(db_path=db, disable_vec=True)
-        store.add_to_inbox(content="promote me", attention_score=0.8)
-
-        # Add memories with embeddings for metrics
-        store.add(
-            type="fact",
-            content="embedded fact 1",
-            embedding=EmbeddingEngine.vec_to_bytes([1.0, 0.0, 0.0]),
-        )
-        store.add(
-            type="fact",
-            content="embedded fact 2",
-            embedding=EmbeddingEngine.vec_to_bytes([0.0, 1.0, 0.0]),
-        )
-        store.close()
-
-        args = argparse.Namespace(
-            db=db,
-            min_score=0.0,
-            dry_run=False,
-            metrics=True,
-        )
-        with patch(
-            "llmem.cli.MemoryStore",
-            side_effect=lambda db_path, **kw: MemoryStore(
-                db_path=db_path, disable_vec=True
-            ),
-        ):
-            cmd_consolidate(args)
-
-        captured = capsys.readouterr()
-        assert "Promoted" in captured.out
-        assert "Anisotropy" in captured.out
-        assert "Similarity range" in captured.out
 
 
 class TestCli_EmbedMetricsCapping:
