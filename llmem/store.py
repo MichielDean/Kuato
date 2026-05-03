@@ -28,7 +28,6 @@ _DEFAULT_TYPES: frozenset[str] = frozenset(
         "event",
         "project_state",
         "procedure",
-        "conversation",
         "self_assessment",
     }
 )
@@ -727,13 +726,9 @@ class MemoryStore:
 
     def delete(self, mem_id: str) -> bool:
         conn = self._connect()
-        # source_id has ON DELETE CASCADE, but target_id no longer has a
-        # foreign key (migration 006 removed it to support code refs).
-        # Manually clean up orphaned relations where the deleted memory
-        # is the target before deleting the memory row itself.
         conn.execute(
-            'DELETE FROM "relations" WHERE "target_id" = ? AND "target_type" = ?',
-            (mem_id, "memory"),
+            'DELETE FROM "relations" WHERE "target_id" = ?',
+            (mem_id,),
         )
         cursor = conn.execute('DELETE FROM "memories" WHERE "id" = ?', (mem_id,))
         conn.commit()
@@ -997,60 +992,29 @@ class MemoryStore:
         source_id: str,
         target_id: str,
         relation_type: str,
-        target_type: str = "memory",
         id: str | None = None,
     ) -> str:
-        """Add a relation between two memories or a memory and a code chunk.
+        """Add a relation between two memories.
 
-        Precondition: source_id must reference an existing memory. If
-        target_type='code', target_id must match format
-        'path:start_line:end_line' (e.g. 'src/lib.rs:42:58') and the path
-        component must be a safe relative path (no leading '/' or '..'
-        traversal). If target_type='memory', target_id must reference an
-        existing memory (existence check is application-level only, not
-        enforced at SQL level).
+        Precondition: source_id must reference an existing memory.
+        target_id must reference an existing memory (existence check is
+        application-level only, not enforced at SQL level).
 
         Args:
             source_id: ID of the source memory.
-            target_id: ID of the target memory or code ref string.
-            relation_type: One of 'supersedes','contradicts','depends_on',
-                'related_to','derived_from','references'.
-            target_type: 'memory' or 'code'. Defaults to 'memory'.
+            target_id: ID of the target memory.
+            relation_type: One of 'supersedes', 'related_to', 'derived_from'.
             id: Optional explicit relation ID (UUID generated if None).
 
         Returns:
             The relation ID (UUID string).
-
-        Raises:
-            ValueError: If target_type='code' and target_id has an absolute
-                path or contains '..' traversal.
         """
-        if target_type == "code":
-            from .refs import validate_code_ref_path
-
-            # Extract the path component from 'path:start_line:end_line'
-            # and validate it is a safe relative path.
-            colon_count = target_id.count(":")
-            if colon_count < 2:
-                raise ValueError(
-                    f"llmem: store: add_relation: code ref target_id must match "
-                    f"'path:start_line:end_line' format, got: {target_id!r}"
-                )
-            # The path is everything before the last two colon-separated segments
-            path_part = target_id.rsplit(":", 2)[0]
-            validated = validate_code_ref_path(path_part)
-            if validated is None:
-                raise ValueError(
-                    f"llmem: store: add_relation: code ref target_id has unsafe path "
-                    f"(must be relative, no '..' traversal): {target_id!r}"
-                )
-
         rel_id = id or str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         conn = self._connect()
         conn.execute(
             'INSERT INTO "relations" ("id", "source_id", "target_id", "relation_type", "target_type", "created_at") VALUES (?,?,?,?,?,?)',
-            (rel_id, source_id, target_id, relation_type, target_type, now),
+            (rel_id, source_id, target_id, relation_type, "memory", now),
         )
         conn.commit()
         return rel_id
@@ -1078,81 +1042,60 @@ class MemoryStore:
         self,
         start_ids: list[str],
         max_depth: int = 1,
-        target_type: str | None = None,
     ) -> list[dict]:
         """Traverse relation edges from start_ids up to max_depth hops.
 
         Follows both source_id->target_id and target_id->source_id directions
         so relations are traversed bidirectionally. Uses a recursive CTE.
         Returns deduplicated results with the shortest distance, relation_type,
-        target_type, and relation_score (decays as 0.5^distance).
+        and relation_score (decays as 0.5^distance).
 
         Args:
             start_ids: Memory IDs to start traversal from.
             max_depth: Maximum number of hops (1-5, capped at 5).
-            target_type: Filter by target type. None (default) follows all
-                edges, 'memory' only follows memory edges, 'code' only
-                follows code edges.
 
         Returns:
-            List of dicts with target_id, relation_type, target_type,
-            distance, and relation_score keys.
+            List of dicts with target_id, relation_type, distance,
+            and relation_score keys.
         """
         if not start_ids or max_depth < 1:
             return []
 
         max_depth = min(max_depth, 5)
 
-        # Build target_type filter clause if specified
-        tt_filter = ""
-        if target_type is not None:
-            tt_filter = ' AND "target_type" = ?'
-
         conn = self._connect()
         placeholders = ",".join("?" for _ in start_ids)
         exclude = ",".join("?" for _ in start_ids)
 
         cte_sql = (
-            'WITH RECURSIVE "rel_traverse"("node_id", "reached_id", "rel_type", "tgt_type", "dist") AS ('
-            ' SELECT "source_id", "target_id", "relation_type", "target_type", 1 FROM "relations"'
-            f' WHERE "source_id" IN ({placeholders}){tt_filter}'
+            'WITH RECURSIVE "rel_traverse"("node_id", "reached_id", "rel_type", "dist") AS ('
+            ' SELECT "source_id", "target_id", "relation_type", 1 FROM "relations"'
+            f' WHERE "source_id" IN ({placeholders})'
             " UNION ALL"
-            ' SELECT "target_id", "source_id", "relation_type", \'memory\', 1 FROM "relations"'
-            f' WHERE "target_id" IN ({placeholders}){tt_filter}'
+            ' SELECT "target_id", "source_id", "relation_type", 1 FROM "relations"'
+            f' WHERE "target_id" IN ({placeholders})'
             " UNION ALL"
-            ' SELECT r."source_id", r."target_id", r."relation_type", r."target_type", rt."dist" + 1 FROM "relations" r'
+            ' SELECT r."source_id", r."target_id", r."relation_type", rt."dist" + 1 FROM "relations" r'
             ' INNER JOIN "rel_traverse" rt ON rt."reached_id" = r."source_id"'
-            f' WHERE rt."dist" < ?{tt_filter}'
+            f' WHERE rt."dist" < ?'
             " UNION ALL"
-            ' SELECT r."target_id", r."source_id", r."relation_type", \'memory\', rt."dist" + 1 FROM "relations" r'
+            ' SELECT r."target_id", r."source_id", r."relation_type", rt."dist" + 1 FROM "relations" r'
             ' INNER JOIN "rel_traverse" rt ON rt."reached_id" = r."target_id"'
-            f' WHERE rt."dist" < ?{tt_filter}'
+            f' WHERE rt."dist" < ?'
             ")"
-            f' SELECT "reached_id", "rel_type", "tgt_type", MIN("dist") as "dist" FROM "rel_traverse"'
+            f' SELECT "reached_id", "rel_type", MIN("dist") as "dist" FROM "rel_traverse"'
             f' WHERE "reached_id" NOT IN ({exclude})'
-            ' GROUP BY "reached_id", "rel_type", "tgt_type"'
+            ' GROUP BY "reached_id", "rel_type"'
             ' ORDER BY "dist"'
         )
-        params = start_ids
-        if target_type is not None:
-            params = params + [target_type]
-        params = params + start_ids
-        if target_type is not None:
-            params = params + [target_type]
-        params = params + [max_depth]
-        if target_type is not None:
-            params = params + [target_type]
-        params = params + [max_depth]
-        if target_type is not None:
-            params = params + [target_type]
-        params = params + start_ids
+        params = start_ids + start_ids + [max_depth, max_depth] + start_ids
 
         rows = conn.execute(cte_sql, params).fetchall()
 
         results = []
         seen = set()
         for row in rows:
-            key = (row["reached_id"], row["rel_type"], row["tgt_type"])
+            key = (row["reached_id"], row["rel_type"])
             if key in seen:
                 continue
             seen.add(key)
@@ -1161,7 +1104,6 @@ class MemoryStore:
                 {
                     "target_id": row["reached_id"],
                     "relation_type": row["rel_type"],
-                    "target_type": row["tgt_type"],
                     "distance": distance,
                     "relation_score": 0.5**distance,
                 }

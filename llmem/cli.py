@@ -195,78 +195,16 @@ def cmd_search(args):
         store.close()
         sys.exit(1)
 
-    # Interleave code chunk results if --include-code is set
-    code_results: list[dict] = []
-    if getattr(args, "include_code", False):
-        from .code_index import CodeIndex
-        from .retrieve import DEFAULT_RRF_K
-
-        code_index = CodeIndex(db_path=args.db)
-        try:
-            code_results = code_index.search_content(query=args.query, limit=args.limit)
-        except Exception as e:
-            log.warning("llmem: cli: search: code search failed: %s", e)
-        finally:
-            code_index.close()
-
-        # Merge with code results, assigning RRF scores based on FTS rank
-        for i, cr in enumerate(code_results):
-            cr["_source"] = "code"
-            # Assign RRF score based on FTS rank position (1-based).
-            # Using alpha=0.0 (pure FTS) and default k to match the FTS-only
-            # scoring pattern used by the Retriever for consistency.
-            fts_rank = i + 1
-            cr["_rrf_score"] = (1 - 0.0) * (1 / (DEFAULT_RRF_K + fts_rank))
-
-    # Traverse code refs if --traverse-refs is set
-    ref_results: list[dict] = []
-    if getattr(args, "traverse_refs", False):
-        from .refs import resolve_code_ref
-
-        max_ref_depth = getattr(args, "max_ref_depth", 3)
-        # Get code ref edges from result memory IDs
-        mem_ids = [r["id"] for r in results if r.get("id")]
-        if mem_ids:
-            code_refs = store.traverse_relations(
-                mem_ids, max_depth=max_ref_depth, target_type="code"
-            )
-            seen_refs = set()
-            for ref in code_refs:
-                ref_id = ref["target_id"]
-                if ref_id in seen_refs:
-                    continue
-                seen_refs.add(ref_id)
-                resolved = resolve_code_ref(ref_id)
-                if resolved is not None:
-                    resolved["_source"] = "code"
-                    ref_results.append(resolved)
-
-    # Mark memory results with source
-    for m in results:
-        m["_source"] = "memory"
-
-    combined = results + code_results + ref_results
-    # Sort by score descending, then by source for stability
-    combined.sort(key=lambda x: (-x.get("_rrf_score", 0.0), x.get("_source", "")))
-
     if args.json:
-        print(json.dumps(combined, indent=2, default=str))
+        print(json.dumps(results, indent=2, default=str))
     else:
-        for m in combined:
-            source = m.get("_source", "memory")
-            prefix = "[code]" if source == "code" else f"[{m.get('type', '?')}]"
+        for m in results:
+            prefix = f"[{m.get('type', '?')}]"
             score = m.get("_rrf_score", 0.0)
-            if source == "code":
-                print(
-                    f"  {m.get('id', '?')}  {prefix}  file={m.get('file_path', '?')}  "
-                    f"lines={m.get('start_line', '?')}-{m.get('end_line', '?')}  rrf={score:.4f}"
-                )
-                print(f"    {m.get('content', '')[:120]}")
-            else:
-                print(
-                    f"  {m['id']}  {prefix}  conf={m.get('confidence', 0):.2f}  rrf={score:.4f}"
-                )
-                print(f"    {m['content'][:120]}")
+            print(
+                f"  {m['id']}  {prefix}  conf={m.get('confidence', 0):.2f}  rrf={score:.4f}"
+            )
+            print(f"    {m['content'][:120]}")
 
     store.close()
 
@@ -598,15 +536,10 @@ def cmd_init(args):
 
     # Detect session adapter automatically
     opencode_db = Path("~/.local/share/opencode/opencode.db").expanduser()
-    copilot_state = Path("~/.copilot/session-state").expanduser()
-    if not opencode_db.exists() and copilot_state.is_dir():
-        config["session"] = {"adapter": "copilot"}
-        config["copilot"] = {
-            "state_dir": str(copilot_state),
-            "share_dir": ".",
-        }
-    else:
+    if opencode_db.exists():
         config["session"] = {"adapter": "opencode"}
+    else:
+        config["session"] = {"adapter": "none"}
 
     # Interactive prompts (unless --non-interactive)
     if not args.non_interactive:
@@ -636,28 +569,22 @@ def cmd_init(args):
             opencode_db = Path(
                 "~/.local/share/opencode/opencode.db"
             ).expanduser()
-            copilot_state = Path("~/.copilot/session-state").expanduser()
-            if not opencode_db.exists() and copilot_state.is_dir():
-                adapter_default = "copilot"
+            if not opencode_db.exists():
+                adapter_default = "none"
             adapter_input = (
                 input(
-                    f"Session adapter (opencode/copilot/none) [{adapter_default}]: "
+                    f"Session adapter (opencode/none) [{adapter_default}]: "
                 )
                 .strip()
                 .lower()
             )
-            if adapter_input in ("opencode", "copilot", "none"):
+            if adapter_input in ("opencode", "none"):
                 adapter_type = adapter_input
             elif adapter_input == "":
                 adapter_type = adapter_default
             else:
                 adapter_type = adapter_default
             config["session"] = {"adapter": adapter_type}
-            if adapter_type == "copilot":
-                config["copilot"] = {
-                    "state_dir": str(copilot_state),
-                    "share_dir": ".",
-                }
         except KeyboardInterrupt:
             print("\nInit cancelled.")
             sys.exit(1)
@@ -1123,22 +1050,6 @@ def main():
     p_search.add_argument("--type", help="Filter by type")
     p_search.add_argument("--limit", type=int, default=20, help="Max results")
     p_search.add_argument("--json", action="store_true", help="JSON output")
-    p_search.add_argument(
-        "--include-code",
-        action="store_true",
-        help="Include code chunks in search results",
-    )
-    p_search.add_argument(
-        "--traverse-refs",
-        action="store_true",
-        help="Follow code reference edges from search results",
-    )
-    p_search.add_argument(
-        "--max-ref-depth",
-        type=int,
-        default=3,
-        help="Max depth for ref expansion (default: 3)",
-    )
     search_mode_group = p_search.add_mutually_exclusive_group()
     search_mode_group.add_argument(
         "--fts-only", action="store_true", help="FTS5 keyword search only"
