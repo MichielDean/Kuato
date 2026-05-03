@@ -782,23 +782,6 @@ class TestSessionHookCoordinatorWithoutAdapter:
         coordinator = create_session_hook_coordinator(config=config)
         assert coordinator._adapter is not None
 
-    def test_create_coordinator_with_copilot_adapter(self, tmp_path):
-        from llmem.session_hooks import create_session_hook_coordinator
-        from llmem.adapters.copilot import CopilotAdapter
-
-        state_dir = tmp_path / "copilot-state"
-        config = {
-            "memory": {"ollama_url": "http://localhost:11434"},
-            "session": {"adapter": "copilot"},
-            "copilot": {
-                "state_dir": str(state_dir),
-                "share_dir": str(tmp_path),
-            },
-        }
-        coordinator = create_session_hook_coordinator(config=config)
-        assert coordinator._adapter is not None
-        assert isinstance(coordinator._adapter, CopilotAdapter)
-
     def test_create_coordinator_with_none_adapter(self, tmp_path):
         from llmem.session_hooks import create_session_hook_coordinator
 

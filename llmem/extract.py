@@ -22,7 +22,7 @@ _CATEGORY_CHOICES = ", ".join(ERROR_TAXONOMY_KEYS)
 EXTRACTION_PROMPT = f"""You are a memory extraction system. Extract key memories from the text below.
 
 Return a JSON array of objects with these fields:
-- type: one of "fact", "decision", "preference", "event", "project_state", "conversation", "procedure", "self_assessment"
+- type: one of "fact", "decision", "preference", "event", "project_state", "procedure", "self_assessment"
 - content: a clear, specific statement (not vague)
 - confidence: 0.0 to 1.0 (how certain this is a lasting memory)
 - category: (self_assessment only) one of: {_CATEGORY_CHOICES}

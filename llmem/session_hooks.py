@@ -465,7 +465,7 @@ def create_session_hook_coordinator(
     Wires up MemoryStore, Retriever, ExtractionEngine, EmbeddingEngine,
     and optionally a SessionAdapter from config. If config is None, calls
     load_config(). The adapter type is determined by the ``session.adapter``
-    config key (``"opencode"`` or ``"copilot"``). If the configured adapter's
+    config key (``"opencode"`` or ``"none"``). If the configured adapter's
     data source does not exist, the adapter is set to None and the
     coordinator operates without session transcript access.
 
@@ -499,13 +499,6 @@ def create_session_hook_coordinator(
                 "llmem: session_hooks: opencode database not found at %s, running without session adapter",
                 opencode_db,
             )
-    elif adapter_type == "copilot":
-        from .adapters.copilot import CopilotAdapter
-
-        copilot_config = resolved_config.get("copilot", {})
-        state_dir = copilot_config.get("state_dir")
-        share_dir = copilot_config.get("share_dir")
-        adapter = CopilotAdapter(state_dir=state_dir, share_dir=share_dir)
     elif adapter_type == "none":
         pass
     else:
