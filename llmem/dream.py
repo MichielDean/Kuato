@@ -197,6 +197,10 @@ class Dreamer:
         if apply and result.deep:
             self._write_diary(result)
 
+        # Write proposed changes (behavioral insights + skill patches)
+        if apply and result.rem and result.rem.behavioral_insights:
+            self._write_proposed_changes(result)
+
         return result
 
     def _run_hooks(self, phase: str, result: DreamResult, apply: bool) -> None:
@@ -571,6 +575,110 @@ class Dreamer:
                     entry += f"  - {cat}: {count} occurrences (insight_id: {iid})\n"
 
         with open(diary_path, "a") as f:
+            if _HAS_FCNTL:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX)
+                    f.write(entry)
+                finally:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+            else:
+                f.write(entry)
+
+    def _write_proposed_changes(self, result: DreamResult) -> None:
+        """Write behavioral insights and skill patches to proposed-changes.md.
+
+        Appends Tier 2 (behavioral insights) and Tier 3 (skill patches)
+        sections. Each section is timestamped so repeated dream runs
+        accumulate entries rather than overwriting.
+        """
+        if not result.rem or not result.rem.behavioral_insights:
+            return
+
+        proposed_path = self._diary_path.parent / "proposed-changes.md"
+
+        try:
+            proposed_path = _validate_output_path(proposed_path, "proposed-changes")
+        except ValueError as e:
+            log.warning("llmem: dream: %s", e)
+            return
+
+        proposed_path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        sections: list[str] = []
+
+        # Tier 2: Behavioral Insights
+        sections.append("## Behavioral Insights\n")
+        for insight in result.rem.behavioral_insights:
+            cat = insight.get("category", "?")
+            count = insight.get("count", 0)
+            iid = insight.get("insight_id", "not written")
+            snippets = insight.get("content_snippets", [])
+            sections.append(f"### {cat} ({count} occurrences)\n")
+            sections.append(f"Insight ID: {iid}\n")
+            if snippets:
+                sections.append("Occurrences:")
+                for s in snippets[:3]:
+                    ctx = s.get("context", "")
+                    snippet_text = s.get("snippet", "")
+                    if ctx:
+                        sections.append(f"- {ctx}: {snippet_text}")
+                    else:
+                        sections.append(f"- {snippet_text}")
+                sections.append("")
+            sections.append("")
+
+        # Tier 3: Skill Patches
+        sections.append("## Skill Patches\n")
+        for insight in result.rem.behavioral_insights:
+            cat = insight.get("category", "?")
+            count = insight.get("count", 0)
+            from .taxonomy import ERROR_TAXONOMY
+
+            description = ERROR_TAXONOMY.get(cat, cat)
+            snippets = insight.get("content_snippets", [])
+            sections.append(f"### [SKILL PATCH] {cat}\n")
+            sections.append(f"**Detection Rule:** When encountering {cat.lower()} situations, apply extra scrutiny.\n")
+            sections.append(f"**Category:** {cat} — {description}\n")
+            sections.append(f"**Occurrence Count:** {count} in last {self._behavioral_lookback_days} days\n")
+            sections.append("**Checklist:**")
+            if cat == "NULL_SAFETY":
+                sections.append("- Check for None/undefined before property access")
+                sections.append("- Validate all optional fields before use")
+                sections.append("- Add explicit null guards in error paths")
+            elif cat == "ERROR_HANDLING":
+                sections.append("- Wrap risky operations in try/except")
+                sections.append("- Never swallow exceptions silently")
+                sections.append("- Always log or propagate errors")
+            elif cat == "MISSING_VERIFICATION":
+                sections.append("- Run tests after code changes")
+                sections.append("- Verify API responses match expectations")
+                sections.append("- Check actual output vs intended output")
+            elif cat == "DATA_INTEGRITY":
+                sections.append("- When a write path changes a field, update derived fields")
+                sections.append("- Check embeddings, indexes, caches stay in sync")
+                sections.append("- Verify background jobs cover all mutation paths")
+            elif cat == "RACE_CONDITION":
+                sections.append("- Use locks for shared mutable state")
+                sections.append("- Check async/await patterns for ordering issues")
+                sections.append("- Verify concurrent access is thread-safe")
+            elif cat == "AUTH_BYPASS":
+                sections.append("- Check auth on every endpoint")
+                sections.append("- Validate input sanitization")
+                sections.append("- Review SSRF and injection vectors")
+            else:
+                sections.append(f"- Review {description.lower()} patterns")
+            sections.append(f"**Pitfall:** Recurring {cat.lower()} errors suggest a blind spot in this area.\n")
+            sections.append(f"**Verification:** After applying fixes, run `llmem introspect --category {cat}` to confirm the pattern stops recurring.\n")
+            if snippets:
+                sections.append("Recent occurrences:")
+                for s in snippets[:3]:
+                    sections.append(f"  - {s.get('context', 'unknown')}: {s.get('snippet', '')}")
+                sections.append("")
+
+        entry = f"\n# Dream — {timestamp}\n\n" + "\n".join(sections)
+
+        with open(proposed_path, "a") as f:
             if _HAS_FCNTL:
                 try:
                     fcntl.flock(f, fcntl.LOCK_EX)
