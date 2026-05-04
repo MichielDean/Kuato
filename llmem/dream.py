@@ -455,13 +455,24 @@ class Dreamer:
             samples = category_samples.get(cat, [])
             sample_snippets = []
             for s in samples[:3]:
-                snippet = s.get("content", "")[:120].strip()
+                raw = s.get("content", "")
                 context = ""
-                for line in snippet.split("\n"):
-                    if line.strip().startswith("Context:"):
-                        context = line.strip().replace("Context:", "").strip()
-                        break
-                sample_snippets.append({"id": s["id"], "snippet": snippet, "context": context})
+                what_happened = ""
+                for line in raw.split("\n"):
+                    stripped = line.strip()
+                    if stripped.startswith("Context:"):
+                        context = stripped[len("Context:"):].strip()
+                    elif stripped.startswith("What_happened:"):
+                        what_happened = stripped[len("What_happened:"):].strip()
+                if not what_happened:
+                    what_happened = raw.split(".")[0].strip()
+                    if len(what_happened) > 120:
+                        what_happened = what_happened[:117] + "..."
+                sample_snippets.append({
+                    "id": s["id"],
+                    "snippet": what_happened,
+                    "context": context,
+                })
 
             insight = {
                 "category": cat,
