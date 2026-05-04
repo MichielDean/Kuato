@@ -596,11 +596,11 @@ class Dreamer:
                 f.write(entry)
 
     def _write_proposed_changes(self, result: DreamResult) -> None:
-        """Write behavioral insights and skill patches to proposed-changes.md.
+        """Write actionable proposed changes to proposed-changes.md.
 
-        Appends Tier 2 (behavioral insights) and Tier 3 (skill patches)
-        sections. Each section is timestamped so repeated dream runs
-        accumulate entries rather than overwriting.
+        Each entry is one category with: what's happening, what to do
+        about it, and where it happened. Structured for quick scanning
+        by both humans and LLMs — not a dump of raw self-assessment text.
         """
         if not result.rem or not result.rem.behavioral_insights:
             return
@@ -616,85 +616,110 @@ class Dreamer:
         proposed_path.parent.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).isoformat()
 
-        sections: list[str] = []
+        from .taxonomy import ERROR_TAXONOMY
 
-        # Tier 2: Behavioral Insights
-        sections.append("## Behavioral Insights\n")
+        ACTIONABLE_CHECKLISTS: dict[str, list[str]] = {
+            "NULL_SAFETY": [
+                "Add None/undefined guards before every property access",
+                "Validate optional fields before dereferencing",
+                "Add null-check assertions in error recovery paths",
+            ],
+            "ERROR_HANDLING": [
+                "Add try/except around every external call (DB, HTTP, subprocess)",
+                "Never catch and discard — always log or re-raise",
+                "Verify error paths actually execute by testing them",
+            ],
+            "MISSING_VERIFICATION": [
+                "Run the test suite after every code change",
+                "Verify actual HTTP responses, not just 'it compiled'",
+                "Test the unhappy path, not just the happy path",
+            ],
+            "DATA_INTEGRITY": [
+                "After mutating a field, check all derived/cached copies",
+                "Verify embeddings, indexes, and FTS stay in sync after writes",
+                "Confirm background jobs cover every mutation path",
+            ],
+            "RACE_CONDITION": [
+                "Add locks around shared mutable state",
+                "Check await ordering in async code",
+                "Test concurrent access patterns explicitly",
+            ],
+            "AUTH_BYPASS": [
+                "Verify auth checks on every new endpoint",
+                "Test input sanitization with adversarial payloads",
+                "Review SSRF and injection surfaces before merge",
+            ],
+            "EDGE_CASE": [
+                "Test with empty input, null values, unexpected types",
+                "Check boundary conditions (off-by-one, zero-length, max int)",
+                "Add property-based tests for numeric and string inputs",
+            ],
+            "OFF_BY_ONE": [
+                "Check loop bounds against the actual data length",
+                "Verify slice endpoints are inclusive/exclusive as intended",
+                "Add boundary assertions in tests",
+            ],
+            "PERFORMANCE": [
+                "Profile before optimizing — measure, don't guess",
+                "Check for N+1 queries and unnecessary recomputation",
+                "Add caching only after measuring the cost of the uncached path",
+            ],
+            "DESIGN": [
+                "Separate concerns before adding features to existing modules",
+                "Prefer composition over inheritance for new abstractions",
+                "If a function needs 5+ parameters, refactor to a builder or config object",
+            ],
+            "REVIEW_PASSED": [
+                "No action needed — this category tracks clean reviews",
+            ],
+        }
+
+        lines: list[str] = []
+        lines.append(f"# Dream — {timestamp}\n")
+
         for insight in result.rem.behavioral_insights:
             cat = insight.get("category", "?")
             count = insight.get("count", 0)
-            iid = insight.get("insight_id", "not written")
             snippets = insight.get("content_snippets", [])
-            sections.append(f"### {cat} ({count} occurrences)\n")
-            sections.append(f"Insight ID: {iid}\n")
-            if snippets:
-                sections.append("Occurrences:")
-                for s in snippets[:3]:
-                    ctx = s.get("context", "")
-                    snippet_text = s.get("snippet", "")
-                    if ctx:
-                        sections.append(f"- {ctx}: {snippet_text}")
-                    else:
-                        sections.append(f"- {snippet_text}")
-                sections.append("")
-            sections.append("")
-
-        # Tier 3: Skill Patches
-        sections.append("## Skill Patches\n")
-        for insight in result.rem.behavioral_insights:
-            cat = insight.get("category", "?")
-            count = insight.get("count", 0)
-            from .taxonomy import ERROR_TAXONOMY
-
             description = ERROR_TAXONOMY.get(cat, cat)
-            snippets = insight.get("content_snippets", [])
-            sections.append(f"### [SKILL PATCH] {cat}\n")
-            sections.append(f"**Detection Rule:** When encountering {cat.lower()} situations, apply extra scrutiny.\n")
-            sections.append(f"**Category:** {cat} — {description}\n")
-            sections.append(f"**Occurrence Count:** {count} in last {self._behavioral_lookback_days} days\n")
-            sections.append("**Checklist:**")
-            if cat == "NULL_SAFETY":
-                sections.append("- Check for None/undefined before property access")
-                sections.append("- Validate all optional fields before use")
-                sections.append("- Add explicit null guards in error paths")
-            elif cat == "ERROR_HANDLING":
-                sections.append("- Wrap risky operations in try/except")
-                sections.append("- Never swallow exceptions silently")
-                sections.append("- Always log or propagate errors")
-            elif cat == "MISSING_VERIFICATION":
-                sections.append("- Run tests after code changes")
-                sections.append("- Verify API responses match expectations")
-                sections.append("- Check actual output vs intended output")
-            elif cat == "DATA_INTEGRITY":
-                sections.append("- When a write path changes a field, update derived fields")
-                sections.append("- Check embeddings, indexes, caches stay in sync")
-                sections.append("- Verify background jobs cover all mutation paths")
-            elif cat == "RACE_CONDITION":
-                sections.append("- Use locks for shared mutable state")
-                sections.append("- Check async/await patterns for ordering issues")
-                sections.append("- Verify concurrent access is thread-safe")
-            elif cat == "AUTH_BYPASS":
-                sections.append("- Check auth on every endpoint")
-                sections.append("- Validate input sanitization")
-                sections.append("- Review SSRF and injection vectors")
-            else:
-                sections.append(f"- Review {description.lower()} patterns")
-            sections.append(f"**Pitfall:** Recurring {cat.lower()} errors suggest a blind spot in this area.\n")
-            sections.append(f"**Verification:** After applying fixes, run `llmem introspect --category {cat}` to confirm the pattern stops recurring.\n")
-            if snippets:
-                sections.append("Recent occurrences:")
-                for s in snippets[:3]:
-                    sections.append(f"  - {s.get('context', 'unknown')}: {s.get('snippet', '')}")
-                sections.append("")
 
-        entry = f"\n# Dream — {timestamp}\n\n" + "\n".join(sections)
+            if cat == "REVIEW_PASSED":
+                lines.append(f"## {cat} — {count} clean reviews (positive signal, no action)\n")
+                contexts = [s["context"] for s in snippets if s.get("context")]
+                if contexts:
+                    lines.append("Reviewed: " + ", ".join(contexts[:3]))
+                lines.append("")
+                continue
+
+            lines.append(f"## {cat} — {description}\n")
+            lines.append(f"**{count} occurrences in {self._behavioral_lookback_days} days.** Pattern:\n")
+
+            for s in snippets[:3]:
+                ctx = s.get("context", "")
+                what = s.get("snippet", "")
+                if ctx and what:
+                    lines.append(f"- {what} ({ctx})")
+                elif what:
+                    lines.append(f"- {what}")
+            lines.append("")
+
+            checklist = ACTIONABLE_CHECKLISTS.get(cat, [f"Review {description.lower()} patterns"])
+            lines.append("**Do:**\n")
+            for item in checklist:
+                lines.append(f"- {item}")
+            lines.append("")
+
+            lines.append(
+                f"**Verify:** After changes, run "
+                f"`llmem introspect --category {cat}` to confirm the rate drops.\n"
+            )
 
         with open(proposed_path, "a") as f:
             if _HAS_FCNTL:
                 try:
                     fcntl.flock(f, fcntl.LOCK_EX)
-                    f.write(entry)
+                    f.write("\n".join(lines))
                 finally:
                     fcntl.flock(f, fcntl.LOCK_UN)
             else:
-                f.write(entry)
+                f.write("\n".join(lines))
