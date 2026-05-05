@@ -10,6 +10,6 @@ Getting started is simple — one command installs everything:
 curl -sSL https://raw.githubusercontent.com/MichielDean/LLMem/main/setup.sh | bash
 ```
 
-Or clone and install manually: `pip install .` for the Python package, `npm install` from `opencode-llmem/` for OpenCode integration, or `copilot plugin install MichielDean/LLMem:copilot-llmem` for Copilot CLI integration. LLMem runs on Python 3.11+ with a single runtime dependency (PyYAML) and uses SQLite for zero-config local storage. Optional extras add vector search (`pip install ".[vec]"`) and local embedding without any server (`pip install ".[local]"`).
+Or clone and install manually: `pip install .` for the Python package, `npm install` from `opencode-llmem/` for OpenCode integration. LLMem runs on Python 3.11+ with a single runtime dependency (PyYAML) and uses SQLite for zero-config local storage. Optional extras add vector search (`pip install ".[vec]"`) and local embedding without any server (`pip install ".[local]"`).
 
 Check out the [GitHub repository](https://github.com/MichielDean/LLMem) for full documentation, the [CONTRIBUTING.md](https://github.com/MichielDean/LLMem/blob/main/CONTRIBUTING.md) guide for how to get involved, and the [ecosystem page](https://github.com/MichielDean/LLMem/blob/main/docs/ECOSYSTEM.md) for OpenCode integration details. We welcome contributions — whether it's bug fixes, new features, or documentation improvements.

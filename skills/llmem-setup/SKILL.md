@@ -170,26 +170,7 @@ The plugin handles session hooks automatically:
 - `session.idle` → `llmem hook idle <session_id>` (extracts new memories)
 - `session.compacting` → `llmem context --compacting <session_id>` (preserves key memories)
 
-#### Copilot CLI Agents
-
-Copilot CLI agents need the `copilot-llmem` plugin (installed in Step 1). It registers hooks in `hooks.json`:
-- `sessionStart` → `llmem context <session_id>`
-- `agentStop` → `llmem hook idle <session_id>`
-- `sessionCompacting` → `llmem context --compacting <session_id>`
-
-Skills are installed to `~/.agents/skills/`. The agent discovers them via Copilot's skill discovery.
-
-**Config:** Set `session.adapter: copilot` in `~/.config/llmem/config.yaml` so LLMem uses the Copilot session adapter instead of OpenCode:
-
-```yaml
-session:
-  adapter: copilot
-copilot:
-  state_dir: ~/.copilot/session-state
-  share_dir: .
-```
-
-Copilot does not persist session transcripts to a database. For `agentStop`/`on_idle` extraction to work, configure Copilot with `--share` to write transcripts to the `share_dir`. Without transcripts, memory extraction gracefully skips (returns `no_transcript`).
+Skills are installed to `~/.agents/skills/`. OpenCode discovers them automatically.
 
 ### Step 5: Verify
 
@@ -249,4 +230,4 @@ Dream runs nightly at 3am by default. Configure in `~/.config/llmem/config.yaml`
 
 **`sqlite-vec not available`** — Semantic search falls back to brute-force cosine similarity automatically. For ANN vector search, install with `pip install ".[vec]"`.
 
-**Skills not discovered** — Verify the skill directories exist: `ls ~/.agents/skills/`. If missing, re-run the plugin install step. For OpenCode: `cd LLMem/opencode-llmem && npm install`. For Copilot: `copilot plugin install MichielDean/LLMem:copilot-llmem`.
+**Skills not discovered** — Verify the skill directories exist: `ls ~/.agents/skills/`. If missing, re-run the plugin install step: `cd LLMem/opencode-llmem && npm install`.

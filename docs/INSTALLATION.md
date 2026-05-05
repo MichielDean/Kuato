@@ -64,29 +64,12 @@ npm install
 
 The `postinstall` script copies skill directories to `~/.agents/skills/` where OpenCode discovers them automatically. You still need the CLI installed (Option 1) for the hooks to call.
 
-### Option 3: Copilot CLI plugin (skills + session hooks)
-
-```bash
-copilot plugin install MichielDean/LLMem:copilot-llmem
-```
-
-Or, if you've cloned the repo:
-
-```bash
-cd LLMem/copilot-llmem
-npm install
-```
-
-The plugin copies skills and the `memory-assistant` agent to `~/.agents/`. You still need the CLI installed (Option 1) for the hooks to call.
-
 ### What to install
 
 | Goal | What to install |
 |------|----------------|
 | Use the `llmem` CLI or Python library | Option 1 |
 | Use LLMem with OpenCode | Option 1 + Option 2 |
-| Use LLMem with Copilot CLI | Option 1 + Option 3 |
-| Use LLMem with both OpenCode and Copilot | Option 1 + Option 2 + Option 3 |
 | Just the skill files (no CLI, no hooks) | Copy `skills/` to `~/.agents/skills/` manually |
 
 ### Requirements

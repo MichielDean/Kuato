@@ -203,32 +203,6 @@ if [[ $INSTALL_OPENCODE -eq 1 ]]; then
     fi
 fi
 
-if [[ $INSTALL_COPILOT -eq 1 ]]; then
-    step "Installing Copilot CLI plugin (copilot-llmem)"
-    if command -v copilot &>/dev/null; then
-        echo "Installing via copilot plugin install..."
-        if copilot plugin install MichielDean/LLMem:copilot-llmem 2>&1; then
-            echo "Copilot CLI plugin installed via copilot plugin install."
-        else
-            warn "copilot plugin install failed — falling back to npm install"
-            if [[ -d "copilot-llmem" ]]; then
-                (cd copilot-llmem && npm install 2>&1 | tail -3)
-                echo "Copilot CLI plugin installed via npm."
-            else
-                warn "copilot-llmem directory not found — skipping."
-            fi
-        fi
-    else
-        echo "copilot CLI not found — installing via npm."
-        if [[ -d "copilot-llmem" ]]; then
-            (cd copilot-llmem && npm install 2>&1 | tail -3)
-            echo "Copilot CLI plugin installed via npm."
-        else
-            warn "copilot-llmem directory not found — skipping."
-        fi
-    fi
-fi
-
 # Root npm install copies all skills to ~/.agents/skills/
 if [[ $NEED_NPM -eq 1 ]]; then
     step "Installing skill files"
