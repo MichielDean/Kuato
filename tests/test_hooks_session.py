@@ -590,3 +590,78 @@ class TestSessionHookPathTraversal:
         """on_compacting rejects session IDs containing '..'."""
         with pytest.raises(ValueError, match="path traversal"):
             coordinator.on_compacting("ses..hidden")
+
+
+class TestOnEndingIntrospection:
+    """Tests for on_ending calling introspect_transcript correctly.
+
+    Regression test: on_ending previously called introspect_session (file-based)
+    instead of introspect_transcript (text-based), causing introspection to
+    silently fail due to a TypeError (wrong parameter names/types).
+    """
+
+    def test_on_ending_calls_introspect_transcript(
+        self, mock_store, mock_retriever, mock_extractor, mock_embedder, mock_adapter
+    ):
+        """on_ending should call introspect_transcript with the session transcript text."""
+        mock_session_hook = MagicMock()
+        mock_session_hook.process_transcript.return_value = ("success", 2)
+        coordinator = SessionHookCoordinator(
+            store=mock_store,
+            retriever=mock_retriever,
+            extractor=mock_extractor,
+            embedder=mock_embedder,
+            adapter=mock_adapter,
+        )
+        coordinator._session_hook = mock_session_hook
+
+        with patch(
+            "llmem.session_hooks.introspect_transcript"
+        ) as mock_introspect, patch(
+            "llmem.session_hooks.create_introspection_analyzer"
+        ) as mock_create_analyzer:
+            mock_analyzer = MagicMock()
+            mock_analyzer.check_available.return_value = True
+            mock_create_analyzer.return_value = mock_analyzer
+            mock_introspect.return_value = ("introspect_success", "mem-abc-123")
+
+            result_type, total = coordinator.on_ending("ses_123")
+
+        mock_introspect.assert_called_once()
+        call_args = mock_introspect.call_args
+        assert call_args[1]["source_id"] == "ending:ses_123"
+        assert call_args[1]["text"] == "User: How do I do X?\nAssistant: You can do X by..."
+        assert call_args[1]["store"] is mock_store
+        assert call_args[1]["analyzer"] is mock_analyzer
+        assert result_type == "success"
+        assert total == 3  # 2 from extraction + 1 from introspection
+
+    def test_on_ending_skips_introspection_when_model_unavailable(
+        self, mock_store, mock_retriever, mock_extractor, mock_embedder, mock_adapter
+    ):
+        """on_ending should skip introspection if the model is unavailable."""
+        mock_session_hook = MagicMock()
+        mock_session_hook.process_transcript.return_value = ("success", 2)
+        coordinator = SessionHookCoordinator(
+            store=mock_store,
+            retriever=mock_retriever,
+            extractor=mock_extractor,
+            embedder=mock_embedder,
+            adapter=mock_adapter,
+        )
+        coordinator._session_hook = mock_session_hook
+
+        with patch(
+            "llmem.session_hooks.introspect_transcript"
+        ) as mock_introspect, patch(
+            "llmem.session_hooks.create_introspection_analyzer"
+        ) as mock_create_analyzer:
+            mock_analyzer = MagicMock()
+            mock_analyzer.check_available.return_value = False
+            mock_create_analyzer.return_value = mock_analyzer
+
+            result_type, total = coordinator.on_ending("ses_123")
+
+        mock_introspect.assert_not_called()
+        assert result_type == "success"
+        assert total == 2  # Only extraction, no introspection

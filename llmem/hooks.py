@@ -1,9 +1,7 @@
-"""Auto-extraction hooks for session transcripts."""
+"""Auto-extraction and introspection hooks for session transcripts."""
 
-import hashlib
 import json
 import logging
-from pathlib import Path
 
 from .store import MemoryStore
 from .extract import ExtractionEngine, DEFAULT_MODEL, OLLAMA_BASE
@@ -14,7 +12,7 @@ from .taxonomy import (
 
 log = logging.getLogger(__name__)
 
-# Result constants for process_file
+# Result constants for process_transcript
 PROCESS_RESULT_SUCCESS = "success"
 PROCESS_RESULT_ALREADY_PROCESSED = "already_processed"
 PROCESS_RESULT_MODEL_UNAVAILABLE = "model_unavailable"
@@ -37,31 +35,13 @@ INTROSPECT_RESULT_FILE_TOO_LARGE = "introspect_file_too_large"
 INTROSPECTION_SOURCE_TYPE = "introspection"
 
 
-def discover_transcript_files(directory: Path, pattern: str = "*.md") -> list[Path]:
-    """Find transcript files in a directory.
-
-    Symlinks are excluded to prevent reading arbitrary files via symlink attacks.
-    """
-    return sorted(
-        p for p in directory.glob(pattern) if p.is_file() and not p.is_symlink()
-    )
-
-
-def generate_source_id(file_path: Path) -> str:
-    """Generate a deterministic source_id from a file path."""
-    abs_path = str(file_path.resolve())
-    return hashlib.sha256(abs_path.encode()).hexdigest()[:16]
-
-
-def is_session_processed(
-    store: MemoryStore, source_id: str, source_type: str = "session"
-) -> bool:
-    """Check if a session has already been processed."""
-    return store.is_extracted(source_type, source_id)
-
-
 class SessionHook:
-    """Process session transcript files and extract memories."""
+    """Process session transcript text and extract memories.
+
+    Uses process_transcript() to process transcript strings directly,
+    typically sourced from a SessionAdapter (e.g., OpenCodeAdapter) that
+    reads sessions from a database.
+    """
 
     def __init__(
         self,
@@ -76,34 +56,6 @@ class SessionHook:
         self._embedder = embedder
         self._force = force
         self._max_file_size = max_file_size
-
-    def process_file(self, file_path: Path) -> tuple[str, int]:
-        """Process a single transcript file and extract memories.
-
-        Returns:
-            Tuple of (result_type, count) where count is the number
-            of memories extracted on success.
-        """
-        if not file_path.exists():
-            return PROCESS_RESULT_FILE_NOT_FOUND, 0
-
-        if file_path.stat().st_size == 0:
-            return PROCESS_RESULT_EMPTY_FILE, 0
-
-        if file_path.stat().st_size > self._max_file_size:
-            return PROCESS_RESULT_FILE_TOO_LARGE, 0
-
-        source_id = generate_source_id(file_path)
-        if not self._force and self._store.is_extracted("session", source_id):
-            return PROCESS_RESULT_ALREADY_PROCESSED, 0
-
-        try:
-            text = file_path.read_text()
-        except Exception as e:
-            log.error("llmem: hooks: failed to read %s: %s", file_path, e)
-            return PROCESS_RESULT_ERROR, 0
-
-        return self._process_text(source_id, text)
 
     def process_transcript(
         self, source_id: str, text: str, source_type: str = "session"
@@ -121,7 +73,6 @@ class SessionHook:
         if not self._force and self._store.is_extracted(source_type, source_id):
             return PROCESS_RESULT_ALREADY_PROCESSED, 0
 
-        # Enforce the same size limit as process_file to prevent OOM
         if len(text.encode("utf-8")) > self._max_file_size:
             return PROCESS_RESULT_FILE_TOO_LARGE, 0
 
@@ -148,8 +99,12 @@ class SessionHook:
                 try:
                     vec = self._embedder.embed(m["content"])
                     embedding = self._embedder.vec_to_bytes(vec)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug(
+                        "llmem: hooks: embedding failed for memory in %s: %s",
+                        source_id,
+                        e,
+                    )
             self._store.add(
                 type=m["type"],
                 content=m["content"],
@@ -163,22 +118,6 @@ class SessionHook:
             source_type, source_id, raw_text=text[:500], extracted_count=count
         )
         return PROCESS_RESULT_SUCCESS, count
-
-    def process_directory(
-        self, directory: Path, pattern: str = "*.md"
-    ) -> dict[str, int]:
-        """Process all transcript files in a directory.
-
-        Returns:
-            Dict mapping result_type to count.
-        """
-        results: dict[str, int] = {}
-        for file_path in discover_transcript_files(directory, pattern):
-            result_type, cnt = self.process_file(file_path)
-            results[result_type] = results.get(result_type, 0) + (
-                cnt if result_type == PROCESS_RESULT_SUCCESS else 1
-            )
-        return results
 
 
 _INTROSPECT_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -209,41 +148,6 @@ class IntrospectionAnalyzer:
                 return any(m.startswith(self._model) for m in models)
         except Exception:
             return False
-
-
-def introspect_session(
-    file_path: Path,
-    store: MemoryStore,
-    analyzer: IntrospectionAnalyzer,
-    embedder: EmbeddingEngine | None = None,
-    force: bool = False,
-    max_file_size: int = _INTROSPECT_MAX_FILE_SIZE,
-) -> tuple[str, str | None]:
-    """Analyze a session transcript and store a self_assessment memory."""
-    if not file_path.exists():
-        return INTROSPECT_RESULT_FILE_NOT_FOUND, None
-
-    try:
-        file_size = file_path.stat().st_size
-    except OSError:
-        return INTROSPECT_RESULT_FILE_NOT_FOUND, None
-
-    if file_size > max_file_size:
-        return INTROSPECT_RESULT_FILE_TOO_LARGE, None
-
-    source_id = generate_source_id(file_path)
-    if not force and store.is_extracted(INTROSPECTION_SOURCE_TYPE, source_id):
-        return INTROSPECT_RESULT_ALREADY_PROCESSED, None
-
-    try:
-        text = file_path.read_text()
-    except Exception:
-        return INTROSPECT_RESULT_FILE_NOT_FOUND, None
-
-    if not text.strip():
-        return INTROSPECT_RESULT_EMPTY_FILE, None
-
-    return _do_introspect(source_id, text, store, analyzer, embedder, force)
 
 
 def introspect_transcript(
@@ -320,8 +224,8 @@ Produce a structured self-assessment or state "NO_ASSESSMENT" if nothing notable
         try:
             vec = embedder.embed(assessment)
             embedding = embedder.vec_to_bytes(vec)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("llmem: introspection: embedding failed for %s: %s", source_id, e)
 
     mid = store.add(
         type="self_assessment",
@@ -364,6 +268,3 @@ def create_session_hook(
         force=force,
         max_file_size=max_file_size,
     )
-
-
-

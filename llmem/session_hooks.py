@@ -16,7 +16,7 @@ from .extract import ExtractionEngine
 from .embed import EmbeddingEngine
 from .adapters.base import SessionAdapter
 from .adapters.opencode import OpenCodeAdapter, OPENCODE_SESSION_SOURCE_TYPE
-from .hooks import SessionHook
+from .hooks import SessionHook, introspect_transcript, create_introspection_analyzer
 from .config import load_config
 from .paths import get_context_dir, validate_session_id, _validate_write_path
 from .registry import get_registered_session_hooks
@@ -405,15 +405,21 @@ class SessionHookCoordinator:
 
         introspection_count = 0
         try:
-            from .hooks import introspect_session
-
-            introspect_result = introspect_session(
-                source_id=session_id,
-                text=transcript,
-                store=self._store,
-            )
-            if introspect_result[0].startswith("introspect_success"):
-                introspection_count = 1
+            analyzer = create_introspection_analyzer()
+            if analyzer.check_available():
+                introspect_result = introspect_transcript(
+                    source_id=f"ending:{session_id}",
+                    text=transcript,
+                    store=self._store,
+                    analyzer=analyzer,
+                )
+                if introspect_result[0].startswith("introspect_success"):
+                    introspection_count = 1
+            else:
+                log.debug(
+                    "llmem: session_hooks: on_ending: introspection model unavailable, skipping for session %s",
+                    session_id,
+                )
         except Exception as e:
             log.warning(
                 "llmem: session_hooks: on_ending: introspection failed for session %s: %s",
@@ -673,11 +679,12 @@ def process_opencode_sessions(
                         try:
                             vec = embedder.embed(m["content"])
                             embedding = embedder.vec_to_bytes(vec)
-                        except Exception:
+                        except Exception as exc:
                             log.debug(
-                                "llmem: session_hooks: embedding failed for %s chunk %d, storing without embedding",
+                                "llmem: session_hooks: embedding failed for %s chunk %d, storing without embedding: %s",
                                 session_id,
                                 chunk_index,
+                                exc,
                             )
                     store.add(
                         type=m["type"],
