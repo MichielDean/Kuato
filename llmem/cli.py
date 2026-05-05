@@ -819,6 +819,110 @@ def cmd_hook(args):
         sys.exit(1)
 
 
+def cmd_introspect(args):
+    """Analyze a failure with LLM assistance and store a self_assessment memory.
+
+    When something goes wrong mid-session, use introspect to analyze what
+    happened and why. If the introspection model (Ollama) is available, it
+    expands the bare description into a structured self-assessment. If not,
+    the fields are stored directly — the lesson is always captured.
+
+    Args:
+        args: An argparse Namespace with attributes:
+            - what_happened (str): Behavioral description (required).
+            - category (str|None): Error taxonomy category.
+            - context (str|None): File, task, or situation identifier.
+            - caught_by (str|None): How the issue was discovered.
+            - proposed_fix (str|None): What should change to prevent recurrence.
+            - db (Path): Database path.
+    """
+    from .introspect import introspect_failure
+
+    store = MemoryStore(args.db)
+
+    if not args.what_happened:
+        print("Error: --what-happened is required", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    try:
+        ollama_url = getattr(args, "ollama_url", None) or get_ollama_url()
+    except ValueError:
+        ollama_url = "http://localhost:11434"
+
+    mid = introspect_failure(
+        store=store,
+        what_happened=args.what_happened,
+        category=args.category,
+        context=args.context,
+        caught_by=args.caught_by,
+        proposed_fix=args.proposed_fix,
+        base_url=ollama_url,
+    )
+
+    if mid:
+        print(f"Introspected: {mid}" + (f" [{args.category}]" if args.category else ""))
+    else:
+        print("Error: introspection failed", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    store.close()
+
+
+def cmd_learn(args):
+    """Distill a wrong→right correction into a procedure memory.
+
+    When you've been corrected or discovered the right approach after
+    getting it wrong, use learn to persist the lesson. If Ollama is
+    available, it distills the correction into a generalizable procedure.
+    If not, the wrong/right pair is stored directly — the lesson is
+    always captured.
+
+    Args:
+        args: An argparse Namespace with attributes:
+            - wrong (str): What was done incorrectly (required).
+            - right (str): The correct behavior (required).
+            - context (str|None): File, task, or situation identifier.
+            - db (Path): Database path.
+    """
+    from .introspect import learn_lesson
+
+    store = MemoryStore(args.db)
+
+    if not args.wrong:
+        print("Error: --wrong is required", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    if not args.right:
+        print("Error: --right is required", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    try:
+        ollama_url = getattr(args, "ollama_url", None) or get_ollama_url()
+    except ValueError:
+        ollama_url = "http://localhost:11434"
+
+    mid = learn_lesson(
+        store=store,
+        what_was_wrong=args.wrong,
+        what_is_correct=args.right,
+        context=args.context,
+        base_url=ollama_url,
+    )
+
+    if mid:
+        print(f"Learned: {mid}")
+    else:
+        print("Error: lesson generation failed", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    store.close()
+
+
 def cmd_track_review(args):
     """Persist review findings as self_assessment memories.
 
@@ -1133,6 +1237,53 @@ def main():
         help="Path to write an HTML dream report",
     )
 
+    # introspect
+    p_introspect = subparsers.add_parser(
+        "introspect",
+        help="Analyze a failure with LLM assistance and store a self_assessment",
+    )
+    p_introspect.add_argument(
+        "--what-happened",
+        required=True,
+        help="What went wrong (required)",
+    )
+    p_introspect.add_argument(
+        "--category",
+        help="Error taxonomy category (e.g. ERROR_HANDLING, MISSING_VERIFICATION)",
+    )
+    p_introspect.add_argument(
+        "--context",
+        help="File, task, or situation identifier (e.g. 'session_hooks.py:on_ending')",
+    )
+    p_introspect.add_argument(
+        "--caught-by",
+        help="How the issue was discovered (e.g. self-review, correction, test)",
+    )
+    p_introspect.add_argument(
+        "--proposed-fix",
+        help="What should change to prevent recurrence",
+    )
+
+    # learn
+    p_learn = subparsers.add_parser(
+        "learn",
+        help="Distill a wrong→right correction into a procedure memory",
+    )
+    p_learn.add_argument(
+        "--wrong",
+        required=True,
+        help="What was done incorrectly (required)",
+    )
+    p_learn.add_argument(
+        "--right",
+        required=True,
+        help="The correct behavior (required)",
+    )
+    p_learn.add_argument(
+        "--context",
+        help="File, task, or situation identifier",
+    )
+
     # track-review
     p_track_review = subparsers.add_parser(
         "track-review",
@@ -1230,6 +1381,8 @@ def main():
          "dream": cmd_dream,
          "context": cmd_context,
          "hook": cmd_hook,
+         "introspect": cmd_introspect,
+         "learn": cmd_learn,
          "track-review": cmd_track_review,
      }
 
