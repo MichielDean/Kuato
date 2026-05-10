@@ -197,33 +197,22 @@ func TestSafeURLOpen_InvalidURL(t *testing.T) {
 	}
 }
 
-func TestSafeURLOpen_Timeout(t *testing.T) {
-	// Start a server that never responds
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(10 * time.Second)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
+func TestSafeURLOpen_ContextCancellation(t *testing.T) {
+	// Verify that context cancellation is propagated through SafeURLOpen.
+	// We use a server that binds to loopback:11434 (Ollama default port)
+	// so IsSafeURL allows the request, then cancel context to observe timeout.
+	//
+	// Since httptest.NewServer uses a random port (not 11434), we cannot
+	// directly test SafeURLOpen with a slow server through SSRF protection.
+	// Instead, test that context cancellation returns an error promptly,
+	// which validates that SafeURLOpen respects ctx.Done().
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
 
-	ctx := context.Background()
-	// Use allowRemote=true since it's a test server with a random port (not 11434)
-	// However, httptest servers use 127.0.0.1 which is loopback.
-	// We need to allow the test server's IP. Let's use allowRemote=true
-	// but the port won't be 11434, so loopback will be rejected.
-	// Instead, let's check that the timeout works using context cancellation.
-
-	ctx2, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer cancel()
-
-	// Use a URL that will be accepted by IsSafeURL but is slow to respond
-	// We'll set up a test server that we can access
-	// Since test servers use 127.0.0.1, and we need allowRemote and port 11434 won't work,
-	// let's test the timeout mechanism differently.
-
-	// Simple test: verify context cancellation is propagated
-	_ = ctx2
-	// This test is about verifying the timeout mechanism exists.
-	// The actual timeout test would require a real server that's accessible.
+	_, err := SafeURLOpen(ctx, "https://example.com/test", 5*time.Second, true)
+	if err == nil {
+		t.Error("expected error from cancelled context")
+	}
 }
 
 func TestCheckIPAccess(t *testing.T) {
@@ -254,12 +243,44 @@ func TestCheckIPAccess(t *testing.T) {
 }
 
 func TestIsSafeURL_AllowRemotePublicIP(t *testing.T) {
-	// A hostname that could be public — allow with allowRemote
-	// Since we can't resolve in tests reliably, test IP-based logic directly
-	if IsSafeURL("http://8.8.8.8/path", true) {
-		// 8.8.8.8 is a valid public IP, should be allowed with allowRemote=true
-		// But DNS resolution might fail in test environments
-		// The key behavior: public IPs are allowed when allowRemote=true
+	tests := []struct {
+		name        string
+		url         string
+		allowRemote bool
+		want        bool
+	}{
+		{
+			name:        "public_ip_allow_remote",
+			url:         "http://8.8.8.8/path",
+			allowRemote: true,
+			want:        true,
+		},
+		{
+			name:        "public_ip_deny_no_remote",
+			url:         "http://8.8.8.8/path",
+			allowRemote: false,
+			want:        false,
+		},
+		{
+			name:        "private_ip_deny_even_with_remote",
+			url:         "http://192.168.1.1/path",
+			allowRemote: true,
+			want:        false,
+		},
+		{
+			name:        "loopback_deny_even_with_remote_non_ollama_port",
+			url:         "http://127.0.0.1:8080/path",
+			allowRemote: true,
+			want:        false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := IsSafeURL(tc.url, tc.allowRemote)
+			if got != tc.want {
+				t.Errorf("IsSafeURL(%q, %v) = %v, want %v", tc.url, tc.allowRemote, got, tc.want)
+			}
+		})
 	}
 }
 
