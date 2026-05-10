@@ -891,6 +891,7 @@ type ListParams struct {
 | BruteForceMaxRows | 10000 | Cap on brute-force embedding scan |
 | MaxTraversalDepth | 5 | Hard cap on relation traversal depth |
 | MaxIDLength | 256 | Import rejects IDs exceeding this |
+| MaxEmbeddingBytes | 1048576 (1 MB) | `Add`, `Update`, and `ImportMemories` reject embeddings exceeding this |
 
 ### Error Handling
 
@@ -930,3 +931,217 @@ The Go implementation uses the identical 7-migration schema as Python:
 | 007 | Schema cleanup: drop dead columns, add indexes, add `derived_from` relation type |
 
 Migrations are embedded via `embed.FS` and applied by `pressly/goose`. The database uses WAL mode and foreign keys by default.
+
+### Embedding Engine (internal/embed)
+
+The `internal/embed` package provides an Ollama `/api/embeddings` client with LRU cache.
+
+```go
+import "github.com/MichielDean/LLMem/internal/embed"
+
+engine, err := embed.NewEmbeddingEngine(embed.EmbeddingConfig{
+    Model:        "nomic-embed-text",  // default
+    BaseURL:      "http://localhost:11434",  // default
+    MaxCacheSize: 2048,  // default LRU cache entries
+    Dimensions:   768,   // default vector dimensions
+    Timeout:      30 * time.Second,  // default HTTP timeout
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer engine.Close()
+```
+
+#### EmbeddingConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| Model | string | `"nomic-embed-text"` | Ollama model name |
+| BaseURL | string | `"http://localhost:11434"` | Ollama API base URL (validated for SSRF) |
+| MaxCacheSize | int | 2048 | LRU cache max entries |
+| Dimensions | int | 768 | Expected vector dimensions |
+| Timeout | time.Duration | 30s | HTTP client timeout (0 → 30s) |
+| HTTPClient | *http.Client | nil → new client | Optional pre-configured client (for testing) |
+
+#### Methods
+
+```go
+// Get embedding vector for text. Returns cached result on cache hit.
+// On cache miss, makes HTTP POST to {baseURL}/api/embeddings.
+// Returns a defensive copy — callers may modify the slice freely.
+vec, err := engine.Embed(ctx, "query text")
+
+// Check if the configured Ollama model is available.
+// Makes GET to {baseURL}/api/tags and matches exact model name
+// or model name with tag suffix (e.g. "nomic-embed-text:latest").
+// Returns false on any error (logs at Debug level).
+available := engine.CheckAvailable(ctx)
+
+// Close idle HTTP connections. Safe to call multiple times.
+engine.Close()
+```
+
+**Caching behavior:** `Embed` caches results keyed by input text. Cache hits return a defensive copy of the slice. The LRU cache evicts the least-recently-used entry when full. Cache access is protected by `sync.RWMutex` — safe for concurrent use.
+
+**Dimension mismatch:** If Ollama returns an embedding with a dimension count that doesn't match the configured `Dimensions`, `Embed` returns an error.
+
+**Context cancellation:** `Embed` and `CheckAvailable` respect `context.Context` cancellation.
+
+**URL validation:** When `HTTPClient` is nil (production mode), `BaseURL` is validated via `urlvalidate.ValidateBaseURL` for SSRF protection. When an `HTTPClient` is provided (test mode), URL validation is skipped.
+
+### Retriever (internal/retriever)
+
+The `internal/retriever` package provides hybrid search combining FTS5 and vector cosine similarity via Reciprocal Rank Fusion (RRF) with multi-signal reranking.
+
+```go
+import (
+    "github.com/MichielDean/LLMem/internal/embed"
+    "github.com/MichielDean/LLMem/internal/retriever"
+    "github.com/MichielDean/LLMem/internal/store"
+)
+
+ms, _ := store.NewMemoryStore(store.StoreConfig{})
+eng, _ := embed.NewEmbeddingEngine(embed.EmbeddingConfig{})
+
+r, err := retriever.NewRetriever(retriever.RetrieverConfig{
+    Store:    ms,
+    Embedder: eng,         // nil → FTS-only mode
+    Alpha:    ptrFloat64(0.7),  // nil → default 0.7; *float64(0.0) → pure FTS
+    Blend:    ptrFloat64(0.3),  // nil → default 0.3; *float64(0.0) → pure RRF
+})
+```
+
+#### RetrieverConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| Store | *store.MemoryStore | (required) | Memory store instance |
+| Embedder | *embed.EmbeddingEngine | nil (FTS-only) | Embedding engine for semantic search |
+| Alpha | *float64 | nil → 0.7 | RRF semantic weight (0.0=pure FTS, 1.0=pure semantic). Use pointer to distinguish nil (default) from explicit 0.0. |
+| Blend | *float64 | nil → 0.3 | Reranking blend factor (0.0=pure RRF, 1.0=pure signals). Use pointer to distinguish nil (default) from explicit 0.0. |
+| RRF_K | int | 60 | RRF constant |
+| TypePriority | map[string]float64 | DefaultTypePriority() | Memory type priority weights |
+
+**Pointer semantics for Alpha and Blend:** These use `*float64` instead of `float64` to distinguish "use the default" (nil) from "explicitly set to 0.0". A nil value applies the default (0.7 for Alpha, 0.3 for Blend). A pointer to 0.0 sets the value to pure FTS (Alpha) or pure RRF (Blend). Out-of-range values (outside [0.0, 1.0]) return an error from `NewRetriever`.
+
+#### Methods
+
+```go
+// Basic FTS5 search with optional relation traversal and access tracking.
+// When no results are found, returns nil.
+results, err := r.Search(ctx, "query", 20, "fact", true, 3, true)
+
+// Hybrid search combining FTS5 and semantic results via RRF fusion.
+// searchMode: "hybrid", "fts", or "semantic".
+// alpha: per-query override (nil → use retriever default).
+// When searchMode="hybrid" and embedder is nil, falls back to FTS-only with slog.Warn.
+// When searchMode="semantic" and embedder is nil, returns error.
+// Empty query returns empty slice (not nil).
+scored, err := r.HybridSearch(ctx, "query", 20, "fact", nil, "hybrid", true)
+
+// Format search results as an LLM context string (truncated to budget chars at UTF-8 boundary).
+// Default budget: 4000. Returns empty string when no results.
+context, err := r.FormatContext(ctx, "query", 4000, "fact")
+```
+
+#### RRF and Reranking
+
+```go
+// Compute RRF scores from semantic and FTS rank maps.
+// alpha controls semantic/FTS weight (0.0=pure FTS, 1.0=pure semantic).
+// k defaults to 60 if 0. Empty inputs return nil.
+results := retriever.RRFScore(semanticRanks, ftsRanks, 0.7, 60)
+
+// Compute per-memory reranking signals.
+signals := retriever.ComputeRerankSignals(memory, typePriority, time.Now().UTC())
+
+// Combine signals using default weights: 0.4*Confidence + 0.3*Recency + 0.2*Access + 0.1*Type.
+weighted := retriever.ComputeWeightedSignal(signals)
+
+// Get default type priority map (returns defensive copy).
+priorities := retriever.DefaultTypePriority()
+// map[decision:1.2 preference:1.1 procedure:1.1 fact:1.0 project_state:1.0 self_assessment:1.0 event:0.9]
+```
+
+#### Reranking Signals
+
+| Signal | Weight | Formula |
+|--------|--------|---------|
+| Confidence | 0.4 | Direct use of `confidence` field (0.0–1.0) |
+| Recency | 0.3 | `exp(-0.01 * days_since_access)` (0.0 if never accessed) |
+| Access frequency | 0.2 | `log(1 + access_count / max(age_days, 1))` (0.0 if never accessed) |
+| Type priority | 0.1 | Lookup in type priority map (default 1.0 for unknown types) |
+
+The final score is: `rrf_score * (1 - blend) + weighted_signal * blend`
+
+#### Type Priority Weights
+
+| Type | Priority | | Type | Priority |
+|------|----------|-|------|----------|
+| decision | 1.2 | | fact | 1.0 |
+| preference | 1.1 | | project_state | 1.0 |
+| procedure | 1.1 | | self_assessment | 1.0 |
+| | | | event | 0.9 |
+
+### Embedding Metrics (internal/metrics)
+
+The `internal/metrics` package provides embedding quality metrics for detecting poor embedding vectors.
+
+```go
+import "github.com/MichielDean/LLMem/internal/metrics"
+
+// Compute all metrics at once
+m, err := metrics.ComputeMetrics(embeddings, labels, 0)  // 0 → use MetricsMaxEmbeddings (10000)
+// m.Anisotropy        → float64 in [0.0, 1.0]; lower is better
+// m.SimilarityRange   → float64; higher is better
+// m.DiscriminationGap → float64; higher is better (0.0 if labels nil/empty/single-class)
+
+// Individual metric functions
+aniso := metrics.Anisotropy(embeddings)             // Average pairwise cosine similarity, clamped [0, 1]
+simRange := metrics.SimilarityRange(embeddings)      // Max - min pairwise cosine similarity
+discGap, err := metrics.DiscriminationGap(embeddings, labels)  // Inter-class vs intra-class separation
+```
+
+#### Warning Thresholds
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| AnisotropyWarningThreshold | 0.5 | Anisotropy above this may indicate poor embeddings |
+| SimilarityRangeWarningThreshold | 0.1 | Similarity range below this may indicate poor embeddings |
+| MetricsMaxEmbeddings | 10000 | Cap on embedding count for O(n²) computations |
+
+**Performance safeguard:** `ComputeMetrics` caps the number of vectors to `MetricsMaxEmbeddings` (default 10000) to prevent O(n²) CPU hangs on large stores. When `maxEmbeddings <= 0`, the default is used. Labels are truncated to match the embedding count.
+
+**Edge cases:** `Anisotropy` and `SimilarityRange` return 0.0 for empty or single-vector input. `DiscriminationGap` returns (0.0, nil) for nil/empty labels or single-class labels, and an error if `len(labels) != len(embeddings)`.
+
+### URL Validation (internal/urlvalidate)
+
+The `internal/urlvalidate` package provides SSRF-protected URL validation and safe HTTP access, blocking private/link-local IPs, percent-encoded SSRF bypasses, and redirect-based attacks.
+
+```go
+import "github.com/MichielDean/LLMem/internal/urlvalidate"
+
+// Check if a URL is safe to access
+safe := urlvalidate.IsSafeURL("http://localhost:11434/api/generate", false)  // true (loopback on Ollama port)
+safe := urlvalidate.IsSafeURL("http://192.168.1.1/admin", false)              // false (private IP)
+safe := urlvalidate.IsSafeURL("https://api.openai.com/v1/models", true)      // true (allowRemote=true)
+
+// Open a URL with SSRF protections (blocks redirects, re-resolves DNS)
+resp, err := urlvalidate.SafeURLOpen(ctx, urlStr, 30*time.Second, false)
+
+// Validate and normalize an Ollama base URL (allowRemote=true for remote Ollama)
+url, err := urlvalidate.ValidateBaseURL("http://localhost:11434", "embed")
+
+// Infer whether a URL should be treated as remote
+remote := urlvalidate.IsRemoteAllowed("https://api.openai.com")  // true (public IP)
+remote := urlvalidate.IsRemoteAllowed("http://localhost:11434") // false (loopback)
+```
+
+#### SSRF Protections
+
+- **Private IP blocking:** `IsSafeURL` rejects private, link-local, multicast, and unspecified IPs. Loopback is only allowed on the Ollama default port (11434) when `allowRemote=false`.
+- **Percent-decode bypass prevention:** Hostnames are percent-decoded before IP checks (e.g. `%31%32%37%2e%30%2e%30%2e%31` → `127.0.0.1`).
+- **Redirect blocking:** `SafeURLOpen` uses a custom transport that blocks all HTTP redirects (3xx responses). Redirect targets are logged via `slog.Warn` with credentials stripped.
+- **DNS rebinding mitigation:** `SafeURLOpen` re-resolves the hostname immediately before the HTTP request to detect DNS rebinding TOCTOU attacks.
+- **Credential stripping:** Error messages and logs strip userinfo from URLs via `stripCredentials()`, preserving query strings and fragments.
+- **Fail-closed:** `IsRemoteAllowed` returns `false` for hostnames that fail DNS resolution.

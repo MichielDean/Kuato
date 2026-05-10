@@ -55,6 +55,7 @@ The Go implementation (`internal/store`) shares the same security posture as Pyt
 - **SQL injection**: All queries use parameterized `?` placeholders via Go's `database/sql` package. The `placeholders()` function generates comma-separated `?` sequences for `IN` clauses. FTS5 MATCH queries are sanitized via `sanitizeFTSQuery()`. LIKE queries use `ESCAPE '\'` with `escapeLike()`.
 - **Type validation**: Memory type names must match `^[a-z][a-z0-9_]*$` and be ≤64 characters (enforced by `RegisterMemoryType()`). Relation types must be in the `ValidRelationTypes()` set (`supersedes`, `related_to`, `derived_from`).
 - **Embedding dimension validation**: `Add()` rejects embeddings whose byte length doesn't match `vec_dimensions × 4`. `ImportMemories()` skips entries with mismatched embedding dimensions.
+- **Embedding size limit (DoS protection)**: `Add()`, `Update()`, and `ImportMemories()` enforce a 1 MB per-embedding limit (`maxEmbeddingBytes = 1048576`). `Add()` and `Update()` return errors for oversized embeddings. `ImportMemories()` skips oversized entries with a `slog.Warn` log message.
 - **ID length cap**: `ImportMemories()` rejects IDs longer than 256 characters.
 - **Import validation**: `ImportMemories()` validates that each entry has non-empty `Type` and `Content` string fields, `Confidence` is in [0, 1], and embedding dimensions match. Invalid entries are skipped with `slog.Warn` — no panics.
 - **Traversal depth cap**: `TraverseRelations()` caps `maxDepth` at 5 (hard limit matching Python).
@@ -64,3 +65,27 @@ The Go implementation (`internal/store`) shares the same security posture as Pyt
 - **FTS fallback**: If FTS5 search fails (e.g., malformed query), `Search()` silently falls back to LIKE search rather than returning an error.
 - **Context support**: All public methods accept `context.Context` for cancellation and timeout, following Go best practices.
 - **Error wrapping**: All errors are wrapped with the `"llmem: store: "` prefix using `fmtErr()`, providing domain context for debugging.
+
+### Go URL Validation (internal/urlvalidate)
+
+The `internal/urlvalidate` package mirrors the Python `url_validate` module's SSRF protections with Go-specific implementation details:
+
+- **Private IP blocking**: `IsSafeURL` rejects private, link-local, multicast, and unspecified IPs. Loopback is only allowed on the Ollama default port (11434) when `allowRemote=false`.
+- **Percent-decode bypass prevention**: Hostnames are percent-decoded via `url.PathUnescape` before IP and DNS checks, preventing SSRF bypass via encoded IP addresses (e.g. `%31%32%37%2e%30%2e%30%2e%31` → `127.0.0.1`).
+- **Redirect blocking**: `SafeURLOpen` uses a custom `noRedirectTransport` that blocks all HTTP redirects (3xx responses). Redirect source and target URLs are logged via `slog.Warn` with credentials stripped.
+- **DNS rebinding mitigation**: `SafeURLOpen` re-resolves the hostname immediately before the HTTP request to detect DNS rebinding TOCTOU attacks.
+- **Credential stripping**: `stripCredentials()` removes userinfo from URLs in error messages and logs, preserving query strings and fragments.
+- **Fail-closed defaults**: `IsSafeURL` with `allowRemote=false` only permits loopback addresses on the Ollama default port. `IsRemoteAllowed` returns `false` for hostnames that fail DNS resolution.
+- **Local hostname recognition**: `IsRemoteAllowed` recognizes `localhost`, `localhost.localdomain`, and `localhost6` as local hostnames (not remote), consistent with Python's `_is_loopback_hostname()`.
+- **EmbeddingEngine URL validation**: `NewEmbeddingEngine` validates BaseURL via `ValidateBaseURL` when creating a production HTTP client. Test clients (with `HTTPClient` provided) skip URL validation since the caller controls the transport.
+
+### Go Embedding Engine (internal/embed)
+
+- **LRU cache safety**: Cache access is protected by `sync.RWMutex`. Cache hits return a defensive copy to prevent mutation. Cache writes use exclusive lock.
+- **Ollama availability check**: `CheckAvailable` returns `false` on any error (logs at Debug level). Never panics. Matches exact model name or model name with tag suffix (e.g. `"nomic-embed-text:latest"`), not prefix matching.
+- **Timeout protection**: Production HTTP clients use a configurable timeout (default 30s). Context cancellation is respected in `Embed` and `CheckAvailable`.
+
+### Go Metrics (internal/metrics)
+
+- **Computation capping**: `ComputeMetrics` caps embedding count at `MetricsMaxEmbeddings` (10000) to prevent O(n²) CPU hangs. Labels are truncated to match. Logs a warning when capping occurs.
+- **Edge case safety**: `Anisotropy` and `SimilarityRange` return 0.0 for empty/single-vector input. `DiscriminationGap` returns an error on label/embedding length mismatch.
