@@ -239,3 +239,86 @@ func TestOpenCodeAdapter_ListSessions(t *testing.T) {
 		t.Errorf("expected 0 sessions, got %d", len(sessions))
 	}
 }
+
+func TestSessionHookCoordinator_OnCompacting_UsesValidatedID(t *testing.T) {
+	ms := newTestStore(t)
+	dir := t.TempDir()
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:      ms,
+		ContextDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	resultType, contextPath, err := coord.OnCompacting(context.Background(), "safe-session-id")
+	if err != nil {
+		t.Fatalf("OnCompacting: %v", err)
+	}
+	if resultType != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, resultType)
+	}
+	// Verify the context file is created with the validated session ID in its name
+	expected := filepath.Join(dir, "safe-session-id_context.md")
+	if contextPath != expected {
+		t.Errorf("expected context path %s, got %s", expected, contextPath)
+	}
+}
+
+func TestSessionHookCoordinator_OnIdle_UsesValidatedID(t *testing.T) {
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{Store: ms})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	// Valid session ID should work
+	result, err := coord.OnIdle(context.Background(), "valid-session")
+	if err != nil {
+		t.Fatalf("OnIdle: %v", err)
+	}
+	if result != ResultNoTranscript {
+		t.Errorf("expected %q, got %q", ResultNoTranscript, result)
+	}
+
+	// The validated ID should be used for debounce, so calling with same ID should debounce
+	result2, err := coord.OnIdle(context.Background(), "valid-session")
+	if err != nil {
+		t.Fatalf("OnIdle second: %v", err)
+	}
+	if result2 != ResultDebounced {
+		t.Errorf("expected %q, got %q", ResultDebounced, result2)
+	}
+}
+
+func TestSessionHookCoordinator_OnCreated_UsesValidatedID(t *testing.T) {
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{Store: ms})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	result, err := coord.OnCreated(context.Background(), "test-session-abc")
+	if err != nil {
+		t.Fatalf("OnCreated: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+}
+
+func TestSessionHookCoordinator_OnEnding_UsesValidatedID(t *testing.T) {
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{Store: ms})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	result, err := coord.OnEnding(context.Background(), "test-session-end")
+	if err != nil {
+		t.Fatalf("OnEnding: %v", err)
+	}
+	if result != ResultNoTranscript {
+		t.Errorf("expected %q, got %q", ResultNoTranscript, result)
+	}
+}

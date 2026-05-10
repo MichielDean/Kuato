@@ -152,17 +152,16 @@ func (c *SessionHookCoordinator) OnCreated(ctx context.Context, sessionID string
 	if err != nil {
 		return ResultError, fmtErr("on_created: validate session ID: %w", err)
 	}
-	_ = validID
 
 	// Check if already processed
-	alreadyProcessed, err := c.store.IsExtracted(ctx, "session", sessionID)
+	alreadyProcessed, err := c.store.IsExtracted(ctx, "session", validID)
 	if err != nil {
 		slog.Debug("llmem: session: on_created: check extracted failed", "error", err)
 	} else if alreadyProcessed {
 		return ResultAlreadyProcessed, nil
 	}
 
-	logSessionEvent("created", sessionID)
+	logSessionEvent("created", validID)
 	return ResultSuccess, nil
 }
 
@@ -173,7 +172,6 @@ func (c *SessionHookCoordinator) OnIdle(ctx context.Context, sessionID string) (
 	if err != nil {
 		return ResultError, fmtErr("on_idle: validate session ID: %w", err)
 	}
-	_ = validID
 
 	// Check debounce
 	c.mu.Lock()
@@ -186,12 +184,12 @@ func (c *SessionHookCoordinator) OnIdle(ctx context.Context, sessionID string) (
 		}
 	}
 
-	lastTime, exists := c.lastIdle[sessionID]
+	lastTime, exists := c.lastIdle[validID]
 	if exists && time.Since(lastTime).Seconds() < float64(c.debounceSeconds) {
 		c.mu.Unlock()
 		return ResultDebounced, nil
 	}
-	c.lastIdle[sessionID] = time.Now()
+	c.lastIdle[validID] = time.Now()
 	c.mu.Unlock()
 
 	// If no adapter, no transcript
@@ -199,7 +197,7 @@ func (c *SessionHookCoordinator) OnIdle(ctx context.Context, sessionID string) (
 		return ResultNoTranscript, nil
 	}
 
-	transcript, err := c.adapter.ReadTranscript(sessionID)
+	transcript, err := c.adapter.ReadTranscript(validID)
 	if err != nil {
 		return ResultError, fmtErr("on_idle: read transcript: %w", err)
 	}
@@ -208,7 +206,7 @@ func (c *SessionHookCoordinator) OnIdle(ctx context.Context, sessionID string) (
 	}
 
 	_ = transcript // transcript content would be used for extraction
-	logSessionEvent("idle", sessionID)
+	logSessionEvent("idle", validID)
 	return ResultSuccess, nil
 }
 
@@ -219,15 +217,14 @@ func (c *SessionHookCoordinator) OnCompacting(ctx context.Context, sessionID str
 	if err != nil {
 		return ResultError, "", fmtErr("on_compacting: validate session ID: %w", err)
 	}
-	_ = validID
 
 	// Create context directory
 	if err := os.MkdirAll(c.contextDir, 0700); err != nil {
 		return ResultError, "", fmtErr("on_compacting: create context dir: %w", err)
 	}
 
-	// Write context file with key memories
-	contextPath := filepath.Join(c.contextDir, sessionID+"_context.md")
+	// Write context file with key memories using validated session ID
+	contextPath := filepath.Join(c.contextDir, validID+"_context.md")
 	var contentBuilder strings.Builder
 	contentBuilder.WriteString("# Context\n\n")
 
@@ -253,7 +250,7 @@ func (c *SessionHookCoordinator) OnCompacting(ctx context.Context, sessionID str
 		return ResultError, "", fmtErr("on_compacting: write context: %w", err)
 	}
 
-	logSessionEvent("compacting", sessionID)
+	logSessionEvent("compacting", validID)
 	return ResultSuccess, contextPath, nil
 }
 
@@ -264,14 +261,13 @@ func (c *SessionHookCoordinator) OnEnding(ctx context.Context, sessionID string)
 	if err != nil {
 		return ResultError, fmtErr("on_ending: validate session ID: %w", err)
 	}
-	_ = validID
 
 	// If no adapter, no transcript
 	if c.adapter == nil {
 		return ResultNoTranscript, nil
 	}
 
-	transcript, err := c.adapter.ReadTranscript(sessionID)
+	transcript, err := c.adapter.ReadTranscript(validID)
 	if err != nil {
 		return ResultError, fmtErr("on_ending: read transcript: %w", err)
 	}
@@ -280,7 +276,7 @@ func (c *SessionHookCoordinator) OnEnding(ctx context.Context, sessionID string)
 	}
 
 	_ = transcript // transcript content would be used for extraction
-	logSessionEvent("ending", sessionID)
+	logSessionEvent("ending", validID)
 	return ResultSuccess, nil
 }
 

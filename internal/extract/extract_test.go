@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -253,6 +252,4 @@ func TestExtractionEngine_Extract_UnavailableOllama(t *testing.T) {
 	if len(result) != 0 {
 		t.Errorf("expected empty result on timeout, got %d items", len(result))
 	}
-
-	_ = strings.TrimSpace("") // suppress unused warning
 }

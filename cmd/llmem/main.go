@@ -199,10 +199,12 @@ func searchCmd() *cobra.Command {
 			defer ms.Close()
 
 			results, err := ms.Search(context.Background(), store.SearchParams{
-				Query:     args[0],
-				Type:      typeVal,
-				ValidOnly: validOnly,
-				Limit:     limitVal,
+				Query:        args[0],
+				Type:         typeVal,
+				ValidOnly:    validOnly,
+				Limit:        limitVal,
+				FTSOnly:      ftsOnly,
+				SemanticOnly: semanticOnly,
 			})
 			if err != nil {
 				return err

@@ -457,6 +457,13 @@ func (ms *MemoryStore) Delete(ctx context.Context, id string) (bool, error) {
 // Search performs FTS5 full-text search with fallback to LIKE.
 // Returns memories ranked by BM25 (FTS) or updated_at DESC (LIKE).
 func (ms *MemoryStore) Search(ctx context.Context, params SearchParams) ([]*Memory, error) {
+	if params.SemanticOnly && params.FTSOnly {
+		return nil, fmtErr("search: cannot specify both fts-only and semantic-only")
+	}
+	if params.SemanticOnly && ms.disableVec {
+		return nil, fmtErr("search: semantic search requires embeddings (store opened with DisableVec=false)")
+	}
+
 	limit := params.Limit
 	if limit <= 0 {
 		limit = 20

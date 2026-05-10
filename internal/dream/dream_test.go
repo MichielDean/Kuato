@@ -245,3 +245,62 @@ func containsStr(s, substr string) bool {
 	}
 	return false
 }
+
+func TestDreamer_WriteDiary_UsesResolvedPath(t *testing.T) {
+	// Verify that WriteDiary uses the resolved (validated) path, not the raw path.
+	// This is a contract test — the file should be at the exact path returned by ValidateWritePath.
+	ms := newTestStore(t)
+	dir := t.TempDir()
+	diaryPath := filepath.Join(dir, "dream_diary.md")
+	d, err := NewDreamer(DreamerConfig{
+		Store:     ms,
+		DiaryPath: diaryPath,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result := &DreamResult{
+		Light: &LightPhaseResult{DuplicatePairs: 0},
+		Deep:  &DeepPhaseResult{},
+	}
+
+	err = d.WriteDiary(result)
+	if err != nil {
+		t.Fatalf("WriteDiary: %v", err)
+	}
+
+	// Verify file was written at the expected path
+	if _, err := os.Stat(diaryPath); err != nil {
+		t.Errorf("expected diary file at %s: %v", diaryPath, err)
+	}
+}
+
+func TestDreamer_GenerateDreamReport_UsesResolvedPath(t *testing.T) {
+	// Verify that GenerateDreamReport uses the resolved (validated) path.
+	ms := newTestStore(t)
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, "report.html")
+	d, err := NewDreamer(DreamerConfig{
+		Store:      ms,
+		ReportPath: reportPath,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result := &DreamResult{
+		Light: &LightPhaseResult{DuplicatePairs: 0},
+		Deep:  &DeepPhaseResult{},
+	}
+
+	err = d.GenerateDreamReport(result, reportPath)
+	if err != nil {
+		t.Fatalf("GenerateDreamReport: %v", err)
+	}
+
+	// Verify file was written at the expected path
+	if _, err := os.Stat(reportPath); err != nil {
+		t.Errorf("expected report file at %s: %v", reportPath, err)
+	}
+}

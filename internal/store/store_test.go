@@ -1740,3 +1740,63 @@ func TestMemoryStore_Update_EmbeddingAtMaxSize_Succeeds(t *testing.T) {
 		t.Error("expected Update to return true")
 	}
 }
+
+func TestSearch_SemanticOnly_DisabledVec_ReturnsError(t *testing.T) {
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := ms.Search(ctx, SearchParams{
+		Query:        "test",
+		SemanticOnly: true,
+	})
+	if err == nil {
+		t.Error("expected error when SemanticOnly=true with DisableVec=true, got nil")
+	}
+	if !strings.Contains(err.Error(), "semantic search requires embeddings") {
+		t.Errorf("expected semantic search error, got: %v", err)
+	}
+}
+
+func TestSearch_BothFTSOnlyAndSemanticOnly_ReturnsError(t *testing.T) {
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := ms.Search(ctx, SearchParams{
+		Query:        "test",
+		FTSOnly:      true,
+		SemanticOnly: true,
+	})
+	if err == nil {
+		t.Error("expected error when both FTSOnly and SemanticOnly are true, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot specify both") {
+		t.Errorf("expected both-flags error, got: %v", err)
+	}
+}
+
+func TestSearch_FTSOnly_WithQuery(t *testing.T) {
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	// Add a memory to search for
+	_, err := ms.Add(ctx, AddParams{
+		Type:       "fact",
+		Content:    "Go is statically typed",
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	results, err := ms.Search(ctx, SearchParams{
+		Query:   "Go",
+		FTSOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("Search with FTSOnly: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected at least one result with FTSOnly")
+	}
+}

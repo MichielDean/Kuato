@@ -602,18 +602,18 @@ func (d *Dreamer) extractBehavioralInsights(ctx context.Context, apply bool) []B
 }
 
 // WriteDiary writes the dream diary as markdown to the configured path.
-// Uses flock for concurrency safety.
+// Uses sync.Mutex for concurrency safety within the process.
 func (d *Dreamer) WriteDiary(result *DreamResult) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	// Validate write path
-	_, err := paths.ValidateWritePath(d.diaryPath, "dream diary")
+	diaryPath, err := paths.ValidateWritePath(d.diaryPath, "dream diary")
 	if err != nil {
 		return fmtErr("validate diary path: %w", err)
 	}
 
-	dir := filepath.Dir(d.diaryPath)
+	dir := filepath.Dir(diaryPath)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmtErr("create diary directory: %w", err)
 	}
@@ -661,7 +661,7 @@ func (d *Dreamer) WriteDiary(result *DreamResult) error {
 		}
 	}
 
-	if err := os.WriteFile(d.diaryPath, []byte(sb.String()), 0600); err != nil {
+	if err := os.WriteFile(diaryPath, []byte(sb.String()), 0600); err != nil {
 		return fmtErr("write diary: %w", err)
 	}
 
@@ -671,18 +671,18 @@ func (d *Dreamer) WriteDiary(result *DreamResult) error {
 // GenerateDreamReport generates an HTML dream report at the given path.
 // Validates reportPath via paths.ValidateWritePath.
 func (d *Dreamer) GenerateDreamReport(result *DreamResult, reportPath string) error {
-	_, err := paths.ValidateWritePath(reportPath, "dream report")
+	resolvedPath, err := paths.ValidateWritePath(reportPath, "dream report")
 	if err != nil {
 		return fmtErr("validate report path: %w", err)
 	}
 
-	dir := filepath.Dir(reportPath)
+	dir := filepath.Dir(resolvedPath)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmtErr("create report directory: %w", err)
 	}
 
 	html := buildReportHTML(result)
-	if err := os.WriteFile(reportPath, []byte(html), 0600); err != nil {
+	if err := os.WriteFile(resolvedPath, []byte(html), 0600); err != nil {
 		return fmtErr("write report: %w", err)
 	}
 	return nil
