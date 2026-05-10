@@ -42,7 +42,7 @@ For detailed installation options (extras, plugins, requirements), see [docs/INS
 
 ### Go (memory store library)
 
-The Go implementation provides the core memory store as a pure-Go library with no CGo dependency:
+The Go implementation provides the core memory store as a pure-Go library with no CGo dependency, plus a full CLI, dream cycle, session hooks, introspection, and extraction:
 
 ```bash
 go get github.com/MichielDean/LLMem
@@ -203,7 +203,7 @@ go test ./...
 
 1349 Python tests and 142 JavaScript tests covering all providers, session adapters (OpenCode, Copilot, none), URL validation, configuration, security, session hooks, CLI commands, and edge cases.
 
-189 Go tests covering store operations, FTS5 search, vector search, hybrid retrieval, embedding engine, metrics, URL validation, migrations, type validation, and import/export.
+Go tests covering store operations, FTS5 search, vector search, hybrid retrieval, embedding engine, metrics, URL validation, migrations, type validation, import/export, config, dream cycle, extraction, introspection, session hooks, path validation, systemd unit generation, and taxonomy.
 
 ## Makefile
 

@@ -24,14 +24,17 @@ LLMem looks for configuration at `~/.config/llmem/config.yaml`. If this file doe
 
 ```yaml
 memory:
+  db: ""                       # Database path (default: ~/.config/llmem/memory.db)
+  ollama_url: http://localhost:11434
+  embed_model: nomic-embed-text
+  extract_model: glm-5.1:cloud
   context_budget: 4000
   auto_extract: true
-  max_file_size: 10485760     # 10MB
-  inbox_capacity: 7            # Miller's 7±2; items above this count are evicted
+  max_file_size: 10485760      # 10MB
 
 dream:
-  enabled: true
-  schedule: "*-*-* 03:00:00"
+  enabled: true                # (Python only — not wired in Go CLI dream command)
+  schedule: "*-*-* 03:00:00"    # (Python only — used by systemd timer generation)
   similarity_threshold: 0.92
   decay_rate: 0.05
   decay_interval_days: 30
@@ -39,35 +42,24 @@ dream:
   confidence_floor: 0.3
   boost_threshold: 5
   boost_amount: 0.05
-  min_score: 0.5
-  min_recall_count: 3
-  min_unique_queries: 1
-  boost_on_promote: 0.1
-  merge_model: qwen2.5:1.5b
-  diary_path: null            # Auto-resolved from get_dream_diary_path()
-  report_path: null              # Auto-resolved from get_dream_report_path()
+  diary_path: null             # Auto-resolved from GetDreamDiaryPath()
+  report_path: null            # Auto-resolved from GetDreamReportPath()
   behavioral_threshold: 3
   behavioral_lookback_days: 30
-  proposed_changes_path: null # Auto-resolved from get_proposed_changes_path()
-  calibration_enabled: true
-  stale_procedure_days: 30
-  calibration_lookback_days: 90
-  auto_link_threshold: 0.85  # Cosine similarity threshold for auto-linking related memories
+  auto_link_threshold: 0.85    # Cosine similarity threshold for auto-linking related memories
 
 opencode:
-  context_dir: null           # Auto-resolved from get_context_dir()
   db_path: ~/.local/share/opencode/opencode.db
+  context_dir: null            # Auto-resolved from GetContextDir()
 
 session:
-  adapter: opencode            # Which session adapter to use: opencode, copilot, or none
-
-copilot:
-  state_dir: ~/.copilot/session-state
-  share_dir: .                 # Directory where --share markdown files are written
-
-correction_detection:
-  enabled: true
+  adapter: opencode           # Which session adapter to use: opencode, copilot, or none
+  debounce_seconds: 30        # Idle debounce interval in seconds
 ```
+
+> **Note:** The following fields exist in the Python config but are **not wired** in the Go implementation: `min_score`, `min_recall_count`, `min_unique_queries`, `boost_on_promote`, `merge_model`, `calibration_enabled`, `stale_procedure_days`, `calibration_lookback_days`, `inbox_capacity`, `correction_detection` (top-level), `copilot` (top-level), and `proposed_changes_path`. Setting these in `config.yaml` has no effect when using the Go CLI.
+
+> **Note:** The Go config resolves `db_path` for OpenCode as `~/.local/share/opencode/opencode.db` using `filepath.Join` with proper path handling.
 
 ## Session Adapter Configuration
 
