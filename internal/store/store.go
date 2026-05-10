@@ -960,12 +960,7 @@ func (ms *MemoryStore) CountEmbeddings(ctx context.Context) (int, error) {
 // AddRelation adds a relation between two memories.
 // Returns the relation UUID. Validates relation_type against allowed types.
 func (ms *MemoryStore) AddRelation(ctx context.Context, sourceID, targetID, relationType string) (string, error) {
-	validTypes := map[string]struct{}{
-		"supersedes":   {},
-		"related_to":   {},
-		"derived_from": {},
-	}
-	if _, ok := validTypes[relationType]; !ok {
+	if !isValidRelationType(relationType) {
 		return "", fmtErr("add_relation: invalid relation_type %q, must be one of %v", relationType, ValidRelationTypes())
 	}
 
@@ -1405,17 +1400,19 @@ func (ms *MemoryStore) TouchBatch(ctx context.Context, ids []string) (int, error
 }
 
 // GetEmbeddingsWithTypes returns (embedding_bytes, type) tuples for valid memories with embeddings.
+// If limit is 0, returns all rows (no limit). If limit < 0, defaults to defaultBruteForceMaxRows.
 func (ms *MemoryStore) GetEmbeddingsWithTypes(ctx context.Context, limit int) ([]*EmbeddingWithType, error) {
-	if limit <= 0 {
-		limit = defaultBruteForceMaxRows
+	effectiveLimit := limit
+	if effectiveLimit < 0 {
+		effectiveLimit = defaultBruteForceMaxRows
 	}
 
 	var rows *sql.Rows
 	var err error
-	if limit > 0 {
+	if effectiveLimit > 0 {
 		rows, err = ms.db.QueryContext(ctx,
 			`SELECT "embedding", "type" FROM "memories" WHERE "embedding" IS NOT NULL AND "valid_until" IS NULL LIMIT ?`,
-			limit,
+			effectiveLimit,
 		)
 	} else {
 		rows, err = ms.db.QueryContext(ctx,

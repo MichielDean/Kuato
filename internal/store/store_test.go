@@ -1534,3 +1534,87 @@ func TestSearch_FTS_UsesRank(t *testing.T) {
 		t.Error("expected FTS search results for 'sky blue'")
 	}
 }
+
+func TestIsValidRelationType_UsesValidRelationTypes(t *testing.T) {
+	// Verify that isValidRelationType checks against ValidRelationTypes(),
+	// ensuring there is exactly one source of truth for valid relation types.
+	for _, rt := range ValidRelationTypes() {
+		if !isValidRelationType(rt) {
+			t.Errorf("isValidRelationType(%q) = false, want true — ValidRelationTypes should be accepted", rt)
+		}
+	}
+	// Invalid types should be rejected
+	if isValidRelationType("invalid_type") {
+		t.Error("isValidRelationType('invalid_type') = true, want false")
+	}
+	if isValidRelationType("") {
+		t.Error("isValidRelationType('') = true, want false")
+	}
+}
+
+func TestAddRelation_AllValidRelatioTypes(t *testing.T) {
+	// Verify that AddRelation accepts every type from ValidRelationTypes(),
+	// confirming the helper-based lookup is wired correctly.
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	id1, _ := ms.Add(ctx, AddParams{Type: "fact", Content: "source memory"})
+	id2, _ := ms.Add(ctx, AddParams{Type: "fact", Content: "target memory"})
+
+	for _, rt := range ValidRelationTypes() {
+		relID, err := ms.AddRelation(ctx, id1, id2, rt)
+		if err != nil {
+			t.Errorf("AddRelation(%q) returned unexpected error: %v", rt, err)
+		}
+		if relID == "" {
+			t.Errorf("AddRelation(%q) returned empty ID", rt)
+		}
+	}
+}
+
+func TestGetEmbeddingsWithTypes_ZeroLimit_NoLimit(t *testing.T) {
+	// When limit=0, GetEmbeddingsWithTypes should return all rows (no limit),
+	// consistent with ExportAll's 0-means-no-limit semantics.
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	// Add 3 memories with embeddings
+	vec := make([]float32, 768)
+	for i := range vec {
+		vec[i] = 0.1
+	}
+	emb := vecToBytes(vec)
+	ms.Add(ctx, AddParams{Type: "fact", Content: "m1", Embedding: emb})
+	ms.Add(ctx, AddParams{Type: "fact", Content: "m2", Embedding: emb})
+	ms.Add(ctx, AddParams{Type: "fact", Content: "m3", Embedding: emb})
+
+	results, err := ms.GetEmbeddingsWithTypes(ctx, 0)
+	if err != nil {
+		t.Fatalf("GetEmbeddingsWithTypes with limit=0: %v", err)
+	}
+	if len(results) != 3 {
+		t.Errorf("expected 3 results with limit=0 (no limit), got %d", len(results))
+	}
+}
+
+func TestGetEmbeddingsWithTypes_NegativeLimit_DefaultLimit(t *testing.T) {
+	// When limit < 0, GetEmbeddingsWithTypes should default to defaultBruteForceMaxRows.
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	vec := make([]float32, 768)
+	for i := range vec {
+		vec[i] = 0.1
+	}
+	emb := vecToBytes(vec)
+	ms.Add(ctx, AddParams{Type: "fact", Content: "m1", Embedding: emb})
+
+	results, err := ms.GetEmbeddingsWithTypes(ctx, -1)
+	if err != nil {
+		t.Fatalf("GetEmbeddingsWithTypes with limit=-1: %v", err)
+	}
+	// Should return the 1 result (well within the default limit of 10000)
+	if len(results) != 1 {
+		t.Errorf("expected 1 result with limit=-1 (default), got %d", len(results))
+	}
+}

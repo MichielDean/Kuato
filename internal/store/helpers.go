@@ -119,6 +119,17 @@ func isValidTypeName(name string) bool {
 	return reValidTypeName.MatchString(name)
 }
 
+// isValidRelationType checks whether a relation type is in the allowed set
+// defined by ValidRelationTypes(). Single source of truth — no duplicate maps.
+func isValidRelationType(relationType string) bool {
+	for _, t := range ValidRelationTypes() {
+		if t == relationType {
+			return true
+		}
+	}
+	return false
+}
+
 // fmtErr wraps an error with the "llmem: store:" domain prefix.
 func fmtErr(format string, args ...any) error {
 	return fmt.Errorf("llmem: store: "+format, args...)
