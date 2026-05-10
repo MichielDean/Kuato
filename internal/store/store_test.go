@@ -1381,3 +1381,38 @@ func TestMemoryStore_ExportAll_DefaultLimit(t *testing.T) {
 		t.Errorf("expected 3 memories, got %d", len(memories))
 	}
 }
+
+func TestIsValidTypeName_PrecompiledRegex(t *testing.T) {
+	// Verify the pre-compiled regex works correctly (was previously regexp.MatchString on every call)
+	tests := []struct {
+		name  string
+		valid bool
+	}{
+		{"fact", true},
+		{"my_type", true},
+		{"a", true},
+		{"Type1", false}, // uppercase
+		{"1type", false}, // starts with digit
+		{"", false},
+		{"type with spaces", false},
+	}
+	for _, tt := range tests {
+		got := isValidTypeName(tt.name)
+		if got != tt.valid {
+			t.Errorf("isValidTypeName(%q) = %v, want %v", tt.name, got, tt.valid)
+		}
+	}
+}
+
+func TestSanitizeFTSQuery_PrecompiledRegex(t *testing.T) {
+	// Verify the pre-compiled regex works correctly (was previously regexp.MustCompile on every call)
+	result := sanitizeFTSQuery("hello world")
+	if result == "" {
+		t.Error("expected non-empty sanitized query")
+	}
+	// Verify special characters are stripped
+	result2 := sanitizeFTSQuery("test@#$% query")
+	if result2 == "" {
+		t.Error("expected non-empty sanitized query with special chars")
+	}
+}

@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+// Pre-compiled regexps for hot paths — avoid recompilation on every call.
+var (
+	reNonWord       = regexp.MustCompile(`[^\w]+`)
+	reValidTypeName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	reVecDimensions = regexp.MustCompile(`float\[(\d+)\]`)
+)
+
 // nowUTC returns the current UTC time formatted as ISO 8601 (RFC 3339).
 // This matches Python's datetime.now(timezone.utc).isoformat().
 func nowUTC() string {
@@ -42,7 +49,7 @@ func sanitizeFTSQuery(query string) string {
 			continue
 		}
 		// Remove all non-word characters
-		clean := regexp.MustCompile(`[^\w]+`).ReplaceAllString(t, " ")
+		clean := reNonWord.ReplaceAllString(t, " ")
 		parts := strings.Fields(clean)
 		safeTokens = append(safeTokens, parts...)
 	}
@@ -109,8 +116,7 @@ func isValidTypeName(name string) bool {
 	if len(name) == 0 || len(name) > 64 {
 		return false
 	}
-	valid, _ := regexp.MatchString(`^[a-z][a-z0-9_]*$`, name)
-	return valid
+	return reValidTypeName.MatchString(name)
 }
 
 // fmtErr wraps an error with the "llmem: store:" domain prefix.

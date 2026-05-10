@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -1498,8 +1497,7 @@ func (ms *MemoryStore) initVecTable() error {
 		var sql string
 		err = ms.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='memories_vec'`).Scan(&sql)
 		if err == nil {
-			re := regexp.MustCompile(`float\[(\d+)\]`)
-			matches := re.FindStringSubmatch(sql)
+			matches := reVecDimensions.FindStringSubmatch(sql)
 			if len(matches) > 1 {
 				var existingDim int
 				if _, err := fmt.Sscanf(matches[1], "%d", &existingDim); err != nil {
@@ -1514,22 +1512,34 @@ func (ms *MemoryStore) initVecTable() error {
 
 	// Populate vec table if behind
 	var vecCount, memEmbCount int
-	ms.db.QueryRow(`SELECT count(*) FROM "memories_vec"`).Scan(&vecCount)
-	ms.db.QueryRow(`SELECT count(*) FROM "memories" WHERE "embedding" IS NOT NULL`).Scan(&memEmbCount)
+	if err := ms.db.QueryRow(`SELECT count(*) FROM "memories_vec"`).Scan(&vecCount); err != nil {
+		return fmtErr("init_vec: count vec rows: %w", err)
+	}
+	if err := ms.db.QueryRow(`SELECT count(*) FROM "memories" WHERE "embedding" IS NOT NULL`).Scan(&memEmbCount); err != nil {
+		return fmtErr("init_vec: count memory embeddings: %w", err)
+	}
 
 	if vecCount < memEmbCount {
-		_, _ = ms.db.Exec(`DELETE FROM "memories_vec"`)
-		rows, err := ms.db.Query(`SELECT "rowid", "embedding" FROM "memories" WHERE "embedding" IS NOT NULL`)
-		if err == nil {
-			for rows.Next() {
-				var rowid int64
-				var emb []byte
-				if rows.Scan(&rowid, &emb) == nil {
-					ms.db.Exec(`INSERT INTO "memories_vec"("rowid", "embedding") VALUES (?, ?)`, rowid, emb)
-				}
-			}
-			rows.Close()
+		if _, err := ms.db.Exec(`DELETE FROM "memories_vec"`); err != nil {
+			return fmtErr("init_vec: clear vec table for repopulation: %w", err)
 		}
+		rows, err := ms.db.Query(`SELECT "rowid", "embedding" FROM "memories" WHERE "embedding" IS NOT NULL`)
+		if err != nil {
+			return fmtErr("init_vec: fetch embeddings for repopulation: %w", err)
+		}
+		for rows.Next() {
+			var rowid int64
+			var emb []byte
+			if err := rows.Scan(&rowid, &emb); err != nil {
+				rows.Close()
+				return fmtErr("init_vec: scan embedding for repopulation: %w", err)
+			}
+			if _, err := ms.db.Exec(`INSERT INTO "memories_vec"("rowid", "embedding") VALUES (?, ?)`, rowid, emb); err != nil {
+				rows.Close()
+				return fmtErr("init_vec: insert embedding into vec table for rowid %d: %w", rowid, err)
+			}
+		}
+		rows.Close()
 	}
 
 	// Create triggers
