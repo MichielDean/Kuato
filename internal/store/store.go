@@ -477,7 +477,7 @@ func (ms *MemoryStore) searchFTS(ctx context.Context, params SearchParams, limit
 	}
 
 	query := fmt.Sprintf(
-		`SELECT m."id", m."type", m."content", m."summary", m."hints", m."source", m."confidence", m."valid_from", m."valid_until", m."created_at", m."updated_at", m."accessed_at", m."access_count", m."metadata", m."embedding" FROM "memories_fts" AS fts JOIN "memories" AS m ON m."rowid" = fts."rowid" WHERE "memories_fts" MATCH ?%s ORDER BY _fts_rank DESC LIMIT ? OFFSET ?`,
+		`SELECT m."id", m."type", m."content", m."summary", m."hints", m."source", m."confidence", m."valid_from", m."valid_until", m."created_at", m."updated_at", m."accessed_at", m."access_count", m."metadata", m."embedding" FROM "memories_fts" AS fts JOIN "memories" AS m ON m."rowid" = fts."rowid" WHERE "memories_fts" MATCH ?%s ORDER BY rank DESC LIMIT ? OFFSET ?`,
 		where,
 	)
 	args := append([]any{ftsQuery}, ftsVals...)
@@ -655,7 +655,11 @@ func (ms *MemoryStore) searchCountNoQuery(ctx context.Context, params SearchCoun
 
 // SearchByEmbedding searches memories by vector similarity.
 // Uses vec0 if available, brute-force fallback otherwise.
+// If limit <= 0, defaults to 20.
 func (ms *MemoryStore) SearchByEmbedding(ctx context.Context, queryVec []float32, validOnly bool, limit int, threshold float64) ([]*ScoredMemory, error) {
+	if limit <= 0 {
+		limit = 20
+	}
 	if ms.vecAvailable {
 		return ms.searchByEmbeddingVec(ctx, queryVec, validOnly, limit, threshold)
 	}
@@ -1576,9 +1580,12 @@ func (ms *MemoryStore) initVecTable() error {
 }
 
 // dropVecTriggers removes vec-related triggers when vec is disabled.
+// Logs errors but does not fail — triggers may not exist if vec was never enabled.
 func (ms *MemoryStore) dropVecTriggers() {
 	for _, name := range []string{"memories_vec_insert", "memories_vec_update", "memories_vec_update_null", "memories_vec_delete"} {
-		_, _ = ms.db.Exec(fmt.Sprintf(`DROP TRIGGER IF EXISTS "%s"`, name))
+		if _, err := ms.db.Exec(fmt.Sprintf(`DROP TRIGGER IF EXISTS "%s"`, name)); err != nil {
+			slog.Debug("llmem: store: failed to drop vec trigger", "trigger", name, "error", err)
+		}
 	}
 }
 
@@ -1607,14 +1614,18 @@ func resetUmask(mask int) {
 	// No-op
 }
 
-// scanMemory scans a single row from a *sql.Row into a Memory struct.
-func scanMemory(row *sql.Row) (*Memory, error) {
+// scanFunc is a function type that scans row columns into dest pointers.
+type scanFunc func(dest ...any) error
+
+// scanMemoryFields scans columns from a row into a Memory struct using the provided scan function.
+// This is the shared implementation for both scanMemory (single row) and scanMemoryFromRows (iterator).
+func scanMemoryFields(scan scanFunc) (*Memory, error) {
 	m := &Memory{}
 	var hintsJSON, metadataJSON string
 	var summary, validUntil, accessedAt sql.NullString
 	var embedding []byte
 
-	err := row.Scan(
+	err := scan(
 		&m.ID, &m.Type, &m.Content, &summary, &hintsJSON, &m.Source, &m.Confidence,
 		&m.ValidFrom, &validUntil, &m.CreatedAt, &m.UpdatedAt, &accessedAt,
 		&m.AccessCount, &metadataJSON, &embedding,
@@ -1644,41 +1655,14 @@ func scanMemory(row *sql.Row) (*Memory, error) {
 	return m, nil
 }
 
+// scanMemory scans a single row from a *sql.Row into a Memory struct.
+func scanMemory(row *sql.Row) (*Memory, error) {
+	return scanMemoryFields(row.Scan)
+}
+
 // scanMemoryFromRows scans a single row from sql.Rows into a Memory struct.
 func scanMemoryFromRows(rows *sql.Rows) (*Memory, error) {
-	m := &Memory{}
-	var hintsJSON, metadataJSON string
-	var summary, validUntil, accessedAt sql.NullString
-	var embedding []byte
-
-	err := rows.Scan(
-		&m.ID, &m.Type, &m.Content, &summary, &hintsJSON, &m.Source, &m.Confidence,
-		&m.ValidFrom, &validUntil, &m.CreatedAt, &m.UpdatedAt, &accessedAt,
-		&m.AccessCount, &metadataJSON, &embedding,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	m.Summary = summary.String
-	m.ValidUntil = validUntil.String
-	m.AccessedAt = accessedAt.String
-	m.Embedding = embedding
-
-	if err := json.Unmarshal([]byte(hintsJSON), &m.Hints); err != nil {
-		m.Hints = []string{}
-	}
-	if m.Hints == nil {
-		m.Hints = []string{}
-	}
-	if err := json.Unmarshal([]byte(metadataJSON), &m.Metadata); err != nil {
-		m.Metadata = map[string]any{}
-	}
-	if m.Metadata == nil {
-		m.Metadata = map[string]any{}
-	}
-
-	return m, nil
+	return scanMemoryFields(rows.Scan)
 }
 
 // scanRelation scans a single row from sql.Rows into a Relation struct.

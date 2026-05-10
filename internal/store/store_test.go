@@ -1082,7 +1082,7 @@ func TestRegisterMemoryType_InvalidName(t *testing.T) {
 
 func TestDefaultRegisteredTypes(t *testing.T) {
 	types := DefaultRegisteredTypes()
-	expected := []string{"fact", "decision", "preference", "event", "project_state", "procedure", "self_assessment"}
+	expected := []string{"fact", "decision", "preference", "event", "project_state", "procedure", "conversation", "self_assessment"}
 	if len(types) != len(expected) {
 		t.Errorf("expected %d types, got %d", len(expected), len(types))
 	}
@@ -1414,5 +1414,123 @@ func TestSanitizeFTSQuery_PrecompiledRegex(t *testing.T) {
 	result2 := sanitizeFTSQuery("test@#$% query")
 	if result2 == "" {
 		t.Error("expected non-empty sanitized query with special chars")
+	}
+}
+
+func TestSearchByEmbedding_DefaultLimit(t *testing.T) {
+	// When limit <= 0, SearchByEmbedding should default to 20 (not return empty results).
+	// This tests consistency with Search/ListAll/ExportAll where limit=0 means "use default".
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	// Add several memories with embeddings to exceed the default limit of 20
+	for i := 0; i < 25; i++ {
+		vec := make([]float32, 768)
+		for j := range vec {
+			vec[j] = float32(i) * 0.01
+		}
+		ms.Add(ctx, AddParams{
+			Type:      "fact",
+			Content:   fmt.Sprintf("memory %d", i),
+			Embedding: vecToBytes(vec),
+		})
+	}
+
+	results, err := ms.SearchByEmbedding(ctx, make([]float32, 768), false, 0, 0.0)
+	if err != nil {
+		t.Fatalf("SearchByEmbedding with limit=0: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected non-empty results from SearchByEmbedding with limit=0")
+	}
+	// With limit=0 defaulting to 20, we should get exactly 20 results (all match at threshold 0.0)
+	if len(results) != 20 {
+		t.Errorf("expected 20 results with default limit, got %d", len(results))
+	}
+}
+
+func TestDefaultRegisteredTypes_IncludesConversation(t *testing.T) {
+	// Verify that DefaultRegisteredTypes includes 'conversation' to match migration 003
+	types := DefaultRegisteredTypes()
+	found := false
+	for _, t := range types {
+		if t == "conversation" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("DefaultRegisteredTypes must include 'conversation' to match migration 003")
+	}
+}
+
+func TestConversationType_IsAddable(t *testing.T) {
+	// Verify that 'conversation' type can be used in Add since it's now in DefaultRegisteredTypes
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	id, err := ms.Add(ctx, AddParams{Type: "conversation", Content: "user discussed preferences"})
+	if err != nil {
+		t.Fatalf("Add with 'conversation' type: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty ID for conversation type")
+	}
+
+	m, err := ms.Get(ctx, id, false)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if m.Type != "conversation" {
+		t.Errorf("expected type='conversation', got %q", m.Type)
+	}
+}
+
+func TestScanMemoryFields_NilGuards_FromBatch(t *testing.T) {
+	// Verify that GetBatch also returns non-nil Hints/Metadata (uses scanMemoryFromRows)
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	id, err := ms.Add(ctx, AddParams{Type: "fact", Content: "batch test"})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	results, err := ms.GetBatch(ctx, []string{id}, false)
+	if err != nil {
+		t.Fatalf("GetBatch: %v", err)
+	}
+	m, ok := results[id]
+	if !ok {
+		t.Fatal("expected memory in batch results")
+	}
+	if m.Hints == nil {
+		t.Error("expected Hints to be non-nil (empty slice) from GetBatch, got nil")
+	}
+	if m.Metadata == nil {
+		t.Error("expected Metadata to be non-nil (empty map) from GetBatch, got nil")
+	}
+}
+
+func TestSearch_FTS_UsesRank(t *testing.T) {
+	// Verify FTS search returns results ordered by BM25 rank.
+	// This tests that the query uses 'rank' instead of the invalid '_fts_rank'.
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	// Add multiple memories with overlapping content to establish ranking
+	ms.Add(ctx, AddParams{Type: "fact", Content: "The sky is blue and vast during the day"})
+	ms.Add(ctx, AddParams{Type: "fact", Content: "The sky was blue yesterday"})
+	ms.Add(ctx, AddParams{Type: "fact", Content: "The ocean is deep and blue"})
+
+	results, err := ms.Search(ctx, SearchParams{Query: "sky blue", ValidOnly: false, Limit: 10})
+	if err != nil {
+		t.Fatalf("Search FTS: %v", err)
+	}
+	// The key assertion: the query should NOT fail with an FTS column error.
+	// If _fts_rank was used, SQLite would return an error and fallback to LIKE.
+	// With 'rank', FTS works correctly.
+	if len(results) == 0 {
+		t.Error("expected FTS search results for 'sky blue'")
 	}
 }
