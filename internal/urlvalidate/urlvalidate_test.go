@@ -111,7 +111,6 @@ func TestIsRemoteAllowed(t *testing.T) {
 		{"loopback_ip", "http://127.0.0.1:11434/", false},
 		{"localhost", "http://localhost:11434/", false},
 		{"localhost_localdomain", "http://localhost.localdomain:11434/", false},
-		{"external", "https://example.com:443/", false}, // fail-closed for DNS-unresolved
 		{"invalid", "not-a-url", false},
 	}
 	for _, tc := range tests {
@@ -121,6 +120,19 @@ func TestIsRemoteAllowed(t *testing.T) {
 				t.Errorf("IsRemoteAllowed(%q) = %v, want %v", tc.url, got, tc.expected)
 			}
 		})
+	}
+}
+
+func TestIsRemoteAllowed_PublicIP(t *testing.T) {
+	// Test with a literal public IP (no DNS needed)
+	if !IsRemoteAllowed("http://8.8.8.8/path") {
+		t.Error("expected 8.8.8.8 to be remote (not loopback, not private)")
+	}
+}
+
+func TestIsRemoteAllowed_PrivateIP(t *testing.T) {
+	if IsRemoteAllowed("http://192.168.1.1/path") {
+		t.Error("expected private IP to not be remote")
 	}
 }
 

@@ -101,6 +101,25 @@ func fmtErr(format string, args ...any) error {
 	return fmt.Errorf("llmem: retriever: "+format, args...)
 }
 
+// truncateToValidUTF8 truncates s to at most maxBytes bytes, ensuring the
+// result is a valid UTF-8 string. If truncation would split a multi-byte
+// sequence, it backs up to the previous valid rune boundary.
+func truncateToValidUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	// Walk backward from maxBytes to find a valid rune start boundary.
+	for i := maxBytes; i > 0; i-- {
+		// In UTF-8, continuation bytes have the pattern 10xxxxxx (0x80-0xBF).
+		// A start byte has either 0xxxxxxx (ASCII), 110xxxxx, 1110xxxx, or 11110xxx.
+		if s[i]&0xC0 != 0x80 {
+			return s[:i]
+		}
+	}
+	// Fallback: maxBytes itself should be valid since s[0] is a start byte.
+	return s[:maxBytes]
+}
+
 // NewRetriever creates and initializes a Retriever.
 // If cfg.Blend < 0.0 || cfg.Blend > 1.0, returns error.
 // If cfg.Alpha < 0.0 || cfg.Alpha > 1.0, returns error.
@@ -133,6 +152,13 @@ func NewRetriever(cfg RetrieverConfig) (*Retriever, error) {
 	typePriority := cfg.TypePriority
 	if typePriority == nil {
 		typePriority = DefaultTypePriority()
+	} else {
+		// Defensive copy to prevent caller from mutating retriever state
+		cp := make(map[string]float64, len(typePriority))
+		for k, v := range typePriority {
+			cp[k] = v
+		}
+		typePriority = cp
 	}
 
 	return &Retriever{
@@ -197,12 +223,18 @@ func (r *Retriever) Search(ctx context.Context, query string, limit int, typeFil
 				if err != nil {
 					slog.Debug("llmem: retriever: failed to fetch related memories", "error", err)
 				} else {
-					for i, id := range relatedIDs {
-						if i >= limit {
+					remaining := limit - len(resultIDs)
+					if remaining < 0 {
+						remaining = 0
+					}
+					added := 0
+					for _, id := range relatedIDs {
+						if added >= remaining {
 							break
 						}
 						if m, ok := relatedMems[id]; ok {
 							results = append(results, m)
+							added++
 						}
 					}
 				}
@@ -215,7 +247,7 @@ func (r *Retriever) Search(ctx context.Context, query string, limit int, typeFil
 
 // HybridSearch performs hybrid RRF fusion search combining FTS5 and semantic results.
 // searchMode must be one of "hybrid", "fts", "semantic".
-// Returns nil error for invalid searchMode.
+// Returns an error for invalid searchMode.
 // When searchMode="hybrid" and embedder is nil, logs slog.Warn and falls back to FTS-only.
 // When searchMode="semantic" and embedder is nil, returns error.
 func (r *Retriever) HybridSearch(ctx context.Context, query string, limit int, typeFilter string, alpha float64, searchMode string, trackAccess bool) ([]*ScoredMemory, error) {
@@ -430,7 +462,8 @@ func (r *Retriever) FormatContext(ctx context.Context, query string, budget int,
 
 	context := strings.Join(lines, "\n")
 	if len(context) > budget {
-		context = context[:budget]
+		// Truncate at a valid UTF-8 boundary to avoid splitting multi-byte characters.
+		context = truncateToValidUTF8(context, budget)
 	}
 	return context, nil
 }

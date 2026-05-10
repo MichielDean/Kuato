@@ -245,7 +245,9 @@ func (e *EmbeddingEngine) CheckAvailable(ctx context.Context) bool {
 	}
 
 	for _, m := range tagsResp.Models {
-		if len(m.Name) >= len(e.model) && m.Name[:len(e.model)] == e.model {
+		// Match exact name or name with tag suffix (e.g. "nomic-embed-text:latest").
+		// Do NOT match longer model names that merely start with our model name.
+		if m.Name == e.model || strings.HasPrefix(m.Name, e.model+":") {
 			return true
 		}
 	}

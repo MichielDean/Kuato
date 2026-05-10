@@ -114,10 +114,7 @@ func IsSafeURL(urlStr string, allowRemote bool) bool {
 
 	// Percent-decode the hostname before IP checks to prevent SSRF bypass
 	// via encoded IP addresses (e.g. %31%32%37%2e%30%2e%30%2e%31 → 127.0.0.1).
-	decodedHostname := url.PathEscape(hostname)
-	// url.PathEscape encodes too aggressively; use a simpler decode approach.
-	// Actually, we need to percent-DECODE the hostname, not encode.
-	decodedHostname = decodeHostname(hostname)
+	decodedHostname := decodeHostname(hostname)
 
 	// Try parsing as an IP address first
 	if ip := net.ParseIP(decodedHostname); ip != nil {
@@ -258,8 +255,9 @@ func ValidateBaseURL(baseURL, module string) (string, error) {
 }
 
 // IsRemoteAllowed infers allowRemote from a URL.
-// Returns false for loopback addresses and local-looking hostnames.
-// Returns false (fail-closed) for unrecognized hostnames.
+// Returns false for loopback addresses, private/link-local IPs, and local hostnames.
+// Returns true for public IPs and hostnames that resolve to public IPs.
+// Returns false (fail-closed) for hostnames that fail DNS resolution.
 func IsRemoteAllowed(urlStr string) bool {
 	u, err := url.Parse(urlStr)
 	if err != nil {
@@ -272,7 +270,7 @@ func IsRemoteAllowed(urlStr string) bool {
 
 	// Check if it's an IP address
 	if ip := net.ParseIP(hostname); ip != nil {
-		return !ip.IsLoopback()
+		return !ip.IsLoopback() && !isPrivateIP(ip)
 	}
 
 	// Check for local hostnames
@@ -285,8 +283,18 @@ func IsRemoteAllowed(urlStr string) bool {
 		return false
 	}
 
-	// Fail-closed: unknown hostnames default to false
-	return false
+	// Resolve the hostname and check all resulting IPs.
+	// If DNS resolution fails, fail-closed (return false).
+	addrs := resolveHostname(hostname)
+	if addrs == nil {
+		return false
+	}
+	for _, addr := range addrs {
+		if addr.IsLoopback() || isPrivateIP(addr) {
+			return false
+		}
+	}
+	return true
 }
 
 // stripCredentials removes userinfo (credentials) from a URL for safe error display.

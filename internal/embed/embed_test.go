@@ -205,6 +205,69 @@ func TestEmbeddingEngine_CheckAvailable_True(t *testing.T) {
 	}
 }
 
+func TestEmbeddingEngine_CheckAvailable_ExactMatchNotPrefix(t *testing.T) {
+	// Verify that CheckAvailable uses exact match or name:tag format,
+	// NOT prefix matching. "nomic-embed-text" should NOT match "nomic-embed-text-v2".
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{
+				"models": []map[string]string{
+					{"name": "nomic-embed-text-v2"},
+				},
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	engine, err := NewEmbeddingEngine(EmbeddingConfig{
+		BaseURL:     server.URL,
+		HTTPClient:  server.Client(),
+		MaxCacheSize: 100,
+	})
+	if err != nil {
+		t.Fatalf("NewEmbeddingEngine: %v", err)
+	}
+	defer engine.Close()
+
+	if engine.CheckAvailable(context.Background()) {
+		t.Error("expected nomic-embed-text NOT to match nomic-embed-text-v2 (prefix match bug)")
+	}
+}
+
+func TestEmbeddingEngine_CheckAvailable_TagSuffix(t *testing.T) {
+	// Verify that CheckAvailable matches name:tag format (e.g. "nomic-embed-text:latest").
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{
+				"models": []map[string]string{
+					{"name": "nomic-embed-text:latest"},
+				},
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	engine, err := NewEmbeddingEngine(EmbeddingConfig{
+		BaseURL:     server.URL,
+		HTTPClient:  server.Client(),
+		MaxCacheSize: 100,
+	})
+	if err != nil {
+		t.Fatalf("NewEmbeddingEngine: %v", err)
+	}
+	defer engine.Close()
+
+	if !engine.CheckAvailable(context.Background()) {
+		t.Error("expected nomic-embed-text:latest to match nomic-embed-text model")
+	}
+}
+
 func TestEmbeddingEngine_CheckAvailable_False(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/tags" {

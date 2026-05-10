@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MichielDean/LLMem/internal/store"
 )
@@ -440,6 +441,132 @@ func TestRetriever_FormatContext(t *testing.T) {
 	}
 	if result == "" {
 		t.Error("expected non-empty context string")
+	}
+}
+
+func TestTruncateToValidUTF8(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		maxBytes int
+		expected string
+	}{
+		{"short_enough", "hello", 10, "hello"},
+		{"exact_truncate_ascii", "hello", 5, "hello"},
+		{"truncate_ascii", "hello world", 5, "hello"},
+		{"truncate_within_multibyte", "café世界", 4, "caf"},
+		{"truncate_at_boundary", "café世界", 5, "café"},
+		{"empty_input", "", 5, ""},
+		{"zero_max", "hello", 0, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := truncateToValidUTF8(tc.input, tc.maxBytes)
+			if result != tc.expected {
+				t.Errorf("truncateToValidUTF8(%q, %d) = %q, want %q", tc.input, tc.maxBytes, result, tc.expected)
+			}
+			// Verify result is valid UTF-8
+			for _, r := range result {
+				if r == utf8.RuneError {
+					t.Errorf("result contains invalid UTF-8 rune: %q", result)
+				}
+			}
+		})
+	}
+}
+
+func TestRetriever_FormatContext_UTF8Truncation(t *testing.T) {
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store:   ms,
+		Blend: 0.3,
+		Alpha: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	ctx := context.Background()
+	// Add a memory with Chinese characters
+	_, err = ms.Add(ctx, store.AddParams{
+		ID:         "mem-1",
+		Type:       "fact",
+		Content:    "这是一个中文测试内容",
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Use a small budget that would truncate in the middle of a multi-byte sequence
+	result, err := r.FormatContext(ctx, "中文", 20, "")
+	if err != nil {
+		t.Fatalf("FormatContext: %v", err)
+	}
+	// Verify the result is valid UTF-8 (no partial sequences)
+	for _, ch := range result {
+		if ch == utf8.RuneError {
+			t.Errorf("FormatContext produced invalid UTF-8: %q", result)
+		}
+	}
+}
+
+func TestRetriever_HybridSearch_InvalidModeReturnsError(t *testing.T) {
+	// Verify that HybridSearch returns an error for invalid search modes,
+	// not nil error (docstring fix).
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store: ms,
+		Blend: 0.3,
+		Alpha: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	ctx := context.Background()
+	_, err = r.HybridSearch(ctx, "test", 10, "", 0.7, "badmode", false)
+	if err == nil {
+		t.Error("expected error for invalid search mode, got nil")
+	}
+}
+
+func TestNewRetriever_DefensiveCopyTypePriority(t *testing.T) {
+	// Verify that modifying the original TypePriority map after construction
+	// does not affect the retriever's internal state.
+	ms := newTestStore(t)
+
+	customPrio := map[string]float64{
+		"decision": 1.5,
+		"fact":     1.0,
+	}
+
+	r, err := NewRetriever(RetrieverConfig{
+		Store:        ms,
+		Blend:        0.3,
+		Alpha:        0.7,
+		TypePriority: customPrio,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	// Mutate the original map
+	customPrio["decision"] = 999.0
+
+	// Verify retriever has its own copy — it should use the original values
+	signals := ComputeRerankSignals(&store.Memory{
+		ID:         "test-1",
+		Type:       "decision",
+		Confidence: 0.5,
+	}, r.typePriority, time.Now().UTC())
+
+	if signals.Type == 999.0 {
+		t.Error("TypePriority was not defensively copied — mutation leaked into retriever")
+	}
+	if signals.Type != 1.5 {
+		t.Errorf("expected Type=1.5, got %f", signals.Type)
 	}
 }
 
