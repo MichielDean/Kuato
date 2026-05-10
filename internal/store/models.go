@@ -69,11 +69,13 @@ type UpdateParams struct {
 
 // SearchParams contains the parameters for searching memories.
 type SearchParams struct {
-	Query     string
-	Type      string
-	ValidOnly bool
-	Limit     int
-	Offset    int
+	Query       string
+	Type        string
+	ValidOnly   bool
+	Limit       int
+	Offset      int
+	FTSOnly     bool
+	SemanticOnly bool
 }
 
 // SearchCountParams contains the parameters for counting search results.

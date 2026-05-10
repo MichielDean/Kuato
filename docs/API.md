@@ -1145,3 +1145,266 @@ remote := urlvalidate.IsRemoteAllowed("http://localhost:11434") // false (loopba
 - **DNS rebinding mitigation:** `SafeURLOpen` re-resolves the hostname immediately before the HTTP request to detect DNS rebinding TOCTOU attacks.
 - **Credential stripping:** Error messages and logs strip userinfo from URLs via `stripCredentials()`, preserving query strings and fragments.
 - **Fail-closed:** `IsRemoteAllowed` returns `false` for hostnames that fail DNS resolution.
+
+### Configuration (internal/config)
+
+The `internal/config` package provides configuration loading from YAML files with path resolution, defaults, and validation.
+
+```go
+import "github.com/MichielDean/LLMem/internal/config"
+
+// Load config from the default path
+cfg, err := config.LoadConfig(paths.GetConfigPath())
+
+// Access config sections
+dbPath := cfg.DBPath()           // resolved database path
+ollamaURL, err := cfg.OllamaURL() // validated Ollama URL
+dreamerCfg := cfg.DreamerConfig() // DreamerConfig for dream.NewDreamer()
+dreamCfg := cfg.DreamConfigResolved()
+sessionCfg := cfg.SessionConfigResolved()
+
+// Write config YAML (with file permissions 0600)
+written, err := config.WriteConfigYAML(path, configMap, false) // false = don't overwrite
+```
+
+#### Config Types
+
+```go
+type Config struct {
+    Memory   MemoryConfig
+    Dream    DreamConfig
+    OpenCode OpenCodeConfig
+    Session  SessionConfig
+}
+
+type MemoryConfig struct {
+    DBPath        string
+    OllamaURL     string
+    EmbedModel    string
+    ExtractModel  string
+    ContextBudget int
+    AutoExtract   bool
+    MaxFileSize   int64
+}
+
+type DreamConfig struct {
+    SimilarityThreshold    float64
+    DecayRate               float64
+    DecayIntervalDays       int
+    DecayFloor              float64
+    ConfidenceFloor          float64
+    BoostThreshold           int
+    BoostAmount              float64
+    DiaryPath                string
+    ReportPath               string
+    BehavioralThreshold      int
+    BehavioralLookbackDays   int
+    AutoLinkThreshold        float64
+}
+
+type SessionConfig struct {
+    Adapter         string
+    DebounceSeconds int
+}
+```
+
+#### Validation
+
+- `OllamaURL()` validates the URL via `urlvalidate.ValidateBaseURL` (SSRF protection).
+- `DBPath()` resolves `~` and applies defaults.
+- `WriteConfigYAML` writes with `0600` permissions.
+
+### Dream Cycle (internal/dream)
+
+See [Dream Cycle & Extraction](DREAM.md#go-api--dream-package) for full documentation.
+
+### Extraction (internal/extract)
+
+The `internal/extract` package provides LLM-based memory extraction via Ollama (see [Dream Cycle & Extraction](DREAM.md#go) for usage).
+
+```go
+import "github.com/MichielDean/LLMem/internal/extract"
+
+engine, err := extract.NewExtractionEngine(extract.ExtractionConfig{
+    Model:   "glm-5.1:cloud",
+    BaseURL: "http://localhost:11434",
+})
+
+// Extract returns empty slice on Ollama failure (graceful degradation)
+memories := engine.Extract(ctx, text)
+
+// Check model availability
+available := engine.CheckAvailable(ctx)
+```
+
+#### ExtractionConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| Model | string | `"glm-5.1:cloud"` | Extraction model name |
+| BaseURL | string | `"http://localhost:11434"` | Ollama API base URL (validated for SSRF) |
+| HTTPClient | *http.Client | nil → new client | Optional pre-configured client (for testing) |
+| OllamaClient | *ollama.OllamaClient | nil → new client | Optional pre-configured client (takes precedence over BaseURL) |
+
+### Introspection (internal/introspect)
+
+The `internal/introspect` package provides failure analysis and lesson learning (see [Dream Cycle & Extraction](DREAM.md#go) for usage).
+
+```go
+import "github.com/MichielDean/LLMem/internal/introspect"
+
+id, err := introspect.IntrospectFailure(ctx, ms, introspect.IntrospectFailureParams{
+    WhatHappened: "null pointer dereference",
+    Category:     "NULL_SAFETY",
+    Context:      "handler.go:42",
+    CaughtBy:     "self-review",
+    ProposedFix:  "add nil check",
+})
+
+id, err := introspect.LearnLesson(ctx, ms, introspect.LearnLessonParams{
+    WhatWasWrong:  "used global state",
+    WhatIsCorrect: "inject dependency via constructor",
+    Context:       "service.go:15",
+})
+```
+
+Both functions use LLM expansion via Ollama when available. When Ollama is unavailable, they gracefully degrade to storage-only mode (storing the raw parameters without LLM expansion).
+
+### Ollama Client (internal/ollama)
+
+The `internal/ollama` package provides an HTTP client for the Ollama `/api/generate` and `/api/tags` endpoints.
+
+```go
+import "github.com/MichielDean/LLMem/internal/ollama"
+
+client, err := ollama.NewOllamaClient(ollama.OllamaClientConfig{
+    BaseURL:    "http://localhost:11434",
+    Timeout:    300 * time.Second,
+    HTTPClient: nil,  // nil → new client with timeout
+})
+
+// Generate text using Ollama
+response, err := client.Generate(ctx, "prompt text", "model-name")
+
+// Check if a model is available
+available := client.IsAvailable(ctx)
+
+// Pull a model (returns true if newly pulled, false if already exists)
+pulled, err := client.PullModel(ctx, "glm-5.1:cloud")
+
+// Close idle connections
+client.Close()
+```
+
+#### OllamaClientConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| BaseURL | string | `"http://localhost:11434"` | Validated via `urlvalidate.ValidateBaseURL` for SSRF protection |
+| Timeout | time.Duration | 300s | HTTP client timeout (0 → 300s) |
+| HTTPClient | *http.Client | nil → new client | Pre-configured client (for testing with httptest) |
+
+### Path Validation (internal/paths)
+
+The `internal/paths` package resolves LLMem paths and validates against path traversal attacks.
+
+```go
+import "github.com/MichielDean/LLMem/internal/paths"
+
+// Path resolution
+home := paths.GetHomeDir()          // ~/.config/llmem/ (or LMEM_HOME)
+dbPath := paths.GetDBPath()         // ~/.config/llmem/memory.db
+cfgPath := paths.GetConfigPath()    // ~/.config/llmem/config.yaml
+diaryPath := paths.GetDreamDiaryPath()     // ~/.config/llmem/dream-diary.md
+reportPath := paths.GetDreamReportPath()   // ~/.config/llmem/dream-report.html
+ctxDir := paths.GetContextDir()      // ~/.config/llmem/context/
+
+// Validation
+validID, err := paths.ValidateSessionID("abc123")   // rejects /, \, ..
+resolved, err := paths.ValidateWritePath("/tmp/out.html", "report")
+homePath, err := paths.ValidateHomePath("/home/user/.config/llmem", "LMEM_HOME")
+blocked := paths.IsBlockedPath("/etc/passwd")  // true — system directories blocked
+
+// Migration
+migrated, err := paths.MigrateFromLobsterdog()  // copies ~/.lobsterdog/ to ~/.config/llmem/
+```
+
+### Session Hooks (internal/session)
+
+The `internal/session` package provides session lifecycle coordination with OpenCode adapter support.
+
+```go
+import "github.com/MichielDean/LLMem/internal/session"
+
+coord, err := session.NewSessionHookCoordinator(session.SessionHookConfig{
+    Store: ms,
+})
+
+result, err := coord.OnCreated(ctx, "session-id")       // "success" | "already_processed"
+result, err := coord.OnIdle(ctx, "session-id")          // "success" | "debounced" | "no_transcript"
+resultType, ctxPath, err := coord.OnCompacting(ctx, "session-id")  // "success" | "no_memories"
+result, err := coord.OnEnding(ctx, "session-id")        // "success"
+```
+
+All methods validate session IDs via `paths.ValidateSessionID` to prevent path traversal. OnIdle includes a 30-second debounce mechanism.
+
+### Systemd Unit Generation (internal/systemd)
+
+The `internal/systemd` package generates systemd service and timer unit files for the dream cycle.
+
+```go
+import "github.com/MichielDean/LLMem/internal/systemd"
+
+// Generate service unit
+serviceContent, err := systemd.GenerateServiceUnit("*-*-* 03:00:00")
+
+// Generate timer unit (validates schedule for shell metacharacters)
+timerContent, err := systemd.GenerateTimerUnit("*-*-* 03:00:00")
+
+// Validate a systemd schedule expression
+valid := systemd.ValidateSchedule("*-*-* 03:00:00")  // true
+valid := systemd.ValidateSchedule("$(evil)")            // false — rejects shell metacharacters
+```
+
+Templates are embedded via `embed.FS`. `GenerateTimerUnit` calls `ValidateSchedule` before template interpolation to prevent injection.
+
+### Taxonomy (internal/taxonomy)
+
+The `internal/taxonomy` package provides error taxonomy constants for self_assessment memories.
+
+```go
+import "github.com/MichielDean/LLMem/internal/taxonomy"
+
+// Access taxonomy map
+for category, description := range taxonomy.ErrorTaxonomy {
+    fmt.Println(category, ":", description)
+}
+
+// Get ordered category keys
+keys := taxonomy.ErrorTaxonomyKeys()
+// ["NULL_SAFETY", "ERROR_HANDLING", "OFF_BY_ONE", "RACE_CONDITION", "AUTH_BYPASS",
+//  "DATA_INTEGRITY", "MISSING_VERIFICATION", "EDGE_CASE", "PERFORMANCE", "DESIGN", "REVIEW_PASSED"]
+
+// Parse a formatted self-assessment line
+parsed := taxonomy.ParseSelfAssessment("NULL_SAFETY: null pointer dereference")
+// map[string]string{"Category": "NULL_SAFETY", "What": "null pointer dereference"}
+
+// Get comma-separated category choices
+choices := taxonomy.IntrospectCategoryChoices()
+```
+
+#### Error Categories
+
+| Category | Description |
+|----------|-------------|
+| `NULL_SAFETY` | Missing null/None/undefined checks |
+| `ERROR_HANDLING` | Missing try/except, bare except, swallowed errors |
+| `OFF_BY_ONE` | Boundary errors, wrong loop bounds |
+| `RACE_CONDITION` | Concurrency issues, async problems |
+| `AUTH_BYPASS` | Missing auth checks, SSRF, injection |
+| `DATA_INTEGRITY` | Stale derived fields, cache sync issues |
+| `MISSING_VERIFICATION` | Skipped tests, unverified outputs |
+| `EDGE_CASE` | Unhandled empty input, unexpected types |
+| `PERFORMANCE` | N+1 queries, memory leaks |
+| `DESIGN` | Architectural issues, coupling problems |
+| `REVIEW_PASSED` | Clean review — positive outcome |

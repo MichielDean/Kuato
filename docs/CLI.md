@@ -9,11 +9,12 @@ llmem [OPTIONS] COMMAND
 
 Options:
   --db PATH    Path to memory database (default: ~/.config/llmem/memory.db)
+  --json       Output results as JSON
 
 Commands:
   add                 Add a memory
   get                 Get a memory by ID
-  search              Search memories (hybrid RRF fusion of FTS5 + semantic)
+  search              Search memories
   list                List memories
   stats               Show memory statistics
   update              Update a memory
@@ -21,57 +22,54 @@ Commands:
   delete              Delete a memory
   export              Export all memories to JSON
   import              Import memories from a JSON file
-  register-type       Register a new memory type
-  types               List registered memory types
-  note                Add a note to the working memory inbox
-  inbox               List items in the working memory inbox
-  embed               Report embedding quality metrics
-  consolidate         Promote inbox items to long-term memory
-  dream               Run the dream consolidation cycle
   init                Initialize the llmem memory system
-  learn               Ingest a codebase into the code index
+  metrics             Report embedding quality metrics
+  dream               Run the dream consolidation cycle
+  introspect          Analyze a failure and store self_assessment memory
+  learn               Learn a lesson from a wrong→right correction
+  track-review        Persist review findings as self_assessment memories
   context             Inject relevant memory context for a session
   hook                Handle session lifecycle hook events
-  track-review        Persist review findings as self_assessment memories
-  suggest-categories  List error taxonomy categories for a severity tier
 ```
 
-Plugins registered via [`register_cli_plugin`](#cli-plugin-registry) add additional subcommands at runtime.
+**Python-only commands** (not yet in the Go CLI): `register-type`, `types`, `note`, `inbox`, `consolidate`, `embed`, `learn` (codebase indexing), `suggest-categories`.
 
-**Backward compatibility:** The `lobmem` command is installed as a symlink to `llmem`. When invoked as `lobmem`, a deprecation warning is printed to stderr: `warning: 'lobmem' is deprecated, use 'llmem'`. This wrapper will be removed in a future version.
+> The Go CLI uses `metrics` instead of `embed`, and `learn` is for wrong→right corrections (not codebase indexing).
 
 ### `llmem add`
 
 ```bash
 llmem add --type TYPE --content TEXT [--summary TEXT] [--source SOURCE] \
   [--confidence FLOAT] [--valid-until TIMESTAMP] [--metadata JSON] \
-  [--relation TYPE --relation-to ID]
+  [--file PATH]
 ```
 
-- `--type` (required): Memory type. Use `llmem types` to list registered types, or `llmem register-type` to add new ones.
-- `--content` or `--file`: The memory text (or read from a file). Files in protected system directories (e.g. `/etc`, `/bin`, `/usr/bin`) are blocked to prevent arbitrary file reads.
-- `--source`: Source of the memory (default: `manual`). Valid: `manual`, `session`, `heartbeat`, `extraction`, `import`.
+- `--type`: Memory type (default: `fact`).
+- `--content` or `--file`: The memory text, or read content from a file. Files in protected system directories (e.g. `/etc`, `/bin`, `/usr/bin`) are blocked to prevent arbitrary file reads.
+- `--summary`: Memory summary.
+- `--source`: Source of the memory (default: `manual`).
 - `--confidence`: Confidence score 0–1 (default: 0.8).
-- `--relation` / `--relation-to`: Create a relation to another memory after adding.
+- `--valid-until`: ISO 8601 timestamp for validity expiration.
+- `--metadata`: JSON metadata string.
+- `--file`: Read content from a file path. The path is resolved and validated against system directory traversal.
 
 ### `llmem search`
 
 ```bash
-llmem search QUERY [--type TYPE] [--limit N] [--json] [--include-code] \
-  [--traverse-refs] [--max-ref-depth N] [--fts-only | --semantic-only] [--provider PROVIDER]
+llmem search QUERY [--type TYPE] [--limit N] [--json] [--valid-only] \
+  [--fts-only | --semantic-only]
 ```
 
-Hybrid search combining FTS5 keyword search and vector semantic search via Reciprocal Rank Fusion (RRF), followed by multi-signal reranking. By default, both search modes are merged with `alpha=0.7` (favoring semantic results while keeping keyword relevance), then reranked with `blend=0.3` (70% semantic, 30% confidence/recency/access/type signals).
+Hybrid search combining FTS5 keyword search and vector semantic search via Reciprocal Rank Fusion (RRF).
 
-- `--provider PROVIDER`: Override the embedding provider for this search. Choices: `ollama`, `openai`, `local`, `none`. When specified, `resolve_provider` is called with this provider as default, bypassing config-based selection. Falls back to FTS5-only search if the provider fails.
+- `--type`: Filter by memory type.
+- `--limit`: Maximum results (default: 20).
+- `--json`: Output results as JSON.
+- `--valid-only`: Only show valid (not invalidated) memories.
 - `--fts-only`: Use FTS5 keyword search only (no embedder needed).
-- `--semantic-only`: Use semantic (embedding) search only (requires an embedder). Raises an error if no embedder is available.
-- `--include-code`: Include indexed code chunks in search results alongside memories. Code results are interleaved with memory results using RRF scoring. Code results display with a `[code]` prefix and show `file=` and `lines=` instead of type and confidence. Requires running `llmem learn` first to populate the code index.
-- `--traverse-refs`: Follow code reference edges from search results. When a memory has a `references` relation to a code chunk (`target_type='code'`), the referenced file content is resolved and included in the results. Code ref results have `_source: "code"` and include `file_path`, `start_line`, `end_line`, and `content` keys. Security: code refs must use relative paths (no `/` prefix or `..` traversal) and resolve under the current working directory.
-- `--max-ref-depth N`: Maximum number of hops when traversing code reference edges (1–5, default: 3). Higher values follow ref chains deeper (e.g., depth 2 finds memories sharing a code ref, depth 3 finds their code refs).
-- Without either `--fts-only` / `--semantic-only` flag: hybrid mode — runs both FTS5 and semantic search, fuses results via RRF, then applies reranking. Falls back to FTS5-only if no embedder is configured.
+- `--semantic-only`: Use semantic (embedding) search only (requires an embedder).
 
-With `--json`, outputs raw JSON (each result includes `_rrf_score` and `_rerank_score` keys, plus a `_source` key of `"memory"` or `"code"` when `--include-code` is used); otherwise, a human-readable table with an `rrf=` score column.
+Without `--fts-only` or `--semantic-only`, the default mode is FTS5-only (since the Go CLI currently sets `DisableVec: true`). Python supports full hybrid mode with `--include-code`, `--traverse-refs`, and `--provider` flags.
 
 ### `llmem list`
 
@@ -79,11 +77,11 @@ With `--json`, outputs raw JSON (each result includes `_rrf_score` and `_rerank_
 llmem list [--type TYPE] [--all] [--limit N]
 ```
 
-By default, excludes expired memories. Use `--all` to include them.
+By default, excludes expired memories. Use `--all` to include them. `--limit` defaults to 100.
 
 ### `llmem stats`
 
-Shows total, active, and expired memory counts, plus a breakdown by type.
+Shows total, active, and expired memory counts, plus a breakdown by type. Use `--json` for JSON output.
 
 ### `llmem update`
 
@@ -91,6 +89,8 @@ Shows total, active, and expired memory counts, plus a breakdown by type.
 llmem update ID [--content TEXT] [--summary TEXT] [--confidence FLOAT] \
   [--valid-until TIMESTAMP] [--metadata JSON]
 ```
+
+Only fields with `--` flags are updated; omitted fields remain unchanged.
 
 ### `llmem invalidate`
 
@@ -111,74 +111,52 @@ Permanently removes a memory (and its embeddings, FTS index entries, relations).
 ### `llmem export` / `llmem import`
 
 ```bash
-llmem export [--output FILE]
+llmem export [--output FILE] [--limit N]
 llmem import FILE
 ```
 
-Export produces a JSON array of all memories. Import validates that each entry has `type` and `content` string fields before inserting.
+Export produces a JSON array of all memories (default limit: 10,000). Import validates that each entry has `type` and `content` string fields before inserting.
 
-- `--output FILE`: Write export to a file. The output path is validated against traversal attacks, system directories, and symlinks.
-- Import `FILE`: Path to a JSON file. Files in protected system directories are blocked, and the file must be under 10 MiB.
+- `--output FILE`: Write export to a file. The output path is validated against traversal attacks.
+- `--limit N`: Maximum memories to export (default: 10000).
+- Import `FILE`: Path to a JSON file. Files are validated against system directory traversal. The file must be under 10 MiB.
 
-### `llmem note`
-
-```bash
-llmem note TEXT [--source SOURCE] [--attention-score FLOAT] [--metadata JSON]
-```
-
-Add an ephemeral note to the working memory inbox. Notes are staged and not yet in long-term memory.
-
-- `TEXT` (required): Note content text.
-- `--source`: Origin of the note. One of `note`, `learn`, `extract`, `consolidation`. Default: `note`.
-- `--attention-score`: Float in [0.0, 1.0]. Higher scores survive eviction and are prioritized during consolidation. Default: `0.5`.
-- `--metadata`: Optional JSON metadata string.
-
-The inbox has a configurable capacity (default: 7, Miller's 7±2). When full, the item with the lowest attention score is evicted (tiebreak: earliest `created_at`).
-
-### `llmem inbox`
+### `llmem metrics`
 
 ```bash
-llmem inbox [--limit N] [--json]
+llmem metrics
 ```
 
-List items in the working memory inbox, ordered by attention score descending.
+Report the count of embeddings stored in the database. In the Go CLI, this command outputs the number of embedded memories. For full embedding quality metrics (anisotropy, similarity range, discrimination gap), use the Python CLI's `llmem embed` command.
 
-- `--limit`: Maximum items to display. Default: 20.
-- `--json`: Output as JSON (full item details).
-
-Without `--json`, prints a human-readable table with ID, source, score, content preview, and timestamp.
-
-### `llmem embed`
+### `llmem introspect`
 
 ```bash
-llmem embed
+llmem introspect --what-happened TEXT [--category CATEGORY] [--context CONTEXT] \
+  [--caught-by WHO] [--proposed-fix FIX]
 ```
 
-Report embedding quality metrics for existing embeddings. Computes anisotropy, similarity range, and discrimination gap from the embeddings already stored in the database. Does **not** generate new embeddings — only analyses existing ones.
+Analyze a failure and store a `self_assessment` memory. Uses LLM expansion via Ollama when available, with graceful degradation to storage-only mode when Ollama is unavailable.
 
-Since the sole purpose of the `embed` subcommand is to report metrics, they are always reported (no flag needed).
+- `--what-happened` (required): Description of what went wrong.
+- `--category`: Error taxonomy category (e.g., `NULL_SAFETY`, `ERROR_HANDLING`). See `taxonomy.ErrorTaxonomy` for all categories.
+- `--context`: Context where the failure occurred (e.g., `handler.go:42`).
+- `--caught-by`: How the finding was discovered (e.g., `self-review`, `CI`).
+- `--proposed-fix`: Proposed fix for the issue.
 
-Output includes:
-
-- **Anisotropy**: Measures vector uniformity. Lower is better (more isotropic). Value in [0.0, 1.0].
-- **Similarity range**: Spread between max and min pairwise cosine similarity. Higher is better.
-- **Discrimination gap**: Average inter-class cosine distance minus average intra-class cosine distance. Higher is better.
-
-Warnings are printed to stderr when anisotropy > 0.5 or similarity range < 0.1, suggesting embeddings may be poor quality and a different model should be considered.
-
-On large stores (>10,000 embeddings), metrics are computed on a capped sample to prevent O(n²) CPU hangs. A note is printed showing the capped count.
-
-### `llmem consolidate`
+### `llmem learn`
 
 ```bash
-llmem consolidate [--min-score FLOAT] [--dry-run] [--metrics]
+llmem learn --wrong TEXT --right TEXT [--context CONTEXT]
 ```
 
-Promote inbox items to long-term memory. Items with attention score ≥ `min_score` become permanent memories (with `source=consolidation` and `confidence=attention_score`). Items below the threshold are evicted. After consolidation, the inbox is empty.
+Learn a lesson from a wrong→right correction and store it as a `procedure` memory. Uses LLM expansion via Ollama when available, with graceful degradation to storage-only mode.
 
-- `--min-score`: Minimum attention score threshold for promotion. Items below this are evicted. Default: `0.0` (promote everything).
-- `--dry-run`: Show what would happen without making changes. Promoted items won't have a `memory_id`, and no rows are inserted or deleted.
-- `--metrics`: Compute and report embedding quality metrics (anisotropy, similarity range, discrimination gap) after consolidation. Useful for checking embedding health after memories have been promoted.
+- `--wrong` (required): What was wrong.
+- `--right` (required): What is correct.
+- `--context`: Additional context for the correction.
+
+> **Note:** In the Python CLI, `llmem learn` ingests a codebase directory into the code index. In the Go CLI, `llmem learn` is for wrong→right lesson corrections.
 
 ### `llmem dream`
 
@@ -204,123 +182,49 @@ All dream configuration (thresholds, model, schedule, etc.) is read from the `dr
 
 Output is printed to stdout. On `--report` path validation errors, the error message is printed to stderr.
 
-### `llmem register-type` / `llmem types`
-
-```bash
-llmem register-type my_custom_type
-llmem types
-```
-
-The default types are: `fact`, `decision`, `preference`, `event`, `project_state`, `procedure`, `conversation`, `self_assessment`. Register additional types at runtime via `register-type`. Type names must match `^[a-z][a-z0-9_]*$` and be at most 64 characters.
-
-### `llmem init`
-
-```bash
-llmem init [--ollama-url URL] [--non-interactive] [--force]
-```
-
-Initialize the llmem memory system. Creates `~/.config/llmem/` (or `LMEM_HOME`) with `config.yaml` and initializes the SQLite database (`memory.db`). Detects available LLM providers in order of precedence: Ollama (if reachable) > OpenAI (if `OPENAI_API_KEY` is set) > Anthropic (if `ANTHROPIC_API_KEY` is set) > local (if `sentence-transformers` is installed) > none.
-
-- `--ollama-url URL`: Override the Ollama base URL (default: `http://localhost:11434`). Must be a valid `http://` or `https://` URL.
-- `--non-interactive`: Skip all prompts and use defaults. Useful for scripting and CI.
-- `--force`: Overwrite an existing `config.yaml`. Without this flag, init is idempotent — running it twice prints a message and exits without error.
-
-In interactive mode, you'll be prompted for:
-
-1. **Ollama URL** — press Enter to accept the detected/default URL, or type a custom URL (validated for safety).
-2. **Dream cycle** — enable or disable the background dream cycle (default: enabled).
-
-If `~/.lobsterdog/` exists (legacy path), init automatically migrates data to `~/.config/llmem/`.
-
-### `llmem learn`
-
-```bash
-llmem learn PATH [--strategy paragraph|fixed] [--window-size N] [--overlap N] \
-  [--no-embed] [--max-file-size N] [--max-depth N] [--ollama-url URL]
-```
-
-Ingest a codebase directory into the code index. Walks the directory tree respecting `.gitignore` files, chunks each source file, generates embeddings, and stores the results in a `code_chunks` table (shared database with memories). Running `llmem learn` on the same directory is idempotent — stale chunks for each file are removed before re-inserting.
-
-- `PATH` (required): Root directory to ingest.
-- `--strategy`: Chunking strategy — `paragraph` (split at blank-line boundaries, merges short paragraphs) or `fixed` (sliding window with overlap). Default: `paragraph`.
-- `--window-size`: Window size in lines for `fixed` chunking strategy. Default: 50.
-- `--overlap`: Overlap in lines between consecutive chunks for `fixed` strategy. Must be less than `--window-size`. Default: 10.
-- `--no-embed`: Skip embedding generation. Chunks are stored with text only (searchable via FTS5, but not via semantic/vec search). Useful for quick indexing without an embedding provider.
-- `--max-file-size`: Maximum file size in bytes to index. Files exceeding this limit are skipped. Default: 1048576 (1 MiB).
-- `--max-depth`: Maximum directory recursion depth. Prevents stack overflow from deeply nested trees. Default: 50.
-- `--ollama-url`: Ollama base URL for embedding generation. Default: `http://localhost:11434`.
-
-**Skipped files:** Binary files (images, fonts, archives, compiled objects), common non-code directories (`.git`, `__pycache__`, `node_modules`, `.venv`), credential files (`.env`, `.env.*`, `.pem`, `.key`, `id_rsa`, `id_dsa`, `id_ed25519`, `id_ecdsa`, `.netrc`, `.htpasswd`, `.npmrc`, `.pypirc`), and symlinks (to prevent path traversal).
-
-**Language detection:** File extensions are mapped to language names automatically (e.g., `.py` → `python`, `.rs` → `rust`, `.go` → `go`). Unknown extensions produce `None`.
-
-**Output:** `Ingested N chunks from M files`
+> **Python-only commands:** The Python CLI includes additional commands not yet in the Go CLI: `register-type`, `types`, `note`, `inbox`, `consolidate`, `embed` (full embedding quality metrics), `learn` (codebase indexing), and `suggest-categories`.
 
 ### `llmem context`
 
 ```bash
-llmem context SESSION_ID [--compacting]
+llmem context --session-id ID [--compacting]
 ```
 
-Inject relevant memory context for a session. Used by session hooks (e.g., Copilot CLI, OpenCode plugins) to inject memories into a new or compacting session. Writes a context file and prints its content to stdout.
+Inject relevant memory context for a session. Used by session hooks to inject memories into a new or compacting session.
 
-- `SESSION_ID` (required): The session ID to inject context for. Validated against path traversal attacks (rejects `/`, `\`, `..`).
+- `--session-id` (required): The session ID to inject context for. Validated against path traversal attacks.
 - `--compacting`: If set, inject key memories for compaction instead of session start context. High-confidence memories of types `decision`, `preference`, `procedure`, and `project_state` (confidence ≥ 0.7) are selected.
-
-On success, prints the context content to stdout. On error, prints to stderr and exits with code 1. If the session was already processed, prints nothing (for session start) or the existing context file (for re-invocations).
 
 ### `llmem hook`
 
 ```bash
-llmem hook idle SESSION_ID
+llmem hook --type TYPE --session-id ID
 ```
 
-Handle session lifecycle hook events. Currently supports only the `idle` hook type, which triggers memory extraction and introspection for a session.
+Handle session lifecycle hook events. Supports four hook types:
 
-- `hook_type` (required): The hook type to dispatch. Only `idle` is supported.
-- `SESSION_ID` (required): The session ID for the hook event. Validated against path traversal attacks.
+- `--type` (required): Hook type. Choices: `created`, `idle`, `compacting`, `ending`.
+- `--session-id` (required): Session ID for the hook event. Validated against path traversal attacks.
 
-The idle hook processes the session's transcript, extracts memories, and runs introspection automatically. It uses the `extraction_log` table with `source_type='session'` to prevent re-extraction. If the session was recently processed (debounce), it logs a debug message and exits normally.
+The `idle` hook processes the session's transcript, extracts memories, and runs introspection automatically. It uses a debounce mechanism (via `extraction_log` table) to prevent re-extraction.
 
 ### `llmem track-review`
 
 ```bash
-llmem track-review --context CONTEXT  [--category CATEGORY --what-happened WHAT] [--severity SEVERITY] [--caught-by WHO]
-llmem track-review --finding-file FILE --context CONTEXT
-llmem track-review --context CONTEXT
+llmem track-review --single --findings PATH
+llmem track-review --batch --findings PATH
+llmem track-review --clean
 ```
 
-Persist review findings as `self_assessment` memories. This is the mechanical post-review hook for adversarial code reviews. Three modes:
+Persist review findings as `self_assessment` memories. Three modes:
 
-1. **Single finding**: `--category` + `--what-happened` (optionally `--severity`, `--caught-by`)
-2. **Batch from file**: `--finding-file` (JSON array of finding objects, each with `category`, `what_happened`, optional `severity` and `caughtBy`)
-3. **Clean review**: no flags → creates a `REVIEW_PASSED` memory
+1. **Single finding** (`--single`): Store one finding from a findings file or stdin.
+2. **Batch** (`--batch`): Store multiple findings from a findings file or stdin. Each line is parsed as `Category: value` and stored.
+3. **Clean** (`--clean`): Invalidate all existing `self_assessment` memories with `source=track-review`.
 
-- `--context` (recommended): File or task identifier (e.g., `handler.py:42`).
-- `--category`: Error taxonomy category for a single finding (e.g., `NULL_SAFETY`, `ERROR_HANDLING`). See `llmem suggest-categories` for categories per severity tier.
-- `--what-happened`: Behavioral description of the finding.
-- `--severity`: Severity tier (`Blocking`, `Required`, `Strong Suggestions`, `Noted`).
-- `--caught-by`: How the finding was discovered (e.g., `self-review`, `CI`). Defaults to `self-review` for single findings, and `self-review` for batch findings where `caughtBy` is not specified in the JSON.
-- `--finding-file`: Path to a JSON file containing an array of finding objects. Mutually exclusive with `--category`.
+- `--single`: Store a single finding.
+- `--batch`: Store multiple findings.
+- `--clean`: Invalidate all track-review memories.
+- `--findings`: Path to findings file (or stdin). The path is validated against system directory traversal.
 
-`--category` and `--finding-file` are mutually exclusive. Every invocation MUST produce at least one memory — clean reviews create a `REVIEW_PASSED` memory automatically. An empty JSON array in batch mode also creates a `REVIEW_PASSED` memory.
-
-### `llmem suggest-categories`
-
-```bash
-llmem suggest-categories TIER
-```
-
-List the error taxonomy categories applicable to a severity tier. Useful for determining which categories to use when tracking review findings.
-
-- `TIER` (required): Severity tier. Choices: `Blocking`, `Required`, `Strong Suggestions`, `Noted`, `Passed`.
-
-Output: One category per line. Example:
-
-```
-$ llmem suggest-categories Required
-NULL_SAFETY
-ERROR_HANDLING
-MISSING_VERIFICATION
-EDGE_CASE
-```
+Every invocation with `--single` or `--batch` parses lines from input. Lines with unknown categories still produce memories with the parsed category. Empty input or unknown categories produce a `REVIEW_PASSED` memory.

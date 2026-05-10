@@ -113,7 +113,16 @@ go test ./...
 | Package | Description |
 |---------|-------------|
 | `internal/store` | Core `MemoryStore` — add, get, update, invalidate, delete, search, relations, import/export, vector search |
-| `cmd/llmem` | CLI entrypoint (currently a stub) |
+| `internal/config` | Configuration loading from YAML, path resolution, defaults |
+| `internal/dream` | Dream consolidation cycle (light, deep, REM phases) |
+| `internal/extract` | LLM-based memory extraction via Ollama |
+| `internal/introspect` | Failure analysis (`IntrospectFailure`) and lesson learning (`LearnLesson`) |
+| `internal/ollama` | Ollama `/api/generate` and `/api/tags` client |
+| `internal/paths` | Path resolution, validation, migration from legacy `~/.lobsterdog/` |
+| `internal/session` | Session lifecycle hooks (`OnCreated`, `OnIdle`, `OnCompacting`, `OnEnding`) |
+| `internal/systemd` | Systemd service/timer unit generation for dream cycle |
+| `internal/taxonomy` | Error taxonomy constants for self_assessment memories |
+| `cmd/llmem` | CLI entrypoint — 17 subcommands (add, get, search, list, stats, update, invalidate, delete, export, import, init, metrics, dream, introspect, learn, track-review, context, hook) |
 | `migrations/` | 7 embedded SQL migrations (shared schema with Python) |
 | `Makefile` | Build, test, lint, clean targets |
 
@@ -124,10 +133,10 @@ go test ./...
 | SQLite driver | Built-in `sqlite3` | `modernc.org/sqlite` (pure Go, no CGo) |
 | Vector search | `sqlite-vec` Python package | `vec0` virtual table (pure Go via modernc) |
 | Migrations | Manual numbered SQL files | `pressly/goose` with embedded SQL files |
-| CLI | Full-featured (`llmem` command) | Stub (`MemoryStore` library only) |
-| Embeddings/Providers | Ollama, OpenAI, Anthropic, local | Not yet implemented |
-| Reranking | RRF + multi-signal | Not yet implemented |
-| Session hooks | Full lifecycle | Not yet implemented |
-| Dream cycle | Full (light, deep, REM) | Not yet implemented |
+| CLI | Full-featured (24 commands) | Core commands (17 commands) |
+| Embeddings/Providers | Ollama, OpenAI, Anthropic, local | Ollama (`/api/generate` and `/api/embeddings`) |
+| Reranking | RRF + multi-signal | FTS5-only (hybrid coming) |
+| Session hooks | Full lifecycle | Full lifecycle (Go implementation) |
+| Dream cycle | Full (light, deep, REM) | Full (light, deep, REM) |
 
 The Go `MemoryStore` shares the **exact same database schema** as Python. You can use them interchangeably — a database created by Python is readable by Go, and vice versa.
