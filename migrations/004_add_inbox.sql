@@ -1,0 +1,22 @@
+-- +goose Up
+-- 004_add_inbox.sql — DDL only
+-- Working memory inbox: capacity-limited staging area with attention scoring.
+-- Items enter via 'llmem note' and are promoted to long-term memory
+-- via 'llmem consolidate' or the dream deep phase.
+
+CREATE TABLE IF NOT EXISTS "inbox" (
+    "id" TEXT PRIMARY KEY,
+    "content" TEXT NOT NULL,
+    "source" TEXT NOT NULL DEFAULT 'note' CHECK("source" IN ('note', 'learn', 'extract', 'consolidation')),
+    "attention_score" REAL NOT NULL DEFAULT 0.5 CHECK("attention_score" >= 0.0 AND "attention_score" <= 1.0),
+    "created_at" TEXT NOT NULL DEFAULT (datetime('now')),
+    "metadata" TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS "idx_inbox_attention" ON "inbox"("attention_score");
+CREATE INDEX IF NOT EXISTS "idx_inbox_created" ON "inbox"("created_at");
+
+-- +goose Down
+DROP INDEX IF EXISTS "idx_inbox_created";
+DROP INDEX IF EXISTS "idx_inbox_attention";
+DROP TABLE IF EXISTS "inbox";
