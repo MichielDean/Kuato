@@ -20,6 +20,15 @@ const DefaultOllamaPort = 11434
 // DefaultURLTimeout is the default timeout for HTTP requests.
 const DefaultURLTimeout = 30 * time.Second
 
+// localHostnames holds hostnames that are considered local and should not be
+// treated as remote. This is an unexported package-level immutable map —
+// it is never modified after initialization.
+var localHostnames = map[string]bool{
+	"localhost":             true,
+	"localhost.localdomain": true,
+	"localhost6":            true,
+}
+
 // fmtErr wraps an error with the "llmem: urlvalidate:" domain prefix.
 func fmtErr(format string, args ...any) error {
 	return fmt.Errorf("llmem: urlvalidate: "+format, args...)
@@ -172,10 +181,11 @@ func (t noRedirectTransport) RoundTrip(req *http.Request) (*http.Response, error
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		location := resp.Header.Get("Location")
 		safeURL := stripCredentials(req.URL.String())
-		slog.Warn("llmem: urlvalidate: blocked SSRF redirect", "from", safeURL, "to", location)
+		safeLocation := stripCredentials(location)
+		slog.Warn("llmem: urlvalidate: blocked SSRF redirect", "from", safeURL, "to", safeLocation)
 		// Close the response body to avoid resource leaks
 		resp.Body.Close()
-		return nil, fmtErr("blocked redirect from %s to %s", safeURL, location)
+		return nil, fmtErr("blocked redirect from %s to %s", safeURL, safeLocation)
 	}
 	return resp, nil
 }
@@ -274,11 +284,6 @@ func IsRemoteAllowed(urlStr string) bool {
 	}
 
 	// Check for local hostnames
-	localHostnames := map[string]bool{
-		"localhost":             true,
-		"localhost.localdomain": true,
-		"localhost6":            true,
-	}
 	if localHostnames[strings.ToLower(hostname)] {
 		return false
 	}
@@ -298,13 +303,20 @@ func IsRemoteAllowed(urlStr string) bool {
 }
 
 // stripCredentials removes userinfo (credentials) from a URL for safe error display.
-// Turns 'http://user:pass@host/path' into 'http://host/path'.
+// Turns 'http://user:pass@host/path?q=1#frag' into 'http://host/path?q=1#frag'.
+// Preserves query string and fragment; only strips the userinfo component.
 func stripCredentials(urlStr string) string {
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		return urlStr // Return as-is if parsing fails
 	}
-	// Reconstruct with hostname + port but no credentials
-	return u.Scheme + "://" + u.Host + u.Path
-	// Note: u.Host already excludes userinfo
+	// Reconstruct without credentials, preserving query and fragment
+	result := u.Scheme + "://" + u.Host + u.Path
+	if u.RawQuery != "" {
+		result += "?" + u.RawQuery
+	}
+	if u.Fragment != "" {
+		result += "#" + u.Fragment
+	}
+	return result
 }

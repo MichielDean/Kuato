@@ -111,6 +111,7 @@ func TestIsRemoteAllowed(t *testing.T) {
 		{"loopback_ip", "http://127.0.0.1:11434/", false},
 		{"localhost", "http://localhost:11434/", false},
 		{"localhost_localdomain", "http://localhost.localdomain:11434/", false},
+		{"localhost6", "http://localhost6:11434/", false},
 		{"invalid", "not-a-url", false},
 	}
 	for _, tc := range tests {
@@ -271,6 +272,11 @@ func TestStripCredentials(t *testing.T) {
 		{"with_credentials", "http://user:pass@example.com/path", "http://example.com/path"},
 		{"without_credentials", "http://example.com/path", "http://example.com/path"},
 		{"with_port", "http://user:pass@example.com:8080/path", "http://example.com:8080/path"},
+		{"with_query_string", "http://user:pass@example.com/path?q=1&r=2", "http://example.com/path?q=1&r=2"},
+		{"with_fragment", "http://user:pass@example.com/path#section", "http://example.com/path#section"},
+		{"with_query_and_fragment", "http://user:pass@example.com/path?q=1#section", "http://example.com/path?q=1#section"},
+		{"query_and_fragment_no_credentials", "http://example.com/path?key=val#frag", "http://example.com/path?key=val#frag"},
+		{"path_only_no_credentials", "http://example.com/path", "http://example.com/path"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

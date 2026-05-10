@@ -196,6 +196,10 @@ func TestRetriever_RRF_EmptyInputs(t *testing.T) {
 	if len(results) != 0 {
 		t.Errorf("expected empty results for empty inputs, got %d", len(results))
 	}
+	// Verify contract: empty inputs return nil (not an empty slice)
+	if results != nil {
+		t.Errorf("expected nil for empty inputs, got non-nil slice with length %d", len(results))
+	}
 }
 
 func TestRetriever_RRF_MissingRankDefault(t *testing.T) {
@@ -329,6 +333,29 @@ func TestRetriever_Search_WithRelations(t *testing.T) {
 	}
 	if len(results) == 0 {
 		t.Error("expected results from search")
+	}
+}
+
+func TestRetriever_Search_EmptyResultIsNil(t *testing.T) {
+	// Verify that Search returns nil (not an empty slice) when no results found,
+	// matching the updated docstring contract.
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store: ms,
+		Blend: 0.3,
+		Alpha: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	ctx := context.Background()
+	results, err := r.Search(ctx, "nonexistentquerythatmatchesnothing", 10, "", false, 0, false)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if results != nil {
+		t.Errorf("expected nil for empty search results, got slice with length %d", len(results))
 	}
 }
 

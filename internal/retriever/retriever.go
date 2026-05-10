@@ -173,7 +173,7 @@ func NewRetriever(cfg RetrieverConfig) (*Retriever, error) {
 
 // Search performs basic FTS5 search and optionally traverses relations.
 // If trackAccess is true, calls store.TouchBatch on result IDs.
-// Returns empty slice (not nil) when no results.
+// When no results are found, returns nil.
 func (r *Retriever) Search(ctx context.Context, query string, limit int, typeFilter string, traverseRelations bool, relationDepth int, trackAccess bool) ([]*store.Memory, error) {
 	if limit <= 0 {
 		limit = 20
@@ -470,7 +470,7 @@ func (r *Retriever) FormatContext(ctx context.Context, query string, budget int,
 
 // RRFScore computes Reciprocal Rank Fusion scores from semantic and FTS rank maps.
 // k defaults to 60 if 0. Returns sorted by score descending, ties broken by ascending ID.
-// Empty inputs return empty slice.
+// Empty inputs return nil.
 func RRFScore(semanticRanks map[string]int, ftsRanks map[string]int, alpha float64, k int) []RRFResult {
 	if len(semanticRanks) == 0 && len(ftsRanks) == 0 {
 		return nil

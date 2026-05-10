@@ -212,9 +212,11 @@ func (e *EmbeddingEngine) Embed(ctx context.Context, text string) ([]float32, er
 }
 
 // CheckAvailable returns true if the configured Ollama model is available.
-// Makes GET to {baseURL}/api/tags and checks if any model name starts
-// with the configured model name. Returns false on any error.
-// Never returns an error — logs at slog.Debug level.
+// Makes GET to {baseURL}/api/tags and checks if any model name exactly matches
+// the configured model name or matches with a tag suffix (e.g. "nomic-embed-text:latest").
+// Does NOT match longer model names that merely start with the configured name
+// (e.g. "nomic-embed-text-v2" will NOT match "nomic-embed-text").
+// Returns false on any error. Never returns an error — logs at slog.Debug level.
 func (e *EmbeddingEngine) CheckAvailable(ctx context.Context) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.baseURL+"/api/tags", nil)
 	if err != nil {
