@@ -258,7 +258,7 @@ func (d *Dreamer) Run(ctx context.Context, apply bool, phase string) (*DreamResu
 	result := &DreamResult{}
 
 	if phase == "" || phase == "light" {
-		result.Light = d.lightPhase(apply)
+		result.Light = d.lightPhase(ctx, apply)
 	}
 
 	if phase == "" || phase == "deep" {
@@ -284,8 +284,8 @@ func (d *Dreamer) Run(ctx context.Context, apply bool, phase string) (*DreamResu
 }
 
 // lightPhase finds near-duplicate pairs by cosine similarity.
-func (d *Dreamer) lightPhase(apply bool) *LightPhaseResult {
-	pairs, err := d.store.ConsolidateDuplicates(context.Background(), d.similarityThreshold, 500)
+func (d *Dreamer) lightPhase(ctx context.Context, apply bool) *LightPhaseResult {
+	pairs, err := d.store.ConsolidateDuplicates(ctx, d.similarityThreshold, 500)
 	if err != nil {
 		slog.Error("llmem: dream: light phase consolidation failed", "error", err)
 		return &LightPhaseResult{DuplicatePairs: 0}

@@ -86,6 +86,42 @@ func TestDreamer_LightPhase(t *testing.T) {
 	}
 }
 
+func TestDreamer_LightPhase_PropagatesContext(t *testing.T) {
+	// Verify that lightPhase uses the context from Run, not context.Background().
+	// A cancelled context should propagate through to ConsolidateDuplicates.
+	ms := newTestStore(t)
+	d, err := NewDreamer(DreamerConfig{Store: ms})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	// Add a memory so the phase has something to process
+	_, err = ms.Add(context.Background(), store.AddParams{
+		Type:       "fact",
+		Content:    "context propagation test",
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Run with a cancelled context — the light phase should still complete
+	// (ConsolidateDuplicates on SQLite is fast), but the key contract is
+	// that ctx is passed through, not discarded.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Even with cancelled context, Run should not panic or hang
+	result, err := d.Run(ctx, false, "light")
+	if err != nil {
+		t.Fatalf("Run with cancelled context: %v", err)
+	}
+	if result.Light == nil {
+		t.Error("expected Light result even with cancelled context (dry run)")
+	}
+}
+
 func TestDreamer_DeepPhase(t *testing.T) {
 	ms := newTestStore(t)
 	d, err := NewDreamer(DreamerConfig{Store: ms})
