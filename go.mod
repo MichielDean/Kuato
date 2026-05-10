@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	github.com/google/uuid v1.6.0
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/pressly/goose/v3 v3.27.1
 	modernc.org/sqlite v1.50.0
 )

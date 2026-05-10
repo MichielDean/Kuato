@@ -1,0 +1,493 @@
+package retriever
+
+import (
+	"context"
+	"math"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/MichielDean/LLMem/internal/store"
+)
+
+// newTestStore creates a MemoryStore in a temp directory for testing.
+func newTestStore(t *testing.T) *store.MemoryStore {
+	t.Helper()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	ms, err := store.NewMemoryStore(store.StoreConfig{
+		DBPath:     dbPath,
+		DisableVec: true,
+	})
+	if err != nil {
+		t.Fatalf("NewMemoryStore: %v", err)
+	}
+	t.Cleanup(func() { ms.Close() })
+	return ms
+}
+
+func TestRetriever_Constructor_InvalidBlend(t *testing.T) {
+	ms := newTestStore(t)
+	_, err := NewRetriever(RetrieverConfig{
+		Store: ms,
+		Blend: -0.1,
+	})
+	if err == nil {
+		t.Error("expected error for invalid blend")
+	}
+
+	_, err = NewRetriever(RetrieverConfig{
+		Store: ms,
+		Blend: 1.1,
+	})
+	if err == nil {
+		t.Error("expected error for invalid blend > 1.0")
+	}
+}
+
+func TestRetriever_Constructor_InvalidAlpha(t *testing.T) {
+	ms := newTestStore(t)
+	_, err := NewRetriever(RetrieverConfig{
+		Store: ms,
+		Alpha: -0.1,
+	})
+	if err == nil {
+		t.Error("expected error for invalid alpha")
+	}
+
+	_, err = NewRetriever(RetrieverConfig{
+		Store: ms,
+		Alpha: 1.1,
+	})
+	if err == nil {
+		t.Error("expected error for invalid alpha > 1.0")
+	}
+}
+
+func TestRetriever_Constructor_NilStore(t *testing.T) {
+	_, err := NewRetriever(RetrieverConfig{
+		Store: nil,
+	})
+	if err == nil {
+		t.Error("expected error for nil store")
+	}
+}
+
+func TestRetriever_HybridSearch_FTSOnlyMode(t *testing.T) {
+	ms := newTestStore(t)
+	// Create retriever with nil embedder (FTS-only mode)
+	r, err := NewRetriever(RetrieverConfig{
+		Store:   ms,
+		Embedder: nil,
+		Blend: 0.3,
+		Alpha: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	// Add a memory
+	ctx := context.Background()
+	_, err = ms.Add(ctx, store.AddParams{
+		ID:       "test-1",
+		Type:     "fact",
+		Content:  "Go is a programming language",
+		Source:   "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	results, err := r.HybridSearch(ctx, "Go programming", 10, "", 0.7, "fts", false)
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected results from FTS search")
+	}
+}
+
+func TestRetriever_HybridSearch_EmptyQuery(t *testing.T) {
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store:   ms,
+		Blend: 0.3,
+		Alpha: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	ctx := context.Background()
+	results, err := r.HybridSearch(ctx, "", 10, "", 0.7, "hybrid", false)
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected empty results for empty query, got %d", len(results))
+	}
+}
+
+func TestRetriever_InvalidSearchMode(t *testing.T) {
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store:   ms,
+		Blend: 0.3,
+		Alpha: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	ctx := context.Background()
+	_, err = r.HybridSearch(ctx, "test", 10, "", 0.7, "invalid", false)
+	if err == nil {
+		t.Error("expected error for invalid search_mode")
+	}
+}
+
+func TestRetriever_SemanticWithoutEmbedder(t *testing.T) {
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store:   ms,
+		Embedder: nil,
+		Blend: 0.3,
+		Alpha: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	ctx := context.Background()
+	_, err = r.HybridSearch(ctx, "test", 10, "", 0.7, "semantic", false)
+	if err == nil {
+		t.Error("expected error for semantic search without embedder")
+	}
+}
+
+func TestRetriever_RRF_Score(t *testing.T) {
+	semanticRanks := map[string]int{
+		"id1": 1,
+		"id2": 2,
+		"id3": 3,
+	}
+	ftsRanks := map[string]int{
+		"id2": 1,
+		"id4": 2,
+	}
+	results := RRFScore(semanticRanks, ftsRanks, 0.7, 60)
+
+	if len(results) == 0 {
+		t.Fatal("expected non-empty results")
+	}
+
+	// Verify scores are sorted descending
+	for i := 1; i < len(results); i++ {
+		if results[i].Score > results[i-1].Score {
+			t.Errorf("results not sorted by score descending: %f > %f", results[i].Score, results[i-1].Score)
+		}
+	}
+}
+
+func TestRetriever_RRF_EmptyInputs(t *testing.T) {
+	results := RRFScore(nil, nil, 0.7, 60)
+	if len(results) != 0 {
+		t.Errorf("expected empty results for empty inputs, got %d", len(results))
+	}
+}
+
+func TestRetriever_RRF_MissingRankDefault(t *testing.T) {
+	semanticRanks := map[string]int{
+		"id1": 1,
+	}
+	ftsRanks := map[string]int{
+		"id1": 2,
+		"id2": 1,
+	}
+	results := RRFScore(semanticRanks, ftsRanks, 0.7, 60)
+
+	// id2 should get a default semantic rank of len(semanticRanks)+1=2
+	if len(results) != 2 {
+		t.Errorf("expected 2 results, got %d", len(results))
+	}
+
+	// Verify id1 and id2 are both present
+	foundIDs := map[string]bool{}
+	for _, r := range results {
+		foundIDs[r.ID] = true
+	}
+	if !foundIDs["id1"] || !foundIDs["id2"] {
+		t.Error("expected both id1 and id2 in results")
+	}
+}
+
+func TestRetriever_ComputeRerankSignals(t *testing.T) {
+	now := time.Now().UTC()
+	mem := &store.Memory{
+		ID:          "test-1",
+		Type:        "decision",
+		Confidence:  0.9,
+		AccessCount:  5,
+		CreatedAt:   now.Add(-72 * time.Hour).Format(time.RFC3339),
+		AccessedAt:  now.Add(-24 * time.Hour).Format(time.RFC3339),
+	}
+
+	signals := ComputeRerankSignals(mem, DefaultTypePriority(), now)
+
+	// Confidence should be 0.9
+	if math.Abs(signals.Confidence-0.9) > 1e-6 {
+		t.Errorf("expected confidence 0.9, got %f", signals.Confidence)
+	}
+
+	// Type priority for "decision" should be 1.2
+	if math.Abs(signals.Type-1.2) > 1e-6 {
+		t.Errorf("expected type 1.2, got %f", signals.Type)
+	}
+
+	// Recency should be positive (was accessed yesterday)
+	if signals.Recency <= 0 {
+		t.Errorf("expected positive recency, got %f", signals.Recency)
+	}
+
+	// Access should be positive (5 accesses over ~3 days)
+	if signals.Access <= 0 {
+		t.Errorf("expected positive access, got %f", signals.Access)
+	}
+}
+
+func TestRetriever_ComputeWeightedSignal(t *testing.T) {
+	signals := RerankSignals{
+		Confidence: 1.0,
+		Recency:    1.0,
+		Access:     1.0,
+		Type:       1.0,
+	}
+
+	result := ComputeWeightedSignal(signals)
+	expected := 0.4*1.0 + 0.3*1.0 + 0.2*1.0 + 0.1*1.0
+	if math.Abs(result-expected) > 1e-6 {
+		t.Errorf("expected %f, got %f", expected, result)
+	}
+}
+
+func TestRetriever_ApplyReranking_BlendZero(t *testing.T) {
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store:   ms,
+		Blend: 0.0,
+		Alpha: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	results := []*ScoredMemory{
+		{
+			Memory:   &store.Memory{ID: "1", Type: "fact", Confidence: 0.5},
+			RRFScore: 0.8,
+		},
+	}
+
+	results = r.applyReranking(results)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	// With blend=0.0, RerankScore should equal RRFScore
+	if math.Abs(results[0].RerankScore-0.8) > 1e-6 {
+		t.Errorf("expected RerankScore=0.8 with blend=0, got %f", results[0].RerankScore)
+	}
+}
+
+func TestRetriever_Search_WithRelations(t *testing.T) {
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store:   ms,
+		Blend: 0.3,
+		Alpha: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	ctx := context.Background()
+	_, err = ms.Add(ctx, store.AddParams{
+		ID:         "mem-1",
+		Type:       "fact",
+		Content:    "Go is a programming language",
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	results, err := r.Search(ctx, "Go", 10, "", true, 1, false)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected results from search")
+	}
+}
+
+func TestRetriever_Search_DisabledTrackAccess(t *testing.T) {
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store:   ms,
+		Blend: 0.3,
+		Alpha: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	ctx := context.Background()
+	memID, err := ms.Add(ctx, store.AddParams{
+		ID:         "mem-1",
+		Type:       "fact",
+		Content:    "Go is a programming language",
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Get initial access count
+	memBefore, _ := ms.Get(ctx, memID, false)
+	beforeCount := memBefore.AccessCount
+
+	_, err = r.Search(ctx, "Go", 10, "", false, 1, false)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	// Access count should NOT change when trackAccess=false
+	memAfter, _ := ms.Get(ctx, memID, false)
+	if memAfter.AccessCount != beforeCount {
+		t.Errorf("expected access count unchanged (%d), got %d", beforeCount, memAfter.AccessCount)
+	}
+}
+
+func TestRetriever_TrackAccess(t *testing.T) {
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store:   ms,
+		Blend: 0.3,
+		Alpha: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	ctx := context.Background()
+	memID, err := ms.Add(ctx, store.AddParams{
+		ID:         "mem-1",
+		Type:       "fact",
+		Content:    "Go is a programming language",
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Get initial access count
+	memBefore, _ := ms.Get(ctx, memID, false)
+	beforeCount := memBefore.AccessCount
+
+	_, err = r.Search(ctx, "Go", 10, "", false, 1, true)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	// Access count should increment when trackAccess=true
+	memAfter, _ := ms.Get(ctx, memID, false)
+	if memAfter.AccessCount <= beforeCount {
+		t.Errorf("expected access count > %d after trackAccess=true, got %d", beforeCount, memAfter.AccessCount)
+	}
+}
+
+func TestRetriever_FormatContext(t *testing.T) {
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store:   ms,
+		Blend: 0.3,
+		Alpha: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	ctx := context.Background()
+	_, err = ms.Add(ctx, store.AddParams{
+		ID:         "mem-1",
+		Type:       "fact",
+		Content:    "Go is a programming language",
+		Summary:    "Go overview",
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// FTS-only search since no embedder
+	result, err := r.FormatContext(ctx, "Go", 4000, "")
+	if err != nil {
+		t.Fatalf("FormatContext: %v", err)
+	}
+	if result == "" {
+		t.Error("expected non-empty context string")
+	}
+}
+
+func TestDefaultTypePriority(t *testing.T) {
+	prio := DefaultTypePriority()
+	if prio["decision"] != 1.2 {
+		t.Errorf("expected decision=1.2, got %f", prio["decision"])
+	}
+	if prio["fact"] != 1.0 {
+		t.Errorf("expected fact=1.0, got %f", prio["fact"])
+	}
+	if prio["event"] != 0.9 {
+		t.Errorf("expected event=0.9, got %f", prio["event"])
+	}
+}
+
+// Test embedder fallback when Ollama is not available
+func TestRetriever_HybridSearch_EmbedderUnavailableFallsBackToFTS(t *testing.T) {
+	ms := newTestStore(t)
+	// Create retriever with nil embedder but hybrid mode
+	r, err := NewRetriever(RetrieverConfig{
+		Store:   ms,
+		Embedder: nil,
+		Blend: 0.3,
+		Alpha: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	ctx := context.Background()
+	_, err = ms.Add(ctx, store.AddParams{
+		ID:         "mem-1",
+		Type:       "fact",
+		Content:    "Go is a programming language",
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Hybrid search with nil embedder should fall back to FTS
+	results, err := r.HybridSearch(ctx, "Go programming", 10, "", 0.7, "hybrid", false)
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected results from FTS fallback")
+	}
+}
