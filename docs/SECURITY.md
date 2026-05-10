@@ -46,3 +46,21 @@ Security measures, validation, and hardening in LLMem. [Back to README](../READM
 - Default directory depth limit of 50 (`--max-depth`) prevents stack overflow from deeply nested trees.
 - Credential files are excluded from indexing: `.env`, `.env.*` variants, `.pem`, `.key`, SSH private keys (`id_rsa`, `id_dsa`, `id_ed25519`, `id_ecdsa`), `.netrc`, `.htpasswd`, `.npmrc`, `.pypirc`.
 - `.gitignore` patterns are respected at every directory level, with correct handling of anchored patterns (leading `/`), negation patterns (`!`), and directory-only patterns (trailing `/`).
+
+## Go Implementation Security
+
+The Go implementation (`internal/store`) shares the same security posture as Python with some implementation-specific differences:
+
+- **Database file permissions**: Parent directory created with `0700` (owner-only). Database files (`memory.db`, `-wal`, `-shm`) are set to `0600` (owner-only read/write) via `os.Chmod` after creation. Since Go doesn't have portable `umask` control, `os.MkdirAll` with `0700` and explicit `os.Chmod(0600)` are used instead of Python's `umask(0o177)` approach.
+- **SQL injection**: All queries use parameterized `?` placeholders via Go's `database/sql` package. The `placeholders()` function generates comma-separated `?` sequences for `IN` clauses. FTS5 MATCH queries are sanitized via `sanitizeFTSQuery()`. LIKE queries use `ESCAPE '\'` with `escapeLike()`.
+- **Type validation**: Memory type names must match `^[a-z][a-z0-9_]*$` and be ≤64 characters (enforced by `RegisterMemoryType()`). Relation types must be in the `ValidRelationTypes()` set (`supersedes`, `related_to`, `derived_from`).
+- **Embedding dimension validation**: `Add()` rejects embeddings whose byte length doesn't match `vec_dimensions × 4`. `ImportMemories()` skips entries with mismatched embedding dimensions.
+- **ID length cap**: `ImportMemories()` rejects IDs longer than 256 characters.
+- **Import validation**: `ImportMemories()` validates that each entry has non-empty `Type` and `Content` string fields, `Confidence` is in [0, 1], and embedding dimensions match. Invalid entries are skipped with `slog.Warn` — no panics.
+- **Traversal depth cap**: `TraverseRelations()` caps `maxDepth` at 5 (hard limit matching Python).
+- **Brute-force limit**: `searchByEmbeddingBrute()` uses a `LIMIT` clause (default: 10000 rows) to prevent OOM on large databases.
+- **Export limit**: `ExportAll()` defaults to 10000; pass `0` for no limit.
+- **Vec dimension mismatch**: `initVecTable()` verifies that an existing `memories_vec` table matches the configured `vec_dimensions`. Mismatch returns an error.
+- **FTS fallback**: If FTS5 search fails (e.g., malformed query), `Search()` silently falls back to LIKE search rather than returning an error.
+- **Context support**: All public methods accept `context.Context` for cancellation and timeout, following Go best practices.
+- **Error wrapping**: All errors are wrapped with the `"llmem: store: "` prefix using `fmtErr()`, providing domain context for debugging.

@@ -10,10 +10,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and coding conventi
 
 | Document | Description |
 |----------|-------------|
-| [Installation](docs/INSTALLATION.md) | Install from source, optional extras, plugin setup |
+| [Installation](docs/INSTALLATION.md) | Install from source (Python and Go), optional extras, plugin setup |
 | [Providers](docs/PROVIDERS.md) | Embedding/generation providers, fallback chains, configuration |
 | [CLI Reference](docs/CLI.md) | All `llmem` commands and options |
 | [Python API](docs/API.md) | MemoryStore, Retriever, extension points, database schema, module reference |
+| [Go API](docs/API.md#go-api) | Go `internal/store` package — MemoryStore, types, migrations |
 | [Integrations](docs/INTEGRATIONS.md) | OpenCode, Copilot CLI, custom tools, session hooks |
 | [Configuration](docs/CONFIGURATION.md) | config.yaml reference, path resolution, dream settings |
 | [Search Reranking](docs/RERANKING.md) | Multi-signal reranking, signal weights, type priority |
@@ -21,6 +22,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and coding conventi
 | [Security](docs/SECURITY.md) | Path validation, SSRF protection, credential handling, code indexing security |
 
 ## Installation
+
+### Python (full-featured)
 
 Quick install:
 
@@ -36,6 +39,31 @@ cd LLMem && ./setup.sh
 ```
 
 For detailed installation options (extras, plugins, requirements), see [docs/INSTALLATION.md](docs/INSTALLATION.md).
+
+### Go (memory store library)
+
+The Go implementation provides the core memory store as a pure-Go library with no CGo dependency:
+
+```bash
+go get github.com/MichielDean/LLMem
+```
+
+```go
+import "github.com/MichielDean/LLMem/internal/store"
+
+ms, err := store.NewMemoryStore(store.StoreConfig{
+    DBPath:         "",               // defaults to ~/.config/llmem/memory.db
+    VecDimensions:  0,               // defaults to 768
+    DisableVec:     false,            // set true to skip vec0 virtual table
+    RegisteredTypes: nil,             // defaults to 8 standard types
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer ms.Close()
+```
+
+See [docs/INSTALLATION.md](docs/INSTALLATION.md) for Go build dependencies and [docs/API.md](docs/API.md) for the full API reference.
 
 ## Skills
 
@@ -148,10 +176,27 @@ llmem import backup.json
 ## Running Tests
 
 ```bash
+# Python tests
 python -m pytest
+
+# Go tests
+go test ./...
 ```
 
 1349 Python tests and 142 JavaScript tests covering all providers, session adapters (OpenCode, Copilot, none), URL validation, configuration, security, session hooks, CLI commands, and edge cases.
+
+58 Go tests covering all store operations, FTS5 search, vector search, migrations, type validation, and import/export.
+
+## Makefile
+
+The Go project includes a Makefile with common tasks:
+
+```bash
+make build    # go build ./...
+make test     # go test ./...
+make lint     # go vet ./...
+make clean    # remove *.db files
+```
 
 ## License
 
