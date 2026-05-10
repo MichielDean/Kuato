@@ -11,6 +11,9 @@ import (
 	"github.com/MichielDean/LLMem/internal/store"
 )
 
+// ptrFloat64 is a helper to create a *float64 from a literal.
+func ptrFloat64(v float64) *float64 { return &v }
+
 // newTestStore creates a MemoryStore in a temp directory for testing.
 func newTestStore(t *testing.T) *store.MemoryStore {
 	t.Helper()
@@ -31,7 +34,7 @@ func TestRetriever_Constructor_InvalidBlend(t *testing.T) {
 	ms := newTestStore(t)
 	_, err := NewRetriever(RetrieverConfig{
 		Store: ms,
-		Blend: -0.1,
+		Blend: ptrFloat64(-0.1),
 	})
 	if err == nil {
 		t.Error("expected error for invalid blend")
@@ -39,7 +42,7 @@ func TestRetriever_Constructor_InvalidBlend(t *testing.T) {
 
 	_, err = NewRetriever(RetrieverConfig{
 		Store: ms,
-		Blend: 1.1,
+		Blend: ptrFloat64(1.1),
 	})
 	if err == nil {
 		t.Error("expected error for invalid blend > 1.0")
@@ -50,7 +53,7 @@ func TestRetriever_Constructor_InvalidAlpha(t *testing.T) {
 	ms := newTestStore(t)
 	_, err := NewRetriever(RetrieverConfig{
 		Store: ms,
-		Alpha: -0.1,
+		Alpha: ptrFloat64(-0.1),
 	})
 	if err == nil {
 		t.Error("expected error for invalid alpha")
@@ -58,7 +61,7 @@ func TestRetriever_Constructor_InvalidAlpha(t *testing.T) {
 
 	_, err = NewRetriever(RetrieverConfig{
 		Store: ms,
-		Alpha: 1.1,
+		Alpha: ptrFloat64(1.1),
 	})
 	if err == nil {
 		t.Error("expected error for invalid alpha > 1.0")
@@ -76,12 +79,10 @@ func TestRetriever_Constructor_NilStore(t *testing.T) {
 
 func TestRetriever_HybridSearch_FTSOnlyMode(t *testing.T) {
 	ms := newTestStore(t)
-	// Create retriever with nil embedder (FTS-only mode)
+	// Create retriever with nil embedder (FTS-only mode), defaults for Blend and Alpha.
 	r, err := NewRetriever(RetrieverConfig{
-		Store:   ms,
+		Store:    ms,
 		Embedder: nil,
-		Blend: 0.3,
-		Alpha: 0.7,
 	})
 	if err != nil {
 		t.Fatalf("NewRetriever: %v", err)
@@ -100,7 +101,7 @@ func TestRetriever_HybridSearch_FTSOnlyMode(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	results, err := r.HybridSearch(ctx, "Go programming", 10, "", 0.7, "fts", false)
+	results, err := r.HybridSearch(ctx, "Go programming", 10, "", nil, "fts", false)
 	if err != nil {
 		t.Fatalf("HybridSearch: %v", err)
 	}
@@ -112,16 +113,14 @@ func TestRetriever_HybridSearch_FTSOnlyMode(t *testing.T) {
 func TestRetriever_HybridSearch_EmptyQuery(t *testing.T) {
 	ms := newTestStore(t)
 	r, err := NewRetriever(RetrieverConfig{
-		Store:   ms,
-		Blend: 0.3,
-		Alpha: 0.7,
+		Store: ms,
 	})
 	if err != nil {
 		t.Fatalf("NewRetriever: %v", err)
 	}
 
 	ctx := context.Background()
-	results, err := r.HybridSearch(ctx, "", 10, "", 0.7, "hybrid", false)
+	results, err := r.HybridSearch(ctx, "", 10, "", nil, "hybrid", false)
 	if err != nil {
 		t.Fatalf("HybridSearch: %v", err)
 	}
@@ -133,16 +132,14 @@ func TestRetriever_HybridSearch_EmptyQuery(t *testing.T) {
 func TestRetriever_InvalidSearchMode(t *testing.T) {
 	ms := newTestStore(t)
 	r, err := NewRetriever(RetrieverConfig{
-		Store:   ms,
-		Blend: 0.3,
-		Alpha: 0.7,
+		Store: ms,
 	})
 	if err != nil {
 		t.Fatalf("NewRetriever: %v", err)
 	}
 
 	ctx := context.Background()
-	_, err = r.HybridSearch(ctx, "test", 10, "", 0.7, "invalid", false)
+	_, err = r.HybridSearch(ctx, "test", 10, "", nil, "invalid", false)
 	if err == nil {
 		t.Error("expected error for invalid search_mode")
 	}
@@ -151,17 +148,15 @@ func TestRetriever_InvalidSearchMode(t *testing.T) {
 func TestRetriever_SemanticWithoutEmbedder(t *testing.T) {
 	ms := newTestStore(t)
 	r, err := NewRetriever(RetrieverConfig{
-		Store:   ms,
+		Store:    ms,
 		Embedder: nil,
-		Blend: 0.3,
-		Alpha: 0.7,
 	})
 	if err != nil {
 		t.Fatalf("NewRetriever: %v", err)
 	}
 
 	ctx := context.Background()
-	_, err = r.HybridSearch(ctx, "test", 10, "", 0.7, "semantic", false)
+	_, err = r.HybridSearch(ctx, "test", 10, "", nil, "semantic", false)
 	if err == nil {
 		t.Error("expected error for semantic search without embedder")
 	}
@@ -279,9 +274,8 @@ func TestRetriever_ComputeWeightedSignal(t *testing.T) {
 func TestRetriever_ApplyReranking_BlendZero(t *testing.T) {
 	ms := newTestStore(t)
 	r, err := NewRetriever(RetrieverConfig{
-		Store:   ms,
-		Blend: 0.0,
-		Alpha: 0.7,
+		Store: ms,
+		Blend: ptrFloat64(0.0), // explicit pure RRF
 	})
 	if err != nil {
 		t.Fatalf("NewRetriever: %v", err)
@@ -307,9 +301,7 @@ func TestRetriever_ApplyReranking_BlendZero(t *testing.T) {
 func TestRetriever_Search_WithRelations(t *testing.T) {
 	ms := newTestStore(t)
 	r, err := NewRetriever(RetrieverConfig{
-		Store:   ms,
-		Blend: 0.3,
-		Alpha: 0.7,
+		Store: ms,
 	})
 	if err != nil {
 		t.Fatalf("NewRetriever: %v", err)
@@ -342,8 +334,6 @@ func TestRetriever_Search_EmptyResultIsNil(t *testing.T) {
 	ms := newTestStore(t)
 	r, err := NewRetriever(RetrieverConfig{
 		Store: ms,
-		Blend: 0.3,
-		Alpha: 0.7,
 	})
 	if err != nil {
 		t.Fatalf("NewRetriever: %v", err)
@@ -362,9 +352,7 @@ func TestRetriever_Search_EmptyResultIsNil(t *testing.T) {
 func TestRetriever_Search_DisabledTrackAccess(t *testing.T) {
 	ms := newTestStore(t)
 	r, err := NewRetriever(RetrieverConfig{
-		Store:   ms,
-		Blend: 0.3,
-		Alpha: 0.7,
+		Store: ms,
 	})
 	if err != nil {
 		t.Fatalf("NewRetriever: %v", err)
@@ -401,9 +389,7 @@ func TestRetriever_Search_DisabledTrackAccess(t *testing.T) {
 func TestRetriever_TrackAccess(t *testing.T) {
 	ms := newTestStore(t)
 	r, err := NewRetriever(RetrieverConfig{
-		Store:   ms,
-		Blend: 0.3,
-		Alpha: 0.7,
+		Store: ms,
 	})
 	if err != nil {
 		t.Fatalf("NewRetriever: %v", err)
@@ -440,9 +426,7 @@ func TestRetriever_TrackAccess(t *testing.T) {
 func TestRetriever_FormatContext(t *testing.T) {
 	ms := newTestStore(t)
 	r, err := NewRetriever(RetrieverConfig{
-		Store:   ms,
-		Blend: 0.3,
-		Alpha: 0.7,
+		Store: ms,
 	})
 	if err != nil {
 		t.Fatalf("NewRetriever: %v", err)
@@ -505,9 +489,7 @@ func TestTruncateToValidUTF8(t *testing.T) {
 func TestRetriever_FormatContext_UTF8Truncation(t *testing.T) {
 	ms := newTestStore(t)
 	r, err := NewRetriever(RetrieverConfig{
-		Store:   ms,
-		Blend: 0.3,
-		Alpha: 0.7,
+		Store: ms,
 	})
 	if err != nil {
 		t.Fatalf("NewRetriever: %v", err)
@@ -545,15 +527,13 @@ func TestRetriever_HybridSearch_InvalidModeReturnsError(t *testing.T) {
 	ms := newTestStore(t)
 	r, err := NewRetriever(RetrieverConfig{
 		Store: ms,
-		Blend: 0.3,
-		Alpha: 0.7,
 	})
 	if err != nil {
 		t.Fatalf("NewRetriever: %v", err)
 	}
 
 	ctx := context.Background()
-	_, err = r.HybridSearch(ctx, "test", 10, "", 0.7, "badmode", false)
+	_, err = r.HybridSearch(ctx, "test", 10, "", nil, "badmode", false)
 	if err == nil {
 		t.Error("expected error for invalid search mode, got nil")
 	}
@@ -571,8 +551,6 @@ func TestNewRetriever_DefensiveCopyTypePriority(t *testing.T) {
 
 	r, err := NewRetriever(RetrieverConfig{
 		Store:        ms,
-		Blend:        0.3,
-		Alpha:        0.7,
 		TypePriority: customPrio,
 	})
 	if err != nil {
@@ -615,10 +593,8 @@ func TestRetriever_HybridSearch_EmbedderUnavailableFallsBackToFTS(t *testing.T) 
 	ms := newTestStore(t)
 	// Create retriever with nil embedder but hybrid mode
 	r, err := NewRetriever(RetrieverConfig{
-		Store:   ms,
+		Store:    ms,
 		Embedder: nil,
-		Blend: 0.3,
-		Alpha: 0.7,
 	})
 	if err != nil {
 		t.Fatalf("NewRetriever: %v", err)
@@ -637,11 +613,92 @@ func TestRetriever_HybridSearch_EmbedderUnavailableFallsBackToFTS(t *testing.T) 
 	}
 
 	// Hybrid search with nil embedder should fall back to FTS
-	results, err := r.HybridSearch(ctx, "Go programming", 10, "", 0.7, "hybrid", false)
+	results, err := r.HybridSearch(ctx, "Go programming", 10, "", nil, "hybrid", false)
 	if err != nil {
 		t.Fatalf("HybridSearch: %v", err)
 	}
 	if len(results) == 0 {
 		t.Error("expected results from FTS fallback")
+	}
+}
+
+func TestNewRetriever_DefaultBlendAndAlpha(t *testing.T) {
+	// Verify that nil Blend and nil Alpha result in the defaults (0.3 and 0.7).
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store: ms,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+	const tolerance = 1e-9
+	if math.Abs(r.blend-defaultBlend) > tolerance {
+		t.Errorf("expected default blend %f, got %f", defaultBlend, r.blend)
+	}
+	if math.Abs(r.alpha-defaultAlpha) > tolerance {
+		t.Errorf("expected default alpha %f, got %f", defaultAlpha, r.alpha)
+	}
+}
+
+func TestNewRetriever_ExplicitZeroBlend(t *testing.T) {
+	// Verify that *float64(0.0) sets blend to 0.0 (pure RRF), not the default.
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store: ms,
+		Blend: ptrFloat64(0.0),
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+	if r.blend != 0.0 {
+		t.Errorf("expected blend=0.0 (pure RRF), got %f", r.blend)
+	}
+}
+
+func TestNewRetriever_ExplicitZeroAlpha(t *testing.T) {
+	// Verify that *float64(0.0) sets alpha to 0.0 (pure FTS), not the default.
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store: ms,
+		Alpha: ptrFloat64(0.0),
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+	if r.alpha != 0.0 {
+		t.Errorf("expected alpha=0.0 (pure FTS), got %f", r.alpha)
+	}
+}
+
+func TestRetriever_HybridSearch_ExplicitZeroAlpha_PureFTS(t *testing.T) {
+	// Verify that passing ptrFloat64(0.0) as alpha to HybridSearch results in
+	// pure FTS mode (alpha=0.0 means zero semantic weight).
+	ms := newTestStore(t)
+	r, err := NewRetriever(RetrieverConfig{
+		Store: ms,
+	})
+	if err != nil {
+		t.Fatalf("NewRetriever: %v", err)
+	}
+
+	ctx := context.Background()
+	_, err = ms.Add(ctx, store.AddParams{
+		ID:         "mem-1",
+		Type:       "fact",
+		Content:    "Go is a programming language",
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// HybridSearch with explicit alpha=0.0 should use pure FTS
+	results, err := r.HybridSearch(ctx, "Go", 10, "", ptrFloat64(0.0), "hybrid", false)
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected results from hybrid search with alpha=0.0 (pure FTS)")
 	}
 }

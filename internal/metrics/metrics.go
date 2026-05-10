@@ -184,7 +184,16 @@ func ComputeMetrics(embeddings [][]float32, labels []string, maxEmbeddings int) 
 		slog.Warn("llmem: metrics: capping embeddings for metrics computation", "original", len(embeddings), "cap", maxEmbeddings)
 		embeddings = embeddings[:maxEmbeddings]
 		if labels != nil {
-			labels = labels[:maxEmbeddings]
+			labelCap := maxEmbeddings
+			if len(labels) < labelCap {
+				labelCap = len(labels)
+			}
+			labels = labels[:labelCap]
+			// Keep embeddings and labels in sync: if labels are shorter,
+			// cap embeddings to the same count.
+			if labelCap < len(embeddings) {
+				embeddings = embeddings[:labelCap]
+			}
 		}
 	}
 

@@ -71,12 +71,14 @@ type RetrieverConfig struct {
 	Embedder *embed.EmbeddingEngine
 
 	// Blend is the reranking blend factor. 0.0 = pure RRF, 1.0 = pure signals.
-	// Defaults to 0.3. Note: 0.0 is a valid value meaning pure RRF.
-	Blend float64
+	// Use a pointer to distinguish "use default" (nil → 0.3) from "explicitly 0.0" (pure RRF).
+	// Defaults to 0.3 if nil.
+	Blend *float64
 
 	// Alpha is the RRF semantic weight. 0.0 = pure FTS, 1.0 = pure semantic.
-	// Defaults to 0.7 if zero.
-	Alpha float64
+	// Use a pointer to distinguish "use default" (nil → 0.7) from "explicitly 0.0" (pure FTS).
+	// Defaults to 0.7 if nil.
+	Alpha *float64
 
 	// RRF_K is the RRF constant. Defaults to 60 if zero.
 	RRF_K int
@@ -121,8 +123,11 @@ func truncateToValidUTF8(s string, maxBytes int) string {
 }
 
 // NewRetriever creates and initializes a Retriever.
-// If cfg.Blend < 0.0 || cfg.Blend > 1.0, returns error.
-// If cfg.Alpha < 0.0 || cfg.Alpha > 1.0, returns error.
+// Blend and Alpha use pointer values: nil means "apply default", while a pointer
+// to 0.0 means "explicitly set to 0.0". This makes both 0.0 (pure FTS/pure RRF)
+// and the defaults (0.7/0.3) expressible.
+// If cfg.Blend is not nil and outside [0.0, 1.0], returns error.
+// If cfg.Alpha is not nil and outside [0.0, 1.0], returns error.
 // If cfg.Store == nil, returns error.
 // Embedder may be nil (FTS-only mode).
 // The constructor leaves the retriever in a fully usable state.
@@ -130,19 +135,22 @@ func NewRetriever(cfg RetrieverConfig) (*Retriever, error) {
 	if cfg.Store == nil {
 		return nil, fmtErr("store is required")
 	}
-	if cfg.Blend < 0.0 || cfg.Blend > 1.0 {
-		return nil, fmtErr("blend factor %v out of range [0.0, 1.0]", cfg.Blend)
+
+	blend := defaultBlend
+	if cfg.Blend != nil {
+		blend = *cfg.Blend
 	}
-	if cfg.Alpha < 0.0 || cfg.Alpha > 1.0 {
-		return nil, fmtErr("alpha %v out of range [0.0, 1.0]", cfg.Alpha)
+	if blend < 0.0 || blend > 1.0 {
+		return nil, fmtErr("blend factor %v out of range [0.0, 1.0]", blend)
 	}
 
-	alpha := cfg.Alpha
-	if alpha == 0 {
-		alpha = defaultAlpha
+	alpha := defaultAlpha
+	if cfg.Alpha != nil {
+		alpha = *cfg.Alpha
 	}
-
-	blend := cfg.Blend
+	if alpha < 0.0 || alpha > 1.0 {
+		return nil, fmtErr("alpha %v out of range [0.0, 1.0]", alpha)
+	}
 
 	rrfK := cfg.RRF_K
 	if rrfK == 0 {
@@ -247,10 +255,13 @@ func (r *Retriever) Search(ctx context.Context, query string, limit int, typeFil
 
 // HybridSearch performs hybrid RRF fusion search combining FTS5 and semantic results.
 // searchMode must be one of "hybrid", "fts", "semantic".
+// alpha controls the semantic/FTS blend: 0.0 = pure FTS, 1.0 = pure semantic.
+// Use nil for alpha to use the retriever's default alpha (0.7).
+// Use ptrFloat64(0.0) to explicitly request pure FTS mode.
 // Returns an error for invalid searchMode.
 // When searchMode="hybrid" and embedder is nil, logs slog.Warn and falls back to FTS-only.
 // When searchMode="semantic" and embedder is nil, returns error.
-func (r *Retriever) HybridSearch(ctx context.Context, query string, limit int, typeFilter string, alpha float64, searchMode string, trackAccess bool) ([]*ScoredMemory, error) {
+func (r *Retriever) HybridSearch(ctx context.Context, query string, limit int, typeFilter string, alpha *float64, searchMode string, trackAccess bool) ([]*ScoredMemory, error) {
 	if query == "" {
 		return []*ScoredMemory{}, nil
 	}
@@ -264,17 +275,18 @@ func (r *Retriever) HybridSearch(ctx context.Context, query string, limit int, t
 		limit = 20
 	}
 
-	if alpha == 0 {
-		alpha = r.alpha
+	effectiveAlpha := r.alpha
+	if alpha != nil {
+		effectiveAlpha = *alpha
 	}
 
 	switch searchMode {
 	case "fts":
 		return r.hybridSearchFTS(ctx, query, limit, typeFilter, trackAccess)
 	case "semantic":
-		return r.hybridSearchSemantic(ctx, query, limit, typeFilter, alpha, trackAccess)
+		return r.hybridSearchSemantic(ctx, query, limit, typeFilter, effectiveAlpha, trackAccess)
 	default: // "hybrid"
-		return r.hybridSearchFull(ctx, query, limit, typeFilter, alpha, trackAccess)
+		return r.hybridSearchFull(ctx, query, limit, typeFilter, effectiveAlpha, trackAccess)
 	}
 }
 
@@ -442,7 +454,7 @@ func (r *Retriever) FormatContext(ctx context.Context, query string, budget int,
 		budget = defaultBudget
 	}
 
-	results, err := r.HybridSearch(ctx, query, 20, typeFilter, r.alpha, "hybrid", false)
+	results, err := r.HybridSearch(ctx, query, 20, typeFilter, nil, "hybrid", false)
 	if err != nil {
 		return "", fmtErr("format context: %w", err)
 	}

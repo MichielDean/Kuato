@@ -268,6 +268,7 @@ func ValidateBaseURL(baseURL, module string) (string, error) {
 // Returns false for loopback addresses, private/link-local IPs, and local hostnames.
 // Returns true for public IPs and hostnames that resolve to public IPs.
 // Returns false (fail-closed) for hostnames that fail DNS resolution.
+// Percent-decodes hostnames before IP/DNS checks, consistent with IsSafeURL's SSRF defense.
 func IsRemoteAllowed(urlStr string) bool {
 	u, err := url.Parse(urlStr)
 	if err != nil {
@@ -278,19 +279,22 @@ func IsRemoteAllowed(urlStr string) bool {
 		return false
 	}
 
+	// Percent-decode the hostname before checks, consistent with IsSafeURL
+	decodedHostname := decodeHostname(hostname)
+
 	// Check if it's an IP address
-	if ip := net.ParseIP(hostname); ip != nil {
+	if ip := net.ParseIP(decodedHostname); ip != nil {
 		return !ip.IsLoopback() && !isPrivateIP(ip)
 	}
 
 	// Check for local hostnames
-	if localHostnames[strings.ToLower(hostname)] {
+	if localHostnames[strings.ToLower(decodedHostname)] {
 		return false
 	}
 
 	// Resolve the hostname and check all resulting IPs.
 	// If DNS resolution fails, fail-closed (return false).
-	addrs := resolveHostname(hostname)
+	addrs := resolveHostname(decodedHostname)
 	if addrs == nil {
 		return false
 	}

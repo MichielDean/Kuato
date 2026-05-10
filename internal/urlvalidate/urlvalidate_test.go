@@ -287,3 +287,18 @@ func TestStripCredentials(t *testing.T) {
 		})
 	}
 }
+
+func TestIsRemoteAllowed_PercentEncodedSSRF(t *testing.T) {
+	// Percent-encoded loopback IP should be caught after decoding,
+	// consistent with IsSafeURL's SSRF defense.
+	if IsRemoteAllowed("http://%31%32%37%2e%30%2e%30%2e%31:11434/") {
+		t.Error("expected percent-encoded loopback IP to be caught by IsRemoteAllowed")
+	}
+}
+
+func TestIsRemoteAllowed_PercentEncodedHostname(t *testing.T) {
+	// Percent-encoded "localhost" should be caught after decoding.
+	if IsRemoteAllowed("http://%6c%6f%63%61%6c%68%6f%73%74:11434/") {
+		t.Error("expected percent-encoded 'localhost' to be caught by IsRemoteAllowed")
+	}
+}

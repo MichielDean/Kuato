@@ -188,3 +188,50 @@ func TestCosineSimilarity_IdenticalVectors(t *testing.T) {
 		t.Errorf("expected 1.0 for identical vectors, got %f", result)
 	}
 }
+
+func TestComputeMetrics_LabelsShorterThanMaxEmbeddings(t *testing.T) {
+	// Regression test: labels[:maxEmbeddings] used to panic when len(labels) < maxEmbeddings.
+	// This happens when embeddings has more than maxEmbeddings entries but labels
+	// has fewer than maxEmbeddings entries.
+	embeddings := make([][]float32, 200)
+	for i := range embeddings {
+		embeddings[i] = []float32{float32(i), 1.0}
+	}
+	// Only 50 labels — fewer than maxEmbeddings (100)
+	labels := make([]string, 50)
+	for i := range labels {
+		labels[i] = "a"
+	}
+
+	// Should NOT panic
+	result, err := ComputeMetrics(embeddings, labels, 100)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+}
+
+func TestComputeMetrics_LabelsMismatchTooFewTruncation(t *testing.T) {
+	// When labels has fewer entries than embeddings even after truncation alignment,
+	// DiscriminationGap should return an error.
+	embeddings := make([][]float32, 200)
+	for i := range embeddings {
+		embeddings[i] = []float32{float32(i), 1.0}
+	}
+	// 150 labels — fewer than 200 embeddings, but after truncation both should
+	// be capped to min(150, 100) = 100, matching embeddings[:100].
+	labels := make([]string, 150)
+	for i := range labels {
+		labels[i] = "a"
+	}
+
+	result, err := ComputeMetrics(embeddings, labels, 100)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+}
