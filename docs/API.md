@@ -1,6 +1,6 @@
-# LLMem Python API
+# LLMem API Reference
 
-Python library interface for LLMem, including extension points, database schema, and module reference. [Back to README](../README.md)
+Python library interface and Go package reference for LLMem, including extension points, database schema, and module reference. [Back to README](../README.md)
 
 ## Python API
 
@@ -633,3 +633,300 @@ Code ref paths must be relative (no leading `/`) and must not contain `..` trave
 | `llmem.code_index` | `CodeIndex` — manages `code_chunks` table, FTS5/vec virtual tables, add/search/remove operations |
 | `llmem.refs` | `resolve_code_ref()`, `validate_code_ref_path()` — code reference resolution for memory-to-code-chunk edges |
 | `llmem.chunking` | `ParagraphChunking`, `FixedLineChunking`, `detect_language()`, `walk_code_files()`, `parse_gitignore()`, `is_ignored()` |
+
+---
+
+## Go API
+
+The Go implementation provides the core `MemoryStore` as a library in `github.com/MichielDean/LLMem/internal/store`. It shares the same database schema as the Python implementation, making databases interchangeable between the two.
+
+### Installation
+
+```go
+import "github.com/MichielDean/LLMem/internal/store"
+```
+
+### Creating a Store
+
+```go
+ms, err := store.NewMemoryStore(store.StoreConfig{
+    DBPath:         "",               // empty → ~/.config/llmem/memory.db
+    VecDimensions:  0,               // 0 → defaults to 768
+    DisableVec:     false,           // false → attempt vec0 virtual table
+    RegisteredTypes: nil,             // nil → 8 standard types
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer ms.Close()
+
+// Or with custom types:
+ms, err := store.NewMemoryStore(store.StoreConfig{
+    DBPath:          "/path/to/custom.db",
+    VecDimensions:   1024,
+    RegisteredTypes:  []string{"fact", "decision", "custom_type"},
+})
+```
+
+If `DisableVec` is `true`, the `memories_vec` virtual table is not created and all vector operations fall back to brute-force similarity search. If `VecDimensions` is negative, `NewMemoryStore` returns an error.
+
+### Core Operations
+
+```go
+ctx := context.Background()
+
+// Add a memory
+id, err := ms.Add(ctx, store.AddParams{
+    Type:       "fact",
+    Content:    "Project uses SQLite with WAL mode",
+    Confidence: 0.9,
+    Source:     "manual",
+    Hints:      []string{"sqlite", "wal"},
+    Metadata:   map[string]any{"source_id": "session-abc"},
+})
+
+// Get a memory (returns nil, nil if not found)
+mem, err := ms.Get(ctx, id, true)  // true → track access (increment access_count)
+
+// Get multiple memories at once
+batch, err := ms.GetBatch(ctx, []string{id1, id2, id3}, true)
+
+// Update a memory
+content := "Updated content"
+updated, err := ms.Update(ctx, store.UpdateParams{
+    ID:      id,
+    Content: &content,
+})
+
+// Invalidate (soft delete — sets valid_until, clears embedding)
+invalidated, err := ms.Invalidate(ctx, id, "No longer relevant")
+
+// Delete (permanent removal — cascades target-side relations)
+deleted, err := ms.Delete(ctx, id)
+
+// Touch (increment access_count)
+touched, err := ms.Touch(ctx, id)
+
+// Batch touch
+affected, err := ms.TouchBatch(ctx, []string{id1, id2, id3})
+```
+
+### Search
+
+```go
+// FTS5 full-text search (ranked by BM25, falls back to LIKE if FTS fails)
+results, err := ms.Search(ctx, store.SearchParams{
+    Query:     "SQLite",
+    Type:      "fact",          // optional type filter
+    ValidOnly: true,             // only valid (not invalidated) memories
+    Limit:     20,
+    Offset:    0,
+})
+
+// Search count
+count, err := ms.SearchCount(ctx, store.SearchCountParams{
+    Query:     "SQLite",
+    Type:      "fact",
+    ValidOnly: true,
+})
+
+// Vector similarity search (uses vec0 if available, brute-force otherwise)
+results, err := ms.SearchByEmbedding(ctx, queryVec, true, 20, 0.5)
+
+// List all memories
+memories, err := ms.ListAll(ctx, store.ListParams{
+    Type:      "fact",
+    ValidOnly: true,
+    Limit:     100,
+})
+
+// Count
+count, err := ms.Count(ctx, true)              // valid only
+byType, err := ms.CountByType(ctx, true)        // map[string]int
+embCount, err := ms.CountEmbeddings(ctx)        // valid memories with embeddings
+```
+
+### Relations
+
+```go
+// Add a relation (valid types: "supersedes", "related_to", "derived_from")
+relID, err := ms.AddRelation(ctx, sourceID, targetID, "supersedes")
+
+// Get all relations for a memory
+relations, err := ms.GetRelations(ctx, memID)
+
+// Get relations for multiple memories at once
+batchRels, err := ms.GetRelationsBatch(ctx, []string{id1, id2})
+
+// Traverse relations (bidirectional, recursive CTE, max depth 5)
+traversed, err := ms.TraverseRelations(ctx, []string{startID}, 3)
+// Returns []*TraversedRelation with TargetID, RelationType, Distance, RelationScore
+```
+
+### Extraction Log
+
+```go
+// Log an extraction (upsert on source_type + source_id)
+err := ms.LogExtraction(ctx, "session", "abc123", nil, 5)
+
+// Check if a source has been extracted
+extracted, err := ms.IsExtracted(ctx, "session", "abc123")
+
+// Supersede memories by source metadata
+n, err := ms.SupersedeBySource(ctx, "session", "abc123")
+
+// Remove an extraction log entry
+removed, err := ms.RemoveExtractionLog(ctx, "session", "abc123")
+```
+
+### Embeddings and Duplicates
+
+```go
+// Get embeddings with types (for metrics computation)
+// limit < 0 → default 10000, limit == 0 → no limit, limit > 0 → applied
+embs, err := ms.GetEmbeddingsWithTypes(ctx, 0)  // all embeddings
+
+// Find similar memories by vector or text
+similar, err := ms.FindSimilar(ctx, store.FindSimilarParams{
+    QueryVec:  queryVec,       // if non-empty, uses vector search
+    Content:   "search terms",  // fallback to FTS5 if queryVec is empty
+    Threshold: 0.8,
+    Limit:     10,
+})
+
+// Find duplicate pairs (by cosine similarity)
+pairs, err := ms.ConsolidateDuplicates(ctx, 0.92, 500)
+```
+
+### Import/Export
+
+```go
+// Export all memories (default limit: 10000, pass 0 for no limit)
+limit := 0  // no limit
+memories, err := ms.ExportAll(ctx, &limit)
+
+// Import memories (validates types, content, ID length, embedding dimensions)
+imported, err := ms.ImportMemories(ctx, []store.ImportMemory{
+    {
+        Type:       "fact",
+        Content:    "Imported memory",
+        Confidence: 0.8,
+    },
+})
+```
+
+### Memory Types
+
+```go
+// Register a custom type (validates name pattern: ^[a-z][a-z0-9_]*$, max 64 chars)
+err := ms.RegisterMemoryType("my_custom_type")
+
+// Get the default types
+types := store.DefaultRegisteredTypes()
+// ["fact", "decision", "preference", "event", "project_state", "procedure", "conversation", "self_assessment"]
+
+// Get valid relation types
+relTypes := store.ValidRelationTypes()
+// ["supersedes", "related_to", "derived_from"]
+```
+
+### Configuration Types
+
+```go
+type StoreConfig struct {
+    DBPath          string   // Database file path (default: ~/.config/llmem/memory.db)
+    VecDimensions   int      // Embedding dimensions (default: 768, must be ≥ 0)
+    DisableVec      bool     // Skip vec0 virtual table creation
+    RegisteredTypes []string // Custom type list (default: 8 standard types)
+}
+
+type AddParams struct {
+    ID         string
+    Type       string
+    Content    string
+    Summary    string
+    Source     string
+    Confidence float64
+    ValidUntil string
+    Metadata   map[string]any
+    Embedding  []byte          // Packed float32 little-endian (768 × 4 bytes for default dim)
+    Hints      []string
+}
+
+type UpdateParams struct {
+    ID             string
+    Content        *string         // nil → no change
+    Summary        *string
+    Confidence     *float64
+    ValidUntil     *string
+    Metadata       map[string]any
+    Embedding      []byte
+    ClearEmbedding bool            // true → set embedding to NULL
+    Hints          []string
+}
+
+type SearchParams struct {
+    Query     string
+    Type      string
+    ValidOnly bool
+    Limit     int             // ≤ 0 → defaults to 20
+    Offset    int             // < 0 → treated as 0
+}
+
+type ListParams struct {
+    Type      string
+    ValidOnly bool
+    Limit     int             // ≤ 0 → defaults to 100
+}
+```
+
+### Default Values
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| DBPath | `~/.config/llmem/memory.db` | Parent directory created with 0700 permissions |
+| VecDimensions | 768 | Matches `nomic-embed-text` embedding model |
+| DefaultConfidence | 0.8 | Applied when Confidence is 0 in AddParams |
+| ExportLimit | 10000 | Pass `0` for unlimited export |
+| BruteForceMaxRows | 10000 | Cap on brute-force embedding scan |
+| MaxTraversalDepth | 5 | Hard cap on relation traversal depth |
+| MaxIDLength | 256 | Import rejects IDs exceeding this |
+
+### Error Handling
+
+All errors from store methods are wrapped with the `"llmem: store: "` prefix and include domain context. Use `errors.Is` / `errors.As` for programmatic inspection:
+
+```go
+_, err := ms.Add(ctx, store.AddParams{Type: "unknown_type", Content: "test"})
+// err.Error() → "llmem: store: add: unregistered type \"unknown_type\": register it with RegisterMemoryType first"
+```
+
+### Embedding Byte Format
+
+Embeddings are stored and accepted as packed `[]byte` in little-endian `float32` format. For a 768-dimensional embedding, this is `768 × 4 = 3072` bytes.
+
+Use the exported `vecToBytes` and `bytesToVec` helpers if you need conversion:
+
+```go
+// Convert float32 slice to []byte for storage
+packed := store.VecToBytes([]float32{0.1, 0.2, 0.3})
+
+// Convert stored []byte back to float32 slice
+vec := store.BytesToVec(packed)
+```
+
+### Database Schema
+
+The Go implementation uses the identical 7-migration schema as Python:
+
+| Migration | Description |
+|-----------|-------------|
+| 001 | Initial schema: `memories`, `relations`, `extraction_log` tables, `memories_fts` FTS5 virtual table |
+| 002 | Add `hints` column (TEXT, JSON array) |
+| 003 | Register 8 default memory types via CHECK constraint |
+| 004 | Add `code_chunks` table for code indexing |
+| 005 | Add `inbox` table for working memory |
+| 006 | Add `supersedes` and `references` relation types |
+| 007 | Schema cleanup: drop dead columns, add indexes, add `derived_from` relation type |
+
+Migrations are embedded via `embed.FS` and applied by `pressly/goose`. The database uses WAL mode and foreign keys by default.

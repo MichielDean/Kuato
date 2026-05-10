@@ -2,7 +2,7 @@
 
 How to install and set up LLMem. [Back to README](../README.md)
 
-## Installation
+## Python Installation
 
 LLMem is not yet published on PyPI or npm. Install from source.
 
@@ -77,3 +77,57 @@ The `postinstall` script copies skill directories to `~/.agents/skills/` where O
 - Python 3.11+
 - Node.js 20+ (for plugin installation only)
 - [Ollama](https://ollama.com) running locally for extraction, embedding, and dreaming — **or** install `llmem[local]` for local embedding without any server — **or** set `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` for cloud providers
+
+## Go Installation
+
+The Go implementation provides the core `MemoryStore` as a pure-Go library with no CGo dependency. It uses `modernc.org/sqlite` (pure-Go SQLite driver) and `pressly/goose` for schema migrations.
+
+### Requirements
+
+- Go 1.26.1+
+
+### Install as a dependency
+
+```bash
+go get github.com/MichielDean/LLMem
+```
+
+### Build from source
+
+```bash
+git clone https://github.com/MichielDean/LLMem.git
+cd LLMem
+make build
+```
+
+### Run tests
+
+```bash
+make test
+# or
+go test ./...
+```
+
+### What's included
+
+| Package | Description |
+|---------|-------------|
+| `internal/store` | Core `MemoryStore` — add, get, update, invalidate, delete, search, relations, import/export, vector search |
+| `cmd/llmem` | CLI entrypoint (currently a stub) |
+| `migrations/` | 7 embedded SQL migrations (shared schema with Python) |
+| `Makefile` | Build, test, lint, clean targets |
+
+### Key differences from Python
+
+| Feature | Python | Go |
+|---------|--------|-----|
+| SQLite driver | Built-in `sqlite3` | `modernc.org/sqlite` (pure Go, no CGo) |
+| Vector search | `sqlite-vec` Python package | `vec0` virtual table (pure Go via modernc) |
+| Migrations | Manual numbered SQL files | `pressly/goose` with embedded SQL files |
+| CLI | Full-featured (`llmem` command) | Stub (`MemoryStore` library only) |
+| Embeddings/Providers | Ollama, OpenAI, Anthropic, local | Not yet implemented |
+| Reranking | RRF + multi-signal | Not yet implemented |
+| Session hooks | Full lifecycle | Not yet implemented |
+| Dream cycle | Full (light, deep, REM) | Not yet implemented |
+
+The Go `MemoryStore` shares the **exact same database schema** as Python. You can use them interchangeably — a database created by Python is readable by Go, and vice versa.
