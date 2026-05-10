@@ -102,11 +102,12 @@ type SessionHookConfig struct {
 
 // SessionHookCoordinator orchestrates memory operations for session lifecycle events.
 type SessionHookCoordinator struct {
-	store       *store.MemoryStore
-	adapter     SessionAdapter
-	contextDir  string
-	lastIdle    map[string]time.Time
-	mu          sync.Mutex
+	store            *store.MemoryStore
+	adapter          SessionAdapter
+	contextDir       string
+	debounceSeconds  int
+	lastIdle         map[string]time.Time
+	mu               sync.Mutex
 }
 
 // fmtErr wraps an error with the "llmem: session:" domain prefix.
@@ -125,7 +126,6 @@ func NewSessionHookCoordinator(cfg SessionHookConfig) (*SessionHookCoordinator, 
 	if debounceSeconds <= 0 {
 		debounceSeconds = idleDebounceSeconds
 	}
-	_ = debounceSeconds // used by OnIdle
 
 	contextDir := cfg.ContextDir
 	if contextDir == "" {
@@ -133,10 +133,11 @@ func NewSessionHookCoordinator(cfg SessionHookConfig) (*SessionHookCoordinator, 
 	}
 
 	return &SessionHookCoordinator{
-		store:      cfg.Store,
-		adapter:    cfg.Adapter,
-		contextDir: contextDir,
-		lastIdle:   map[string]time.Time{},
+		store:            cfg.Store,
+		adapter:          cfg.Adapter,
+		contextDir:       contextDir,
+		debounceSeconds:  debounceSeconds,
+		lastIdle:         map[string]time.Time{},
 	}, nil
 }
 
@@ -161,7 +162,7 @@ func (c *SessionHookCoordinator) OnCreated(ctx context.Context, sessionID string
 	return ResultSuccess, nil
 }
 
-// OnIdle handles the session.idle event with debounce (30s interval).
+// OnIdle handles the session.idle event with debounce (configurable interval, defaults to 30s).
 // Returns result type string: "debounced", "no_transcript", "success", or "error".
 func (c *SessionHookCoordinator) OnIdle(ctx context.Context, sessionID string) (string, error) {
 	validID, err := paths.ValidateSessionID(sessionID)
@@ -173,7 +174,7 @@ func (c *SessionHookCoordinator) OnIdle(ctx context.Context, sessionID string) (
 	// Check debounce
 	c.mu.Lock()
 	lastTime, exists := c.lastIdle[sessionID]
-	if exists && time.Since(lastTime).Seconds() < float64(idleDebounceSeconds) {
+	if exists && time.Since(lastTime).Seconds() < float64(c.debounceSeconds) {
 		c.mu.Unlock()
 		return ResultDebounced, nil
 	}

@@ -113,7 +113,7 @@ func DefaultConfig() Config {
 			AutoLinkThreshold:       0.85,
 		},
 		OpenCode: OpenCodeConfig{
-			DBPath:      paths.GetHomeDir() + "/../local/share/opencode/opencode.db",
+			DBPath:      openCodeDefaultDBPath(),
 			ContextDir:  paths.GetContextDir(),
 		},
 		Session: SessionConfig{
@@ -215,6 +215,15 @@ func WriteConfigYAML(path string, config map[string]any, force bool) (bool, erro
 	}
 
 	return true, nil
+}
+
+// openCodeDefaultDBPath returns the default OpenCode database path using filepath.Join.
+func openCodeDefaultDBPath() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(paths.GetHomeDir(), "..", ".local", "share", "opencode", "opencode.db")
+	}
+	return filepath.Join(homeDir, ".local", "share", "opencode", "opencode.db")
 }
 
 // expandHome expands ~ to the user's home directory.

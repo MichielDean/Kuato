@@ -100,6 +100,34 @@ func TestSessionHookCoordinator_OnIdle_Debounce(t *testing.T) {
 	}
 }
 
+func TestSessionHookCoordinator_OnIdle_CustomDebounce(t *testing.T) {
+	ms := newTestStore(t)
+	// Set DebounceSeconds to 0 to verify it defaults to 30, and use a very
+	// short debounce to test custom values
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		DebounceSeconds:  0, // should default to 30
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+	if coord.debounceSeconds != 30 {
+		t.Errorf("expected debounceSeconds 30, got %d", coord.debounceSeconds)
+	}
+
+	// Verify explicit custom value
+	coord2, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		DebounceSeconds:  10,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+	if coord2.debounceSeconds != 10 {
+		t.Errorf("expected debounceSeconds 10, got %d", coord2.debounceSeconds)
+	}
+}
+
 func TestSessionHookCoordinator_OnCompacting(t *testing.T) {
 	ms := newTestStore(t)
 	dir := t.TempDir()

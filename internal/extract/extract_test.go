@@ -172,6 +172,32 @@ func TestTryParseJSONArray_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestExtractionEngine_HTTPClientInjection(t *testing.T) {
+	// Verify that ExtractionConfig.HTTPClient is properly wired through to OllamaClient
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/generate" {
+			resp := map[string]string{"response": `[{"type":"fact","content":"test","confidence":0.9}]`}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	engine, err := NewExtractionEngine(ExtractionConfig{
+		BaseURL:    server.URL,
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewExtractionEngine with HTTPClient: %v", err)
+	}
+
+	result := engine.Extract(context.Background(), "test text")
+	if len(result) != 1 {
+		t.Errorf("expected 1 memory via HTTPClient injection, got %d", len(result))
+	}
+}
+
 func TestNewExtractionEngine_Defaults(t *testing.T) {
 	engine, err := NewExtractionEngine(ExtractionConfig{})
 	if err != nil {

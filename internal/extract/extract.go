@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -53,7 +54,7 @@ type ExtractionConfig struct {
 	BaseURL string
 
 	// HTTPClient is an optional pre-configured HTTP client (for testing with httptest.NewServer).
-	HTTPClient interface{} // *http.Client, but we accept interface{} to avoid direct net/http import
+	HTTPClient *http.Client
 
 	// OllamaClient is an optional pre-configured OllamaClient. Takes precedence over BaseURL/HTTPClient.
 	OllamaClient *ollama.OllamaClient
@@ -62,10 +63,8 @@ type ExtractionConfig struct {
 // ExtractionEngine extracts memories from text using Ollama.
 // If Ollama is unavailable, it gracefully degrades by returning an empty slice.
 type ExtractionEngine struct {
-	model    string
-	ollama   *ollama.OllamaClient
-	baseURL  string
-	available bool
+	model  string
+	ollama *ollama.OllamaClient
 }
 
 // fmtErr wraps an error with the "llmem: extract:" domain prefix.
@@ -93,14 +92,8 @@ func NewExtractionEngine(cfg ExtractionConfig) (*ExtractionEngine, error) {
 		}
 
 		ollamaCfg := ollama.OllamaClientConfig{
-			BaseURL: baseURL,
-		}
-		if cfg.HTTPClient != nil {
-			if hc, ok := cfg.HTTPClient.(interface {
-				Do(req interface{}) interface{}
-			}); ok {
-				_ = hc // just suppress unused warning
-			}
+			BaseURL:    baseURL,
+			HTTPClient: cfg.HTTPClient,
 		}
 
 		var err error
