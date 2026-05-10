@@ -181,6 +181,11 @@ func (ms *MemoryStore) Add(ctx context.Context, params AddParams) (string, error
 		return "", fmtErr("add: unregistered type %q: register it with RegisterMemoryType first", params.Type)
 	}
 
+	// Validate embedding size limit (DoS protection)
+	if len(params.Embedding) > maxEmbeddingBytes {
+		return "", fmtErr("add: embedding size %d bytes exceeds maximum %d bytes", len(params.Embedding), maxEmbeddingBytes)
+	}
+
 	// Validate embedding dimensions
 	if len(params.Embedding) > 0 && !ms.disableVec {
 		actualDim := len(params.Embedding) / 4
@@ -318,6 +323,11 @@ func (ms *MemoryStore) GetBatch(ctx context.Context, ids []string, validOnly boo
 func (ms *MemoryStore) Update(ctx context.Context, params UpdateParams) (bool, error) {
 	if params.ClearEmbedding && params.Embedding != nil {
 		return false, fmtErr("update: cannot specify both embedding and clear_embedding=true")
+	}
+
+	// Validate embedding size limit (DoS protection)
+	if len(params.Embedding) > maxEmbeddingBytes {
+		return false, fmtErr("update: embedding size %d bytes exceeds maximum %d bytes", len(params.Embedding), maxEmbeddingBytes)
 	}
 
 	// Check existence
@@ -1312,6 +1322,12 @@ func (ms *MemoryStore) ImportMemories(ctx context.Context, memories []ImportMemo
 		// Validate ID length
 		if len(m.ID) > maxIDLength {
 			slog.Warn("llmem: store: import: skipping entry: id too long", "index", i, "id_length", len(m.ID))
+			continue
+		}
+
+		// Validate embedding size limit (DoS protection)
+		if len(m.Embedding) > maxEmbeddingBytes {
+			slog.Warn("llmem: store: import: skipping entry: embedding exceeds size limit", "index", i, "got", len(m.Embedding), "max", maxEmbeddingBytes)
 			continue
 		}
 

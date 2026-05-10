@@ -1618,3 +1618,125 @@ func TestGetEmbeddingsWithTypes_NegativeLimit_DefaultLimit(t *testing.T) {
 		t.Errorf("expected 1 result with limit=-1 (default), got %d", len(results))
 	}
 }
+
+func TestMemoryStore_Add_EmbeddingExceedsMaxSize(t *testing.T) {
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	// Create an embedding that exceeds maxEmbeddingBytes (1MB)
+	oversizedEmbedding := make([]byte, maxEmbeddingBytes+1)
+	_, err := ms.Add(ctx, AddParams{
+		Type:      "fact",
+		Content:   "test content",
+		Embedding: oversizedEmbedding,
+	})
+	if err == nil {
+		t.Error("expected error for embedding exceeding maxEmbeddingBytes")
+	}
+	// Verify error message contains domain context
+	if !strings.Contains(err.Error(), "add:") {
+		t.Errorf("expected error to contain 'add:' domain prefix, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "embedding size") {
+		t.Errorf("expected error to contain 'embedding size', got: %v", err)
+	}
+}
+
+func TestMemoryStore_Add_EmbeddingAtMaxSize_Succeeds(t *testing.T) {
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	// Create an embedding exactly at maxEmbeddingBytes — should succeed
+	exactMaxEmbedding := make([]byte, maxEmbeddingBytes)
+	id, err := ms.Add(ctx, AddParams{
+		Type:      "fact",
+		Content:   "test content",
+		Embedding: exactMaxEmbedding,
+	})
+	if err != nil {
+		t.Fatalf("expected Add to succeed with embedding at maxEmbeddingBytes, got: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty ID for embedding at maxEmbeddingBytes")
+	}
+}
+
+func TestMemoryStore_ImportMemories_EmbeddingExceedsMaxSize(t *testing.T) {
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	// Create memories where one has an oversized embedding
+	memories := []ImportMemory{
+		{Type: "fact", Content: "valid entry"},
+		{Type: "fact", Content: "oversized embedding", Embedding: make([]byte, maxEmbeddingBytes+1)},
+		{Type: "fact", Content: "another valid entry"},
+	}
+
+	count, err := ms.ImportMemories(ctx, memories)
+	if err != nil {
+		t.Fatalf("ImportMemories: %v", err)
+	}
+	// Only 2 valid entries (the oversized one should be skipped)
+	if count != 2 {
+		t.Errorf("expected 2 imported (oversized skipped), got %d", count)
+	}
+}
+
+func TestMemoryStore_ImportMemories_EmbeddingAtMaxSize_Succeeds(t *testing.T) {
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	// An embedding exactly at maxEmbeddingBytes should be accepted
+	memories := []ImportMemory{
+		{Type: "fact", Content: "at max size", Embedding: make([]byte, maxEmbeddingBytes)},
+	}
+
+	count, err := ms.ImportMemories(ctx, memories)
+	if err != nil {
+		t.Fatalf("ImportMemories: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 imported, got %d", count)
+	}
+}
+
+func TestMemoryStore_Update_EmbeddingExceedsMaxSize(t *testing.T) {
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	id, _ := ms.Add(ctx, AddParams{Type: "fact", Content: "original content"})
+
+	oversizedEmbedding := make([]byte, maxEmbeddingBytes+1)
+	_, err := ms.Update(ctx, UpdateParams{
+		ID:        id,
+		Embedding: oversizedEmbedding,
+	})
+	if err == nil {
+		t.Error("expected error for embedding exceeding maxEmbeddingBytes in Update")
+	}
+	if !strings.Contains(err.Error(), "update:") {
+		t.Errorf("expected error to contain 'update:' domain prefix, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "embedding size") {
+		t.Errorf("expected error to contain 'embedding size', got: %v", err)
+	}
+}
+
+func TestMemoryStore_Update_EmbeddingAtMaxSize_Succeeds(t *testing.T) {
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	id, _ := ms.Add(ctx, AddParams{Type: "fact", Content: "original content"})
+
+	exactMaxEmbedding := make([]byte, maxEmbeddingBytes)
+	ok, err := ms.Update(ctx, UpdateParams{
+		ID:        id,
+		Embedding: exactMaxEmbedding,
+	})
+	if err != nil {
+		t.Fatalf("expected Update to succeed with embedding at maxEmbeddingBytes, got: %v", err)
+	}
+	if !ok {
+		t.Error("expected Update to return true")
+	}
+}
