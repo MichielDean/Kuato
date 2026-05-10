@@ -112,6 +112,61 @@ func TestConfig_DreamConfigResolved(t *testing.T) {
 	}
 }
 
+func TestConfig_DreamerConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	dc := cfg.DreamerConfig()
+
+	// Verify that DreamerConfig maps the live fields from DreamConfig
+	if dc.SimilarityThreshold != 0.92 {
+		t.Errorf("expected SimilarityThreshold 0.92, got %f", dc.SimilarityThreshold)
+	}
+	if dc.DecayRate != 0.05 {
+		t.Errorf("expected DecayRate 0.05, got %f", dc.DecayRate)
+	}
+	if dc.BoostThreshold != 5 {
+		t.Errorf("expected BoostThreshold 5, got %d", dc.BoostThreshold)
+	}
+	if dc.AutoLinkThreshold != 0.85 {
+		t.Errorf("expected AutoLinkThreshold 0.85, got %f", dc.AutoLinkThreshold)
+	}
+	if dc.BehavioralThreshold != 3 {
+		t.Errorf("expected BehavioralThreshold 3, got %d", dc.BehavioralThreshold)
+	}
+	if dc.BehavioralLookbackDays != 30 {
+		t.Errorf("expected BehavioralLookbackDays 30, got %d", dc.BehavioralLookbackDays)
+	}
+	// Store field should be nil (caller must set it)
+	if dc.Store != nil {
+		t.Error("expected Store to be nil (caller must set)")
+	}
+}
+
+func TestConfig_DreamerConfig_CustomValues(t *testing.T) {
+	dir := newTestConfigDir(t)
+	configPath := filepath.Join(dir, "config.yaml")
+
+	yamlContent := []byte("dream:\n  similarity_threshold: 0.85\n  decay_rate: 0.1\n  boost_threshold: 10\n")
+	if err := os.WriteFile(configPath, yamlContent, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	dc := cfg.DreamerConfig()
+	if dc.SimilarityThreshold != 0.85 {
+		t.Errorf("expected SimilarityThreshold 0.85, got %f", dc.SimilarityThreshold)
+	}
+	if dc.DecayRate != 0.1 {
+		t.Errorf("expected DecayRate 0.1, got %f", dc.DecayRate)
+	}
+	if dc.BoostThreshold != 10 {
+		t.Errorf("expected BoostThreshold 10, got %d", dc.BoostThreshold)
+	}
+}
+
 func TestWriteConfigYAML_NewFile(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")

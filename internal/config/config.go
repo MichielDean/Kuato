@@ -9,35 +9,33 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/MichielDean/LLMem/internal/dream"
 	"github.com/MichielDean/LLMem/internal/paths"
 	"github.com/MichielDean/LLMem/internal/urlvalidate"
 	"gopkg.in/yaml.v3"
 )
 
 // DreamConfig holds dream consolidation settings.
+// Only fields that are wired through to DreamerConfig are included.
+// Removed dead fields: MinScore, MinRecallCount, MinUniqueQueries,
+// BoostOnPromote, MergeModel, CalibrationEnabled, StaleProcedureDays,
+// CalibrationLookbackDays — these were defined in config but never
+// read by any method, creating a contract violation.
 type DreamConfig struct {
-	Enabled               bool    `yaml:"enabled"`
-	Schedule              string  `yaml:"schedule"`
-	SimilarityThreshold   float64 `yaml:"similarity_threshold"`
-	DecayRate             float64 `yaml:"decay_rate"`
-	DecayIntervalDays     int     `yaml:"decay_interval_days"`
-	DecayFloor            float64 `yaml:"decay_floor"`
-	ConfidenceFloor       float64 `yaml:"confidence_floor"`
-	BoostThreshold        int     `yaml:"boost_threshold"`
-	BoostAmount           float64 `yaml:"boost_amount"`
-	MinScore              float64 `yaml:"min_score"`
-	MinRecallCount        int     `yaml:"min_recall_count"`
-	MinUniqueQueries      int     `yaml:"min_unique_queries"`
-	BoostOnPromote        float64 `yaml:"boost_on_promote"`
-	MergeModel            string  `yaml:"merge_model"`
-	DiaryPath             string  `yaml:"diary_path"`
-	ReportPath            string  `yaml:"report_path"`
-	BehavioralThreshold   int     `yaml:"behavioral_threshold"`
-	BehavioralLookbackDays int    `yaml:"behavioral_lookback_days"`
-	CalibrationEnabled    bool    `yaml:"calibration_enabled"`
-	StaleProcedureDays    int     `yaml:"stale_procedure_days"`
-	CalibrationLookbackDays int   `yaml:"calibration_lookback_days"`
-	AutoLinkThreshold     float64 `yaml:"auto_link_threshold"`
+	Enabled                bool    `yaml:"enabled"`
+	Schedule               string  `yaml:"schedule"`
+	SimilarityThreshold    float64 `yaml:"similarity_threshold"`
+	DecayRate              float64 `yaml:"decay_rate"`
+	DecayIntervalDays      int     `yaml:"decay_interval_days"`
+	DecayFloor             float64 `yaml:"decay_floor"`
+	ConfidenceFloor        float64 `yaml:"confidence_floor"`
+	BoostThreshold         int     `yaml:"boost_threshold"`
+	BoostAmount            float64 `yaml:"boost_amount"`
+	DiaryPath              string  `yaml:"diary_path"`
+	ReportPath             string  `yaml:"report_path"`
+	BehavioralThreshold    int     `yaml:"behavioral_threshold"`
+	BehavioralLookbackDays int     `yaml:"behavioral_lookback_days"`
+	AutoLinkThreshold      float64 `yaml:"auto_link_threshold"`
 }
 
 // SessionConfig holds session lifecycle settings.
@@ -97,20 +95,12 @@ func DefaultConfig() Config {
 			DecayFloor:             0.3,
 			ConfidenceFloor:        0.3,
 			BoostThreshold:         5,
-			BoostAmount:             0.05,
-			MinScore:               0.5,
-			MinRecallCount:         3,
-			MinUniqueQueries:       1,
-			BoostOnPromote:         0.1,
-			MergeModel:             "qwen2.5:1.5b",
+			BoostAmount:            0.05,
 			DiaryPath:              paths.GetDreamDiaryPath(),
 			ReportPath:             paths.GetDreamReportPath(),
 			BehavioralThreshold:    3,
 			BehavioralLookbackDays: 30,
-			CalibrationEnabled:     true,
-			StaleProcedureDays:     30,
-			CalibrationLookbackDays: 90,
-			AutoLinkThreshold:       0.85,
+			AutoLinkThreshold:      0.85,
 		},
 		OpenCode: OpenCodeConfig{
 			DBPath:      openCodeDefaultDBPath(),
@@ -175,7 +165,29 @@ func (c *Config) OllamaURL() (string, error) {
 	return validated, nil
 }
 
+// DreamerConfig returns a dream.DreamerConfig populated from the config.
+// Maps DreamConfig fields to their corresponding DreamerConfig fields.
+// Store must be set by the caller before passing to dream.NewDreamer.
+func (c *Config) DreamerConfig() dream.DreamerConfig {
+	return dream.DreamerConfig{
+		SimilarityThreshold:    c.Dream.SimilarityThreshold,
+		DecayRate:              c.Dream.DecayRate,
+		DecayIntervalDays:      c.Dream.DecayIntervalDays,
+		DecayFloor:             c.Dream.DecayFloor,
+		ConfidenceFloor:        c.Dream.ConfidenceFloor,
+		BoostThreshold:         c.Dream.BoostThreshold,
+		BoostAmount:            c.Dream.BoostAmount,
+		AutoLinkThreshold:      c.Dream.AutoLinkThreshold,
+		BehavioralThreshold:    c.Dream.BehavioralThreshold,
+		BehavioralLookbackDays: c.Dream.BehavioralLookbackDays,
+		DiaryPath:              c.Dream.DiaryPath,
+		ReportPath:             c.Dream.ReportPath,
+	}
+}
+
 // DreamConfigResolved returns the fully-resolved dream configuration.
+// Deprecated: use DreamerConfig() which returns a dream.DreamerConfig
+// wired to the actual Dreamer implementation.
 func (c *Config) DreamConfigResolved() DreamConfig {
 	return c.Dream
 }

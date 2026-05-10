@@ -69,6 +69,15 @@ func resolveDBPath() string {
 	return paths.GetDBPath()
 }
 
+// loadConfig loads the LLMem configuration from the default config path.
+func loadConfig() (*config.Config, error) {
+	cfg, err := config.LoadConfig(paths.GetConfigPath())
+	if err != nil {
+		return nil, fmt.Errorf("llmem: load config: %w", err)
+	}
+	return cfg, nil
+}
+
 // openStore creates a MemoryStore and returns it with a cleanup function.
 func openStore() (*store.MemoryStore, error) {
 	cfg := store.StoreConfig{
@@ -532,9 +541,8 @@ func importCmd() *cobra.Command {
 
 func initCmd() *cobra.Command {
 	var (
-		ollamaURLVal  string
-		nonInteractive bool
-		forceVal      bool
+		ollamaURLVal string
+		forceVal     bool
 	)
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -589,7 +597,6 @@ func initCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&ollamaURLVal, "ollama-url", "", "Ollama base URL")
-	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Run without interactive prompts")
 	cmd.Flags().BoolVar(&forceVal, "force", false, "Overwrite existing config")
 	return cmd
 }
@@ -631,7 +638,16 @@ func dreamCmd() *cobra.Command {
 			}
 			defer ms.Close()
 
-			d, err := dream.NewDreamer(dream.DreamerConfig{Store: ms})
+			// Load config to populate dream settings
+			cfg, err := loadConfig()
+			if err != nil {
+				return fmt.Errorf("llmem: dream: load config: %w", err)
+			}
+
+			dreamerCfg := cfg.DreamerConfig()
+			dreamerCfg.Store = ms
+
+			d, err := dream.NewDreamer(dreamerCfg)
 			if err != nil {
 				return err
 			}
