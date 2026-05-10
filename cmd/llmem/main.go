@@ -7,9 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/MichielDean/LLMem/internal/config"
 	"github.com/MichielDean/LLMem/internal/dream"
@@ -966,10 +964,4 @@ func defaultIfEmpty(val, defaultVal string) string {
 		return defaultVal
 	}
 	return val
-}
-
-func init() {
-	// Register all memory types in init command - types are pre-registered via migrations
-	_ = strconv.Itoa(0) // suppress unused import warning
-	_ = time.RFC3339     // suppress unused import warning
 }

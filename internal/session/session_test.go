@@ -2,8 +2,10 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/MichielDean/LLMem/internal/store"
 )
@@ -175,6 +177,55 @@ func TestOpenCodeAdapter_EmptyDBPath(t *testing.T) {
 	}
 	if content != "" {
 		t.Error("expected empty content for empty db path")
+	}
+}
+
+func TestSessionHookCoordinator_OnIdle_EvictsStaleEntries(t *testing.T) {
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:           ms,
+		DebounceSeconds: 30,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	// Simulate several sessions having idle entries
+	for i := 0; i < 100; i++ {
+		coord.lastIdle[fmt.Sprintf("session-%d", i)] = time.Now()
+	}
+
+	// Now add stale entries (older than eviction threshold = 30s * 10 = 300s)
+	staleTime := time.Now().Add(-600 * time.Second) // 10 minutes ago, well past eviction
+	coord.lastIdle["stale-session-1"] = staleTime
+	coord.lastIdle["stale-session-2"] = staleTime
+
+	totalBefore := len(coord.lastIdle)
+
+	// OnIdle triggers eviction of stale entries
+	_, err = coord.OnIdle(context.Background(), "new-session")
+	if err != nil {
+		t.Fatalf("OnIdle: %v", err)
+	}
+
+	// Stale entries should have been evicted, recent ones kept
+	totalAfter := len(coord.lastIdle)
+
+	if totalAfter >= totalBefore {
+		t.Errorf("expected stale entries to be evicted: before=%d, after=%d", totalBefore, totalAfter)
+	}
+
+	// Stale entries should be gone
+	if _, exists := coord.lastIdle["stale-session-1"]; exists {
+		t.Error("stale-session-1 should have been evicted")
+	}
+	if _, exists := coord.lastIdle["stale-session-2"]; exists {
+		t.Error("stale-session-2 should have been evicted")
+	}
+
+	// New session should be present
+	if _, exists := coord.lastIdle["new-session"]; !exists {
+		t.Error("new-session should be present in lastIdle")
 	}
 }
 

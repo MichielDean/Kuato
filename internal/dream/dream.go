@@ -35,8 +35,6 @@ const (
 	defaultAutoLinkThreshold     = 0.85
 	defaultBehavioralThreshold   = 3
 	defaultBehavioralLookbackDays = 30
-	defaultMergeModel            = "qwen2.5:1.5b"
-	defaultOllamaBaseURL         = "http://localhost:11434"
 )
 
 // DreamerConfig contains the configuration for creating a Dreamer.
@@ -76,12 +74,6 @@ type DreamerConfig struct {
 
 	// BoostOnPromote confidence boost when memory is promoted. Defaults to 0.1.
 	BoostOnPromote float64
-
-	// MergeModel Ollama model for merge. Defaults to "qwen2.5:1.5b".
-	MergeModel string
-
-	// OllamaURL base URL. Defaults to "http://localhost:11434".
-	OllamaURL string
 
 	// AutoLinkThreshold for auto-linking. Defaults to 0.85.
 	AutoLinkThreshold float64
@@ -145,21 +137,19 @@ type Dreamer struct {
 	decayRate              float64
 	decayIntervalDays      int
 	decayFloor             float64
-	confidenceFloor         float64
-	boostThreshold          int
-	boostAmount             float64
-	minScore                float64
-	minRecallCount          int
-	minUniqueQueries        int
-	boostOnPromote          float64
-	mergeModel              string
-	ollamaURL               string
-	autoLinkThreshold       float64
-	behavioralThreshold     int
-	behavioralLookbackDays  int
-	diaryPath               string
-	reportPath              string
-	mu                      sync.Mutex
+	confidenceFloor        float64
+	boostThreshold         int
+	boostAmount            float64
+	minScore               float64
+	minRecallCount         int
+	minUniqueQueries       int
+	boostOnPromote         float64
+	autoLinkThreshold      float64
+	behavioralThreshold    int
+	behavioralLookbackDays int
+	diaryPath              string
+	reportPath             string
+	mu                     sync.Mutex
 }
 
 // fmtErr wraps an error with the "llmem: dream:" domain prefix.
@@ -219,14 +209,6 @@ func NewDreamer(cfg DreamerConfig) (*Dreamer, error) {
 	if boostOnPromote == 0 {
 		boostOnPromote = defaultBoostOnPromote
 	}
-	mergeModel := cfg.MergeModel
-	if mergeModel == "" {
-		mergeModel = defaultMergeModel
-	}
-	ollamaURL := cfg.OllamaURL
-	if ollamaURL == "" {
-		ollamaURL = defaultOllamaBaseURL
-	}
 	autoLinkThreshold := cfg.AutoLinkThreshold
 	if autoLinkThreshold == 0 {
 		autoLinkThreshold = defaultAutoLinkThreshold
@@ -260,9 +242,7 @@ func NewDreamer(cfg DreamerConfig) (*Dreamer, error) {
 		minScore:              minScore,
 		minRecallCount:         minRecallCount,
 		minUniqueQueries:       minUniqueQueries,
-		boostOnPromote:        boostOnPromote,
-		mergeModel:            mergeModel,
-		ollamaURL:             ollamaURL,
+		boostOnPromote:         boostOnPromote,
 		autoLinkThreshold:     autoLinkThreshold,
 		behavioralThreshold:    behavioralThreshold,
 		behavioralLookbackDays: behavioralLookbackDays,

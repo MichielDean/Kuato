@@ -28,6 +28,10 @@ const (
 // idleDebounceSeconds is the minimum interval between idle events for the same session.
 const idleDebounceSeconds = 30
 
+// idleEvictionFactor controls when stale entries are pruned from lastIdle.
+// Entries older than idleDebounceSeconds * idleEvictionFactor are evicted.
+const idleEvictionFactor = 10
+
 // Compacting key memory types and minimum confidence.
 var compactingKeyTypes = []string{"decision", "preference", "procedure", "project_state"}
 
@@ -173,6 +177,15 @@ func (c *SessionHookCoordinator) OnIdle(ctx context.Context, sessionID string) (
 
 	// Check debounce
 	c.mu.Lock()
+	// Evict stale entries to prevent unbounded map growth.
+	// Entries older than evictionThreshold are no longer useful for debounce.
+	evictionThreshold := time.Now().Add(-time.Duration(c.debounceSeconds*idleEvictionFactor) * time.Second)
+	for id, t := range c.lastIdle {
+		if t.Before(evictionThreshold) {
+			delete(c.lastIdle, id)
+		}
+	}
+
 	lastTime, exists := c.lastIdle[sessionID]
 	if exists && time.Since(lastTime).Seconds() < float64(c.debounceSeconds) {
 		c.mu.Unlock()
