@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/MichielDean/LLMem/internal/config"
@@ -97,10 +98,14 @@ func addCmd() *cobra.Command {
 		Short: "Add a new memory",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if fileVal != "" {
-				if paths.IsBlockedPath(fileVal) {
-					return fmt.Errorf("llmem: add: file path targets a blocked system directory: %s", fileVal)
+				resolvedFile, err := filepath.Abs(fileVal)
+				if err != nil {
+					return fmt.Errorf("llmem: add: resolve file path: %w", err)
 				}
-				data, err := os.ReadFile(fileVal)
+				if paths.IsBlockedPath(resolvedFile) {
+					return fmt.Errorf("llmem: add: file path targets a blocked system directory: %s", resolvedFile)
+				}
+				data, err := os.ReadFile(resolvedFile)
 				if err != nil {
 					return fmt.Errorf("llmem: add: read file: %w", err)
 				}
@@ -792,7 +797,14 @@ func trackReviewCmd() *cobra.Command {
 			if singleVal || batchVal {
 				var input []byte
 				if findingsVal != "" {
-					input, err = os.ReadFile(findingsVal)
+					resolvedFindings, rerr := filepath.Abs(findingsVal)
+					if rerr != nil {
+						return fmt.Errorf("llmem: track-review: resolve findings path: %w", rerr)
+					}
+					if paths.IsBlockedPath(resolvedFindings) {
+						return fmt.Errorf("llmem: track-review: findings path targets a blocked system directory: %s", resolvedFindings)
+					}
+					input, err = os.ReadFile(resolvedFindings)
 					if err != nil {
 						return fmt.Errorf("llmem: track-review: read findings: %w", err)
 					}
