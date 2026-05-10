@@ -19,11 +19,11 @@ import (
 // Only fields that are wired through to DreamerConfig are included.
 // Removed dead fields: MinScore, MinRecallCount, MinUniqueQueries,
 // BoostOnPromote, MergeModel, CalibrationEnabled, StaleProcedureDays,
-// CalibrationLookbackDays — these were defined in config but never
-// read by any method, creating a contract violation.
+// CalibrationLookbackDays, Enabled, Schedule — these were defined in
+// config but never read by any method, creating a contract violation.
+// Enabled and Schedule control systemd timer behaviour, not dream
+// algorithm parameters; they are handled by internal/systemd directly.
 type DreamConfig struct {
-	Enabled                bool    `yaml:"enabled"`
-	Schedule               string  `yaml:"schedule"`
 	SimilarityThreshold    float64 `yaml:"similarity_threshold"`
 	DecayRate              float64 `yaml:"decay_rate"`
 	DecayIntervalDays      int     `yaml:"decay_interval_days"`
@@ -87,8 +87,6 @@ func DefaultConfig() Config {
 			MaxFileSize:   10 * 1024 * 1024,
 		},
 		Dream: DreamConfig{
-			Enabled:                true,
-			Schedule:               "*-*-* 03:00:00",
 			SimilarityThreshold:    0.92,
 			DecayRate:              0.05,
 			DecayIntervalDays:      30,

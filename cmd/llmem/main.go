@@ -801,7 +801,10 @@ func trackReviewCmd() *cobra.Command {
 				count := 0
 				for _, m := range memories {
 					if m.Source == "track-review" {
-						ok, _ := ms.Invalidate(context.Background(), m.ID, "track-review clean")
+						ok, err := ms.Invalidate(context.Background(), m.ID, "track-review clean")
+						if err != nil {
+							return fmt.Errorf("llmem: track-review: invalidate %s: %w", m.ID, err)
+						}
 						if ok {
 							count++
 						}

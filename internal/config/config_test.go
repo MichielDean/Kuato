@@ -22,9 +22,6 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Memory.EmbedModel != "nomic-embed-text" {
 		t.Errorf("expected default EmbedModel, got %q", cfg.Memory.EmbedModel)
 	}
-	if !cfg.Dream.Enabled {
-		t.Error("expected Dream.Enabled to be true")
-	}
 	if cfg.Dream.SimilarityThreshold != 0.92 {
 		t.Errorf("expected default similarity threshold 0.92, got %f", cfg.Dream.SimilarityThreshold)
 	}
