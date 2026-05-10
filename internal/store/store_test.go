@@ -408,6 +408,41 @@ func TestMemoryStore_Delete_NotFound(t *testing.T) {
 	}
 }
 
+func TestMemoryStore_Delete_TargetSideRelationCleanup(t *testing.T) {
+	// Delete should also clean up relations where the deleted memory is the target
+	// (FK cascade handles source_id but NOT target_id since there's no FK on target_id)
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	id1, _ := ms.Add(ctx, AddParams{Type: "fact", Content: "source"})
+	id2, _ := ms.Add(ctx, AddParams{Type: "fact", Content: "target"})
+
+	_, err := ms.AddRelation(ctx, id1, id2, "related_to")
+	if err != nil {
+		t.Fatalf("AddRelation: %v", err)
+	}
+
+	// Delete id2 (the target) — should clean up target-side relation
+	ok, err := ms.Delete(ctx, id2)
+	if err != nil {
+		t.Fatalf("Delete target: %v", err)
+	}
+	if !ok {
+		t.Error("expected Delete to return true")
+	}
+
+	// Verify relation is gone when querying by source
+	rels, err := ms.GetRelations(ctx, id1)
+	if err != nil {
+		t.Fatalf("GetRelations: %v", err)
+	}
+	for _, r := range rels {
+		if r.TargetID == id2 {
+			t.Error("expected relation targeting deleted memory to be removed")
+		}
+	}
+}
+
 func TestMemoryStore_Search_Query(t *testing.T) {
 	ms := newTestStore(t)
 	ctx := context.Background()
@@ -1140,6 +1175,31 @@ func TestMemoryStore_SerializationBoundary(t *testing.T) {
 	// which will serialize as null if nil, so we must initialize them properly
 	_ = data
 	_ = raw
+}
+
+func TestMemoryStore_ScanMemory_NilGuards(t *testing.T) {
+	// Verify that Get returns empty slices/maps instead of nil for Hints/Metadata
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	id, err := ms.Add(ctx, AddParams{Type: "fact", Content: "test content"})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	m, err := ms.Get(ctx, id, false)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if m == nil {
+		t.Fatal("expected memory, got nil")
+	}
+	if m.Hints == nil {
+		t.Error("expected Hints to be non-nil (empty slice), got nil")
+	}
+	if m.Metadata == nil {
+		t.Error("expected Metadata to be non-nil (empty map), got nil")
+	}
 }
 
 func TestMemoryStore_Add_WithMetadataAndHints(t *testing.T) {

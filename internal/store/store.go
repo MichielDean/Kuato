@@ -160,6 +160,8 @@ func (ms *MemoryStore) RegisterMemoryType(typeName string) error {
 	if !isValidTypeName(typeName) {
 		return fmtErr("register_memory_type: invalid type name %q: must match ^[a-z][a-z0-9_]*$ and be at most 64 chars", typeName)
 	}
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 	if _, exists := ms.registeredTypes[typeName]; exists {
 		return fmtErr("register_memory_type: type %q is already registered", typeName)
 	}
@@ -170,7 +172,10 @@ func (ms *MemoryStore) RegisterMemoryType(typeName string) error {
 // Add creates a new memory and returns its ID.
 // Returns an error if the type is not registered or embedding dimensions don't match.
 func (ms *MemoryStore) Add(ctx context.Context, params AddParams) (string, error) {
-	if _, ok := ms.registeredTypes[params.Type]; !ok {
+	ms.mu.RLock()
+	_, typeOK := ms.registeredTypes[params.Type]
+	ms.mu.RUnlock()
+	if !typeOK {
 		return "", fmtErr("add: unregistered type %q: register it with RegisterMemoryType first", params.Type)
 	}
 
@@ -425,7 +430,9 @@ func (ms *MemoryStore) Invalidate(ctx context.Context, id string, reason string)
 // Returns false if not found.
 func (ms *MemoryStore) Delete(ctx context.Context, id string) (bool, error) {
 	// Delete relations where target_id matches (no FK cascade on target_id)
-	_, _ = ms.db.ExecContext(ctx, `DELETE FROM "relations" WHERE "target_id" = ?`, id)
+	if _, err := ms.db.ExecContext(ctx, `DELETE FROM "relations" WHERE "target_id" = ?`, id); err != nil {
+		return false, fmtErr("delete: cleanup target relations: %w", err)
+	}
 
 	result, err := ms.db.ExecContext(ctx, `DELETE FROM "memories" WHERE "id" = ?`, id)
 	if err != nil {
@@ -1495,7 +1502,9 @@ func (ms *MemoryStore) initVecTable() error {
 			matches := re.FindStringSubmatch(sql)
 			if len(matches) > 1 {
 				var existingDim int
-				fmt.Sscanf(matches[1], "%d", &existingDim)
+				if _, err := fmt.Sscanf(matches[1], "%d", &existingDim); err != nil {
+					return fmtErr("init_vec: parse dimension from vec0 table schema: %w", err)
+				}
 				if existingDim != ms.vecDimensions {
 					return fmtErr("init_vec: existing vec0 table has dimensions=%d but vec_dimensions=%d", existingDim, ms.vecDimensions)
 				}
@@ -1612,7 +1621,13 @@ func scanMemory(row *sql.Row) (*Memory, error) {
 	if err := json.Unmarshal([]byte(hintsJSON), &m.Hints); err != nil {
 		m.Hints = []string{}
 	}
+	if m.Hints == nil {
+		m.Hints = []string{}
+	}
 	if err := json.Unmarshal([]byte(metadataJSON), &m.Metadata); err != nil {
+		m.Metadata = map[string]any{}
+	}
+	if m.Metadata == nil {
 		m.Metadata = map[string]any{}
 	}
 

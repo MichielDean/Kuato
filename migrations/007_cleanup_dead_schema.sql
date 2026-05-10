@@ -71,4 +71,4 @@ CREATE TABLE IF NOT EXISTS "inbox" (
     "metadata" TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS "idx_inbox_attention" ON "inbox"("attention_score");
-CREATE INDEX IF EXISTS "idx_inbox_created" ON "inbox"("created_at");
+CREATE INDEX IF NOT EXISTS "idx_inbox_created" ON "inbox"("created_at");
