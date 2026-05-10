@@ -21,19 +21,15 @@ import (
 
 // Default configuration values.
 const (
-	defaultSimilarityThreshold   = 0.92
-	defaultDecayRate             = 0.05
-	defaultDecayIntervalDays     = 30
-	defaultDecayFloor            = 0.3
-	defaultConfidenceFloor       = 0.3
-	defaultBoostThreshold        = 5
-	defaultBoostAmount           = 0.05
-	defaultMinScore              = 0.5
-	defaultMinRecallCount        = 3
-	defaultMinUniqueQueries      = 1
-	defaultBoostOnPromote        = 0.1
-	defaultAutoLinkThreshold     = 0.85
-	defaultBehavioralThreshold   = 3
+	defaultSimilarityThreshold    = 0.92
+	defaultDecayRate              = 0.05
+	defaultDecayIntervalDays      = 30
+	defaultDecayFloor             = 0.3
+	defaultConfidenceFloor        = 0.3
+	defaultBoostThreshold         = 5
+	defaultBoostAmount            = 0.05
+	defaultAutoLinkThreshold      = 0.85
+	defaultBehavioralThreshold    = 3
 	defaultBehavioralLookbackDays = 30
 )
 
@@ -63,18 +59,6 @@ type DreamerConfig struct {
 	// BoostAmount confidence boost per boost event. Defaults to 0.05.
 	BoostAmount float64
 
-	// MinScore minimum score for access boost. Defaults to 0.5.
-	MinScore float64
-
-	// MinRecallCount minimum recall count for boost. Defaults to 3.
-	MinRecallCount int
-
-	// MinUniqueQueries minimum unique queries for boost. Defaults to 1.
-	MinUniqueQueries int
-
-	// BoostOnPromote confidence boost when memory is promoted. Defaults to 0.1.
-	BoostOnPromote float64
-
 	// AutoLinkThreshold for auto-linking. Defaults to 0.85.
 	AutoLinkThreshold float64
 
@@ -99,12 +83,11 @@ type LightPhaseResult struct {
 
 // DeepPhaseResult holds the results of the deep (decay/boost/merge) phase.
 type DeepPhaseResult struct {
-	DecayedCount    int
-	BoostedCount    int
-	PromotedCount   int
+	DecayedCount     int
+	BoostedCount     int
 	InvalidatedCount int
-	MergedCount       int
-	AutoLinkedCount   int
+	MergedCount      int
+	AutoLinkedCount  int
 }
 
 // BehavioralInsight represents a behavioral pattern detected during REM phase.
@@ -132,24 +115,20 @@ type DreamResult struct {
 
 // Dreamer performs 3-phase dream consolidation.
 type Dreamer struct {
-	store                  *store.MemoryStore
-	similarityThreshold    float64
-	decayRate              float64
-	decayIntervalDays      int
-	decayFloor             float64
-	confidenceFloor        float64
-	boostThreshold         int
-	boostAmount            float64
-	minScore               float64
-	minRecallCount         int
-	minUniqueQueries       int
-	boostOnPromote         float64
-	autoLinkThreshold      float64
-	behavioralThreshold    int
-	behavioralLookbackDays int
-	diaryPath              string
-	reportPath             string
-	mu                     sync.Mutex
+	store                   *store.MemoryStore
+	similarityThreshold     float64
+	decayRate               float64
+	decayIntervalDays       int
+	decayFloor              float64
+	confidenceFloor         float64
+	boostThreshold          int
+	boostAmount             float64
+	autoLinkThreshold       float64
+	behavioralThreshold     int
+	behavioralLookbackDays  int
+	diaryPath               string
+	reportPath              string
+	mu                      sync.Mutex
 }
 
 // fmtErr wraps an error with the "llmem: dream:" domain prefix.
@@ -193,22 +172,6 @@ func NewDreamer(cfg DreamerConfig) (*Dreamer, error) {
 	if boostAmount == 0 {
 		boostAmount = defaultBoostAmount
 	}
-	minScore := cfg.MinScore
-	if minScore == 0 {
-		minScore = defaultMinScore
-	}
-	minRecallCount := cfg.MinRecallCount
-	if minRecallCount == 0 {
-		minRecallCount = defaultMinRecallCount
-	}
-	minUniqueQueries := cfg.MinUniqueQueries
-	if minUniqueQueries == 0 {
-		minUniqueQueries = defaultMinUniqueQueries
-	}
-	boostOnPromote := cfg.BoostOnPromote
-	if boostOnPromote == 0 {
-		boostOnPromote = defaultBoostOnPromote
-	}
 	autoLinkThreshold := cfg.AutoLinkThreshold
 	if autoLinkThreshold == 0 {
 		autoLinkThreshold = defaultAutoLinkThreshold
@@ -231,23 +194,19 @@ func NewDreamer(cfg DreamerConfig) (*Dreamer, error) {
 	}
 
 	return &Dreamer{
-		store:                 cfg.Store,
+		store:                  cfg.Store,
 		similarityThreshold:    similarityThreshold,
-		decayRate:              decayRate,
-		decayIntervalDays:      decayIntervalDays,
-		decayFloor:             decayFloor,
+		decayRate:               decayRate,
+		decayIntervalDays:       decayIntervalDays,
+		decayFloor:              decayFloor,
 		confidenceFloor:        confidenceFloor,
-		boostThreshold:         boostThreshold,
-		boostAmount:            boostAmount,
-		minScore:              minScore,
-		minRecallCount:         minRecallCount,
-		minUniqueQueries:       minUniqueQueries,
-		boostOnPromote:         boostOnPromote,
-		autoLinkThreshold:     autoLinkThreshold,
-		behavioralThreshold:    behavioralThreshold,
-		behavioralLookbackDays: behavioralLookbackDays,
-		diaryPath:             diaryPath,
-		reportPath:            reportPath,
+		boostThreshold:          boostThreshold,
+		boostAmount:             boostAmount,
+		autoLinkThreshold:       autoLinkThreshold,
+		behavioralThreshold:     behavioralThreshold,
+		behavioralLookbackDays:  behavioralLookbackDays,
+		diaryPath:               diaryPath,
+		reportPath:              reportPath,
 	}, nil
 }
 

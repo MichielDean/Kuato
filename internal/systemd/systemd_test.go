@@ -89,3 +89,38 @@ func TestGenerateServiceUnit_ContainsExpectedFields(t *testing.T) {
 		t.Error("expected After=network.target")
 	}
 }
+
+func TestGenerateTimerUnit_RejectsShellMetacharacters(t *testing.T) {
+	// ValidateSchedule is now called inside GenerateTimerUnit,
+	// so shell metacharacters in the schedule string should cause an error.
+	maliciousSchedules := []string{
+		"*-*-*; rm -rf /",
+		"*-*-* && echo pwned",
+		"*-*-* `rm -rf /`",
+		"*-*-* $(whoami)",
+		"*-*-* | cat /etc/passwd",
+	}
+	for _, s := range maliciousSchedules {
+		_, err := GenerateTimerUnit(s)
+		if err == nil {
+			t.Errorf("expected error for malicious schedule %q, got nil", s)
+		}
+	}
+}
+
+func TestGenerateTimerUnit_ValidScheduleAccepted(t *testing.T) {
+	// Valid schedules should still be accepted
+	validSchedules := []string{
+		"",
+		"*-*-* 03:00:00",
+		"hourly",
+		"daily",
+		"Mon *-*-* 03:00:00",
+	}
+	for _, s := range validSchedules {
+		_, err := GenerateTimerUnit(s)
+		if err != nil {
+			t.Errorf("expected no error for valid schedule %q, got %v", s, err)
+		}
+	}
+}

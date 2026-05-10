@@ -54,10 +54,14 @@ func GenerateServiceUnit(dreamSchedule string) (string, error) {
 
 // GenerateTimerUnit generates a systemd .timer unit content for the dream schedule.
 // The schedule parameter is used for the OnCalendar directive.
-// Uses embed.FS for template loading. Validates schedule is non-empty.
+// Uses embed.FS for template loading. Validates schedule and rejects shell metacharacters.
 func GenerateTimerUnit(dreamSchedule string) (string, error) {
 	if dreamSchedule == "" {
 		dreamSchedule = defaultDreamSchedule
+	}
+
+	if !ValidateSchedule(dreamSchedule) {
+		return "", fmtErr("invalid schedule %q: contains forbidden characters", dreamSchedule)
 	}
 
 	data := map[string]string{
