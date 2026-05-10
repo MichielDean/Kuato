@@ -51,7 +51,7 @@ Security measures, validation, and hardening in LLMem. [Back to README](../READM
 
 The Go implementation (`internal/store`) shares the same security posture as Python with some implementation-specific differences:
 
-- **Database file permissions**: Parent directory created with `0700` (owner-only). Database files (`memory.db`, `-wal`, `-shm`) are set to `0600` (owner-only read/write) via `os.Chmod` after creation. Since Go doesn't have portable `umask` control, `os.MkdirAll` with `0700` and explicit `os.Chmod(0600)` are used instead of Python's `umask(0o177)` approach.
+- **Database file permissions**: Parent directory created with `0700` (owner-only). On Unix (Linux/macOS), `syscall.Umask(0o177)` is set before DB file creation so the file is created with mode `0600` from the start — no TOCTOU window. On non-Unix platforms (Windows), the umask is a no-op and the `0700` parent directory serves as the primary defense. After creation, `chmodDBFiles()` applies `0600` to the DB file and its WAL/SHM sidecars as an additional layer.
 - **SQL injection**: All queries use parameterized `?` placeholders via Go's `database/sql` package. The `placeholders()` function generates comma-separated `?` sequences for `IN` clauses. FTS5 MATCH queries are sanitized via `sanitizeFTSQuery()`. LIKE queries use `ESCAPE '\'` with `escapeLike()`.
 - **Type validation**: Memory type names must match `^[a-z][a-z0-9_]*$` and be ≤64 characters (enforced by `RegisterMemoryType()`). Relation types must be in the `ValidRelationTypes()` set (`supersedes`, `related_to`, `derived_from`).
 - **Embedding dimension validation**: `Add()` rejects embeddings whose byte length doesn't match `vec_dimensions × 4`. `ImportMemories()` skips entries with mismatched embedding dimensions.
