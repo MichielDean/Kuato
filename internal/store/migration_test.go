@@ -269,6 +269,85 @@ func TestNewMemoryStore_DirectoryPermissions(t *testing.T) {
 	}
 }
 
+func TestNewMemoryStore_DBFilePermissions(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	ms, err := NewMemoryStore(StoreConfig{DBPath: dbPath, DisableVec: true})
+	if err != nil {
+		t.Fatalf("NewMemoryStore: %v", err)
+	}
+	ms.Close()
+
+	// Check that the DB file has 0600 permissions (owner-only read/write).
+	// On Unix, the umask is set to 0o177 before creation, so the file
+	// should be created with mode 0600. On other platforms, chmodDBFiles
+	// applies 0600 after creation.
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("stat db file: %v", err)
+	}
+	perms := info.Mode().Perm()
+	if perms&0077 != 0 {
+		t.Errorf("expected DB file permissions to be 0600 or stricter, got %o", perms)
+	}
+
+	// Check WAL and SHM sidecars if they exist (WAL mode always creates them)
+	for _, suffix := range []string{"-wal", "-shm"} {
+		sidecarPath := dbPath + suffix
+		sidecarInfo, err := os.Stat(sidecarPath)
+		if err != nil {
+			// Sidecar may not exist yet (created on first write), skip
+			continue
+		}
+		sidecarPerms := sidecarInfo.Mode().Perm()
+		if sidecarPerms&0077 != 0 {
+			t.Errorf("expected %s permissions to be 0600 or stricter, got %o", suffix, sidecarPerms)
+		}
+	}
+}
+
+func TestSetResetUmask(t *testing.T) {
+	// Verify setUmask actually changes the umask on Unix and resetUmask
+	// restores it. On non-Unix platforms these are no-ops, so we only
+	// test the round-trip, not the file permission effect.
+	origMask := setUmask(0o022) // Save whatever the current mask is
+	resetUmask(origMask)         // Restore it
+
+	// Verify round-trip: set a known mask, read it back
+	saved := setUmask(0o177)
+	second := setUmask(saved)
+	if second != 0o177 {
+		t.Errorf("expected umask round-trip to return 0o177, got 0o%o", second)
+	}
+	resetUmask(saved) // Clean up: restore original
+
+	// On Unix, verify that a file created while umask is 0o177 gets
+	// mode 0600. On other platforms, this test still passes because
+	// chmodDBFiles applies 0600 after creation.
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "umask_test.txt")
+
+	old := setUmask(0o177)
+	f, err := os.Create(filePath)
+	if err != nil {
+		resetUmask(old)
+		t.Fatalf("create test file: %v", err)
+	}
+	f.Close()
+	resetUmask(old)
+
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("stat test file: %v", err)
+	}
+	perms := info.Mode().Perm()
+	if perms&0077 != 0 {
+		t.Errorf("expected file created under umask 0o177 to have no group/other bits, got 0o%o", perms)
+	}
+	os.Remove(filePath)
+}
+
 func TestMigration_MemoryTypesRegistered(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test_types.db")

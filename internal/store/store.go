@@ -79,7 +79,10 @@ func NewMemoryStore(cfg StoreConfig) (*MemoryStore, error) {
 		registeredTypes[t] = struct{}{}
 	}
 
-	// Set restrictive umask before creating the DB file
+	// Set restrictive umask (0o177) before creating the DB file so it
+	// is created with owner-only permissions (0600). On Unix this uses
+	// syscall.Umask; on other platforms it's a no-op and the 0700 parent
+	// directory serves as the primary access control.
 	var oldMask int
 	if dbPath != ":memory:" {
 		oldMask = setUmask(0o177)
@@ -176,6 +179,11 @@ func (ms *MemoryStore) Add(ctx context.Context, params AddParams) (string, error
 	ms.mu.RUnlock()
 	if !typeOK {
 		return "", fmtErr("add: unregistered type %q: register it with RegisterMemoryType first", params.Type)
+	}
+
+	// Validate embedding size limit (DoS protection)
+	if len(params.Embedding) > maxEmbeddingBytes {
+		return "", fmtErr("add: embedding size %d bytes exceeds maximum %d bytes", len(params.Embedding), maxEmbeddingBytes)
 	}
 
 	// Validate embedding dimensions
@@ -315,6 +323,11 @@ func (ms *MemoryStore) GetBatch(ctx context.Context, ids []string, validOnly boo
 func (ms *MemoryStore) Update(ctx context.Context, params UpdateParams) (bool, error) {
 	if params.ClearEmbedding && params.Embedding != nil {
 		return false, fmtErr("update: cannot specify both embedding and clear_embedding=true")
+	}
+
+	// Validate embedding size limit (DoS protection)
+	if len(params.Embedding) > maxEmbeddingBytes {
+		return false, fmtErr("update: embedding size %d bytes exceeds maximum %d bytes", len(params.Embedding), maxEmbeddingBytes)
 	}
 
 	// Check existence
@@ -1312,6 +1325,12 @@ func (ms *MemoryStore) ImportMemories(ctx context.Context, memories []ImportMemo
 			continue
 		}
 
+		// Validate embedding size limit (DoS protection)
+		if len(m.Embedding) > maxEmbeddingBytes {
+			slog.Warn("llmem: store: import: skipping entry: embedding exceeds size limit", "index", i, "got", len(m.Embedding), "max", maxEmbeddingBytes)
+			continue
+		}
+
 		// Validate embedding dimensions
 		if len(m.Embedding) > 0 && !ms.disableVec {
 			expectedLen := ms.vecDimensions * 4
@@ -1599,17 +1618,7 @@ func chmodDBFiles(dbPath string) error {
 	return nil
 }
 
-// umask handling for Go - these are no-ops on Unix since we use MkdirAll with 0700
-// and chmod after file creation. On Unix, we'd set umask before creating the DB file.
-// Since Go doesn't have portable umask, we use chmod after creation.
-func setUmask(mask int) int {
-	// No-op: we use os.MkdirAll and os.Chmod instead
-	return 0
-}
 
-func resetUmask(mask int) {
-	// No-op
-}
 
 // scanFunc is a function type that scans row columns into dest pointers.
 type scanFunc func(dest ...any) error

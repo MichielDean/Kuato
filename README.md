@@ -14,7 +14,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and coding conventi
 | [Providers](docs/PROVIDERS.md) | Embedding/generation providers, fallback chains, configuration |
 | [CLI Reference](docs/CLI.md) | All `llmem` commands and options |
 | [Python API](docs/API.md) | MemoryStore, Retriever, extension points, database schema, module reference |
-| [Go API](docs/API.md#go-api) | Go `internal/store` package — MemoryStore, types, migrations |
+| [Go API](docs/API.md#go-api) | Go packages — store, embed, retriever, metrics, urlvalidate |
 | [Integrations](docs/INTEGRATIONS.md) | OpenCode, Copilot CLI, custom tools, session hooks |
 | [Configuration](docs/CONFIGURATION.md) | config.yaml reference, path resolution, dream settings |
 | [Search Reranking](docs/RERANKING.md) | Multi-signal reranking, signal weights, type priority |
@@ -49,7 +49,13 @@ go get github.com/MichielDean/LLMem
 ```
 
 ```go
-import "github.com/MichielDean/LLMem/internal/store"
+import (
+    "github.com/MichielDean/LLMem/internal/store"
+    "github.com/MichielDean/LLMem/internal/embed"
+    "github.com/MichielDean/LLMem/internal/retriever"
+    "github.com/MichielDean/LLMem/internal/metrics"
+    "github.com/MichielDean/LLMem/internal/urlvalidate"
+)
 
 ms, err := store.NewMemoryStore(store.StoreConfig{
     DBPath:         "",               // defaults to ~/.config/llmem/memory.db
@@ -61,6 +67,18 @@ if err != nil {
     log.Fatal(err)
 }
 defer ms.Close()
+
+// Embedding engine (Ollama client with LRU cache)
+eng, err := embed.NewEmbeddingEngine(embed.EmbeddingConfig{})
+
+// Hybrid search retriever (FTS5 + semantic with RRF fusion)
+r, err := retriever.NewRetriever(retriever.RetrieverConfig{Store: ms, Embedder: eng})
+
+// Embedding quality metrics
+m, err := metrics.ComputeMetrics(embeddings, labels, 0)
+
+// SSRF-protected URL validation
+safe := urlvalidate.IsSafeURL(urlStr, false)
 ```
 
 See [docs/INSTALLATION.md](docs/INSTALLATION.md) for Go build dependencies and [docs/API.md](docs/API.md) for the full API reference.
@@ -185,7 +203,7 @@ go test ./...
 
 1349 Python tests and 142 JavaScript tests covering all providers, session adapters (OpenCode, Copilot, none), URL validation, configuration, security, session hooks, CLI commands, and edge cases.
 
-58 Go tests covering all store operations, FTS5 search, vector search, migrations, type validation, and import/export.
+189 Go tests covering store operations, FTS5 search, vector search, hybrid retrieval, embedding engine, metrics, URL validation, migrations, type validation, and import/export.
 
 ## Makefile
 
