@@ -1,170 +1,156 @@
-/**
- * opencode-llmem — LLMem session hooks for OpenCode.
- *
- * Registers three session lifecycle hooks that integrate with the
- * llmem memory system:
- * - session.created: inject relevant memories when a session starts
- * - session.idle: extract memories when a session goes idle
- * - session.compacting: inject key memories during compaction
- *
- * Reads llmem configuration from the standard llmem config path.
- * Does not hardcode provider configuration.
- */
-
-var path = require('path');
-var fs = require('fs');
-var os = require('os');
-
-var created = require('./hooks/created');
-var idle = require('./hooks/idle');
-var compacting = require('./hooks/compacting');
-
-var LLMEM = "llmem";
-var child_process = require('child_process');
+const LLMEM = "/home/lobsterdog/.local/bin/llmem"
+const fs = require("fs")
+const child_process = require("child_process")
+const path = require("path")
 
 function log(msg) {
   try { fs.appendFileSync("/tmp/opencode-llmem-plugin.log", new Date().toISOString() + " " + msg + "\n") } catch {}
 }
 
-function run(cmd, args) {
+function run(cmd, args, timeout) {
   try {
-    return child_process.execFileSync(cmd, args, { encoding: "utf8", timeout: 30000 });
+    const result = child_process.execFileSync(cmd, args, { encoding: "utf8", timeout: timeout || 30000 })
+    log("exec ok: " + cmd + " " + args.join(" ") + " (" + result.length + " chars)")
+    return result
   } catch (e) {
-    log("exec error: " + (e.message || e));
-    return "";
+    log("exec error: " + cmd + " " + args.join(" ") + " -> " + (e.message || e).substring(0, 200))
+    return ""
   }
 }
 
-/**
- * Register all three llmem session hooks with the OpenCode session.
- *
- * This function reads the llmem config file and wires up the hooks
- * to delegate to the llmem CLI commands. It does NOT hardcode
- * provider configuration — all settings come from the config file.
- *
- * @param {object} session - The OpenCode session object.
- */
-function register(session) {
-  var config = _loadConfig();
+// Track modified files during this session
+const modifiedFiles = new Set()
+let trackReviewRan = false
+let sessionStartTime = null
+let currentSessionId = null
 
-  if (session && session.on) {
-    session.on('created', function(sessionId) {
-      created.handle(sessionId, config);
-    });
-    session.on('idle', function(sessionId) {
-      idle.handle(sessionId, config);
-    });
-    session.on('compacting', function(sessionId) {
-      compacting.handle(sessionId, config);
-    });
-  }
-}
+log("plugin loaded")
 
-/**
- * Load llmem configuration from the standard config path.
- *
- * Returns an empty object if the config file doesn't exist or
- * cannot be parsed.
- *
- * @returns {object} The llmem config, or empty object.
- */
-function _loadConfig() {
-  var configPath = path.join(
-    process.env.LMEM_HOME || path.join(os.homedir(), '.config', 'llmem'),
-    'config.yaml'
-  );
-
-  try {
-    if (fs.existsSync(configPath)) {
-      var content = fs.readFileSync(configPath, 'utf8');
-      return _parseSimpleYaml(content);
-    }
-  } catch (err) {
-    // Config is optional — return empty object
-  }
-  return {};
-}
-
-// Keys that could prototype-pollute the result object if assigned via YAML keys.
-var _DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-
-function _parseSimpleYaml(text) {
-  var result = {};
-  var stack = [{ indent: -1, obj: result }];
-  var lines = text.split('\n');
-
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i];
-    var trimmed = line.trim();
-    if (!trimmed || trimmed[0] === '#') {
-      continue;
-    }
-    var indent = line.length - line.trimStart().length;
-    var colonIdx = trimmed.indexOf(':');
-    if (colonIdx === -1) {
-      continue;
-    }
-    var key = trimmed.substring(0, colonIdx).trim();
-    if (_DANGEROUS_KEYS.has(key)) {
-      continue;
-    }
-    var value = trimmed.substring(colonIdx + 1).trim();
-
-    while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
-      stack.pop();
-    }
-    var parent = stack[stack.length - 1].obj;
-
-    if (value === '') {
-      parent[key] = {};
-      stack.push({ indent: indent, obj: parent[key] });
-    } else {
-      if (
-        (value[0] === '"' && value[value.length - 1] === '"') ||
-        (value[0] === "'" && value[value.length - 1] === "'")
-      ) {
-        value = value.substring(1, value.length - 1);
-      }
-      parent[key] = value;
-    }
-  }
-  return result;
-}
-
-/**
- * OpenCode plugin API — provides session event hooks and
- * compaction context injection via the llmem CLI.
- */
-var LLMemPlugin = async function({ $, client }) {
-  log("plugin initialized");
+export const LLMemPlugin = async ({ $, client }) => {
+  log("plugin initialized")
   return {
-    event: async function({ event }) {
+    event: async ({ event }) => {
       if (event.type === "session.created") {
-        log("session.created: injecting memory context");
-        var context = run(LLMEM, ["context", "session start"]);
-        var stats = run(LLMEM, ["stats"]);
-        if (context) {
-          try { await client.app.log({ body: { service: "llmem", level: "info", message: context } }) } catch {}
-          log("context injected (" + context.length + " chars)");
-        }
-        if (stats) {
-          try { await client.app.log({ body: { service: "llmem", level: "info", message: stats } }) } catch {}
-          log("stats injected");
+        const sessionInfo = event.properties?.info
+        const sessionId = sessionInfo?.id || ""
+        const directory = sessionInfo?.directory || ""
+        sessionStartTime = new Date().toISOString()
+        currentSessionId = sessionId || currentSessionId
+        log("session.created: id=" + sessionId + " dir=" + directory)
+        if (sessionId) {
+          const context = run(LLMEM, ["context", "--session-id", sessionId])
+          const stats = run(LLMEM, ["stats"])
+          if (context) {
+            try { await client.app.log({ body: { service: "llmem", level: "info", message: context } }) } catch {}
+            log("context injected (" + context.length + " chars)")
+          } else {
+            log("context empty — on_created returned no content")
+          }
+          if (stats) {
+            try { await client.app.log({ body: { service: "llmem", level: "info", message: stats } }) } catch {}
+            log("stats injected")
+          }
+          // Surface behavioral procedures from dream REM phase
+          const procedures = run(LLMEM, ["search", "dream_rem", "--type", "procedure", "--limit", "5"])
+          if (procedures) {
+            try { await client.app.log({ body: { service: "llmem", level: "info", message: "## Dream-Generated Procedures\n\n" + procedures } }) } catch {}
+            log("dream procedures injected (" + procedures.length + " chars)")
+          }
+          // Surface recurring error patterns from self_assessments
+          const behavioral = run(LLMEM, ["search", "Category:", "--type", "self_assessment", "--limit", "5"])
+          if (behavioral) {
+            try { await client.app.log({ body: { service: "llmem", level: "info", message: "## Recent Self-Assessments\n\n" + behavioral } }) } catch {}
+            log("behavioral context injected (" + behavioral.length + " chars)")
+          }
+
         }
       }
       if (event.type === "session.idle") {
-        var sessionId = event.sessionId || (event.properties && event.properties.sessionId) || "";
-        log("session.idle: " + sessionId);
-        run(LLMEM, ["hook", "idle", sessionId]);
+        const sessionId = event.properties?.sessionID || currentSessionId || ""
+        log("session.idle: " + sessionId + (currentSessionId ? " (cached)" : " (from event)"))
+        if (sessionId) {
+          run(LLMEM, ["hook", "--type", "idle", "--session-id", sessionId])
+        } else {
+          log("session.idle: no sessionID available")
+        }
+      }
+      if (event.type === "session.ending" || event.type === "session.ended") {
+        const sessionId = event.properties?.sessionID || event.properties?.info?.id || currentSessionId || ""
+        log("session.ending: " + sessionId + (currentSessionId ? " (cached)" : " (from event)"))
+        if (sessionId) {
+          // Run extraction + introspection pass at session end
+          run(LLMEM, ["hook", "--type", "ending", "--session-id", sessionId], 120000)
+          log("session-end hook ending completed")
+          // Run track-review if no review was done this session
+          if (!trackReviewRan) {
+            const filesList = Array.from(modifiedFiles).slice(0, 10).join(", ")
+            run(LLMEM, ["track-review"])
+            log("session-end track-review completed (no review was done this session)")
+          }
+        }
       }
     },
-    "experimental.session.compacting": async function(input, output) {
-      var result = run(LLMEM, ["search", "recent decisions important facts", "--limit", "10"]);
+    "experimental.session.compacting": async (input, output) => {
+      const sessionId = input.sessionID || currentSessionId || ""
+      log("session.compacting: " + sessionId)
+      const result = run(LLMEM, ["context", "--compacting", "--session-id", sessionId || "unknown"])
       if (result) {
-        output.context.push("## LLMem Memory Context\n\n" + result);
+        output.context.push("## LLMem Memory Context\n\n" + result)
       }
     },
-  };
-};
-
-module.exports = { register, _parseSimpleYaml, LLMemPlugin };
+    "experimental.chat.system.transform": async (input, output) => {
+      const checklist = [
+        "## Session-End Checklist (MANDATORY — enforced by plugin)",
+        "Before declaring any task done, you MUST:",
+        "1. Run critical-code-reviewer on changed files (or confirm no code changes were made)",
+        "2. Run llmem track-review to persist findings (even clean reviews produce REVIEW_PASSED)",
+        "3. Run test-and-verify to confirm changes work",
+        "4. Commit and push all changes",
+        "5. Record any skipped steps with llmem introspect --category MISSING_VERIFICATION",
+      ].join("\n")
+      output.system.push(checklist)
+      log("session-end checklist injected into system prompt")
+    },
+    "tool.execute.after": async (input, output) => {
+      // Track file modifications for the self-review enforcement.
+      // When the agent writes files, we remember them so we can remind
+      // about review at session end.
+      const tool = input.tool || ""
+      const args = input.args || {}
+      // Track file writes from common tools
+      if (tool === "write" || tool === "edit" || tool === "Write") {
+        const filePath = args.file_path || args.path || args.filePath || ""
+        if (filePath) {
+          modifiedFiles.add(filePath)
+          log("file modified: " + filePath + " (total: " + modifiedFiles.size + ")")
+        }
+      }
+      // Track bash commands that modify files (git operations, etc.)
+      if (tool === "bash") {
+        const cmd = (args.command || "") + ""
+        if (cmd.includes("git commit") || cmd.includes("git push")) {
+          log("git operation detected: " + cmd.substring(0, 80))
+        }
+      }
+      // Detect when critical-code-reviewer is invoked
+      if (tool === "skill" && (args.name === "critical-code-reviewer" || args.skill === "critical-code-reviewer")) {
+        trackReviewRan = true
+        log("critical-code-reviewer detected — trackReviewRan = true")
+      }
+    },
+    "command.execute.before": async (input, output) => {
+      // Before git commits, check if review was done.
+      // This doesn't block the commit, but logs a reminder.
+      const command = input.command || ""
+      if (command.includes("git commit") || command.includes("git push")) {
+        if (modifiedFiles.size > 0 && !trackReviewRan) {
+          const reminder = "REMINDER: " + modifiedFiles.size + " files were modified this session but no code review was run. Consider running critical-code-reviewer before committing."
+          try {
+            await client.app.log({ body: { service: "llmem", level: "warning", message: reminder } })
+          } catch {}
+          log("git commit reminder: files modified without review (" + modifiedFiles.size + " files)")
+        }
+      }
+    },
+  }
+}

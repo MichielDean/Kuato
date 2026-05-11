@@ -2,12 +2,9 @@
 name: llmem
 description: >
   Manage LLMem — structured memory system with SQLite-backed factual memory,
-  semantic search, relation traversal (via --traverse-relations flag on CLI),
-  extraction, consolidation, and background dreaming (decay, boost, promote,
-  merge). Use when the user wants to: (1) add, search, update, or delete memories,
-  (2) extract memories from text, (3) consolidate duplicates, (4) generate context
-  for injection, (5) check memory stats, (6) search with relation traversal to find
-  related memories (llmem search "query" --traverse-relations), (7) run background
+  semantic search, and background dreaming (decay, boost, promote, merge).
+  Use when the user wants to: (1) add, search, update, or delete memories,
+  (2) generate context for injection, (3) check memory stats, (4) run background
   consolidation/dream. Triggers on: "memory", "remember", "recall", "llmem",
   "memories", "forget", "consolidate memories", "dream".
 license: MIT
@@ -15,7 +12,7 @@ license: MIT
 
 # LLMem
 
-LLMem is a structured memory system. It stores factual memories in SQLite with optional embedding-based semantic search via Ollama (nomic-embed-text). Semantic search uses a sqlite-vec HNSW ANN index for sub-linear retrieval, with automatic fallback to brute-force cosine similarity if the sqlite-vec extension is not available. Memories can be connected via typed relations (`related_to`, `supersedes`, `contradicts`, `depends_on`, `derived_from`), and searches can traverse these relation edges to surface related memories. A background dreaming/consolidation system (light, deep, REM phases) runs automatically via systemd timer to decay idle memories, boost frequent ones, promote high-value ones, and merge near-duplicates.
+LLMem is a structured memory system (Go binary). It stores factual memories in SQLite with optional embedding-based semantic search via Ollama (nomic-embed-text). Semantic search uses a sqlite-vec HNSW ANN index for sub-linear retrieval, with automatic fallback to brute-force cosine similarity if the sqlite-vec extension is not available. Memories can be connected via typed relations (`related_to`, `supersedes`, `contradicts`, `depends_on`, `derived_from`). A background dreaming/consolidation system (light, deep, REM phases) runs automatically via systemd timer to decay idle memories, boost frequent ones, promote high-value ones, and merge near-duplicates.
 
 ## Installation
 
@@ -94,33 +91,29 @@ Self-assessment memories follow a structured format with nine fields:
 
 ```bash
 # Add a memory
-llmem add "content" --type fact
-llmem add "prefer dark theme" --type preference --confidence 0.9
-
-# Add a memory with a relation
-llmem add --type fact "python 3.12 is the latest version" --relation supersedes --relation-to <old-memory-id>
+llmem add --content "content" --type fact
+llmem add --content "prefer dark theme" --type preference --confidence 0.9
 
 # Search memories (hybrid RRF fusion by default)
 llmem search "query"
 llmem search "query" --type decision --limit 5
-llmem search "query" --context --budget 4000
-
-# Search mode flags (mutually exclusive)
 llmem search "query" --fts-only        # FTS5 keyword search only (no embedder needed)
-llmem search "query" --semantic-only    # Semantic (embedding) search only (requires embedder)
-
-# Search with relation traversal
-llmem search "query" --traverse-relations
+llmem search "query" --semantic-only   # Semantic (embedding) search only (requires embedder)
+llmem search "query" --valid-only     # Only show valid (non-expired) memories
 
 # List all
 llmem list
 llmem list --type fact --limit 20
+llmem list --all                       # Include expired memories
 
 # Get specific memory (read-only, does not update access stats)
 llmem get <id>
 
 # Update a memory
 llmem update <id> --content "new content"
+llmem update <id> --confidence 0.95
+llmem update <id> --summary "short summary"
+llmem update <id> --metadata '{"key": "value"}'
 
 # Invalidate (soft-delete — marks as expired)
 llmem invalidate <id> --reason "no longer relevant"
@@ -131,146 +124,54 @@ llmem delete <id>
 # Stats
 llmem stats
 
-# Extract memories from text using local LLM
-llmem extract "text to process"
-llmem extract --file path/to/file --source-id unique-source-id
-llmem extract --dry-run "text"  # preview without saving
+# Context injection for sessions
+llmem context --session-id <session_id>              # Inject context for a new session
+llmem context --compacting --session-id <session_id>  # Inject key memories during compaction
 
-# Auto-extract from session transcripts (idle hook)
-llmem hook idle <session_id>        # trigger memory extraction and introspection for a session
-
-# Consolidate near-duplicates
-llmem consolidate --threshold 0.92
+# Session lifecycle hooks
+llmem hook --type idle --session-id <session_id>      # Memory extraction + introspection
+llmem hook --type created --session-id <session_id>   # Context injection on session start
+llmem hook --type ending --session-id <session_id>    # Introspection on session end
+llmem hook --type compacting --session-id <session_id># Context during compaction
 
 # Dream — background consolidation (decay, boost, promote, merge)
-llmem dream                                                # Preview all phases (dry-run)
-llmem dream --apply                                        # Execute all phases
-llmem dream --phase light                                  # Run only the light phase
-llmem dream --phase deep                                   # Run only the deep phase
-llmem dream --phase rem                                    # Run only the REM phase
-llmem dream --apply --phase deep                           # Apply only the deep phase
-llmem dream --apply --skill-patch-threshold 5              # Generate skill patches only for categories with 5+ occurrences
-llmem dream --apply --skill-patch-threshold 0              # Disable skill patch generation entirely
+llmem dream                                               # Preview all phases (dry-run)
+llmem dream --apply                                       # Execute all phases
+llmem dream --phase light                                 # Run only the light phase
+llmem dream --phase deep                                  # Run only the deep phase
+llmem dream --phase rem                                   # Run only the REM phase
+llmem dream --apply --phase deep                          # Apply only the deep phase
+llmem dream --apply --report /path/to/report.html         # Generate HTML dream report
 
-# Generate embeddings for memories missing them
-llmem embed
+# Learn a lesson from a wrong→right correction
+llmem learn --wrong "called wrong function" --right "call correctFunction() instead" --context "handler.py:42"
 
-# Merge two memories (source invalidated, target kept)
-llmem merge <source-id> <target-id>
+# Introspect — analyze a failure and store self_assessment memory (manual mode)
+llmem introspect --category NULL_SAFETY --what-happened "missing null check" --context "handler.py:42" --caught-by self-review --proposed-fix "always check for None before .field"
+
+# Track review findings as self_assessment memories (automatic post-review hook)
+llmem track-review --single --category NULL_SAFETY --context "handler.py:42"  # Single finding (uses --single flag)
+llmem track-review --findings /tmp/review-findings.json --context "handler.py"  # Batch mode: persist findings from JSON file
+llmem track-review --clean                                                # Invalidate all existing track-review memories
+llmem track-review                                                         # Clean review (no findings) → creates REVIEW_PASSED memory
 
 # Export/import
 llmem export --output memories.json
 llmem import memories.json
 
-# Inject memory context for a new session
-llmem context <session_id>
+# Embedding quality metrics
+llmem metrics
 
-# Inject key memories during session compaction
-llmem context --compacting <session_id>
-
-# Add a structured self_assessment memory (introspection, manual mode)
-llmem introspect --category NULL_SAFETY --what-happened "missing null check before property access" --context "handler.py:42" --caught-by self-review --proposed-update "always check for None before accessing .field"
-llmem introspect --category ERROR_HANDLING --what-happened "swallowed exception in finally block" --recurring yes --recurring-ref mem-abc123
-llmem introspect --category DESIGN --what-happened "tight coupling between modules" --outcomes "required 3 iterations to fix" --estimates-vs-actual "estimated 1 hour, took 4"
-llmem introspect --category NULL_SAFETY --what-happened "forgot None check" --iteration-count 2
-
-# Auto-analyze a session transcript (introspection, auto mode)
-llmem introspect --auto --session ~/.local/share/opencode/sessions/2026-01-15.json
-llmem introspect --auto --session transcript.md --force          # Re-analyze even if already processed
-llmem introspect --auto --session transcript.md --no-embed      # Skip embedding generation
-
-# Auto-analyze and confirm before storing (introspection, interactive mode)
-llmem introspect --interactive --session ~/.local/share/opencode/sessions/2026-01-15.json
-
-# Track review findings as self_assessment memories (automatic post-review hook)
-llmem track-review --finding-file /tmp/review-findings.json --context "handler.py"        Batch mode: persist findings from a JSON file
-llmem track-review --category NULL_SAFETY --what-happened "missing null check" --context "handler.py:42" --severity Required --caught-by self-review  Single finding
-llmem track-review --context "handler.py"                                                   Clean review (no findings) → creates REVIEW_PASSED memory
-
-# List error taxonomy categories for a severity tier
-llmem suggest-categories Required          # → NULL_SAFETY, ERROR_HANDLING, MISSING_VERIFICATION, EDGE_CASE
-llmem suggest-categories Blocking         # → AUTH_BYPASS, RACE_CONDITION, DATA_INTEGRITY
-llmem suggest-categories Passed           # → REVIEW_PASSED
+# Initialize config and database
+llmem init
+llmem init --ollama-url http://localhost:11434
 ```
 
 ## Relations
 
 Memories can be linked by typed relations: `supersedes`, `contradicts`, `depends_on`, `related_to`, `derived_from`.
 
-```bash
-# Create a relation when adding a memory
-llmem add --type fact "new info" --relation supersedes --relation-to <old-id>
-
-# Python API: add a relation
-store.add_relation(source_id, target_id, "related_to")
-
-# Python API: get all relations for a memory
-store.get_relations(mem_id)
-
-# Python API: batch-get relations for multiple memories
-store.get_relations_batch([id1, id2, id3])
-```
-
-### Relation Traversal in Search
-
-When `traverse_relations=True` is passed to `Retriever.search()`, related memories are surfaced alongside direct matches:
-
-- **related_to / depends_on / derived_from** — related memories appear in results with a `relation_score` that decays as `0.5^distance` (distance-1: 0.5, distance-2: 0.25)
-- **supersedes** — traversal-surfaced memories that are superseded by another result are removed; the superseding memory gets a `supersedes` field listing the IDs it replaces. Direct search matches are never removed.
-- **contradicts** — contradicted memories are flagged with a `contradicted_by` field (list of source IDs) but not removed from results
-
-**CLI usage:**
-
-```bash
-# Search with 1-hop relation traversal
-llmem search "query" --traverse-relations
-
-# Search with 2-hop traversal
-llmem search "query" --traverse-relations --relation-depth 2
-
-# Combined with type filter and JSON output
-llmem search "query" --traverse-relations --type decision --json
-```
-
-**Python API:**
-
-```python
-from llmem.store import MemoryStore
-from llmem.retrieve import Retriever
-
-store = MemoryStore()
-retriever = Retriever(store)
-
-# Hybrid search (default: fuses FTS5 + semantic via RRF, alpha=0.7, blend=0.3)
-results = retriever.hybrid_search("python", limit=10)
-
-# FTS5-only or semantic-only
-results = retriever.hybrid_search("python", search_mode="fts")
-results = retriever.hybrid_search("python", search_mode="semantic")
-
-# Control semantic/keyword weight (0.0 = pure FTS, 1.0 = pure semantic)
-results = retriever.hybrid_search("python", alpha=0.5)
-
-# Control reranking blend (0.0 = pure RRF, 1.0 = pure signal-based)
-retriever = Retriever(store, blend=0.5)
-results = retriever.hybrid_search("python", limit=10)
-
-# Search with traversal (default 1-hop)
-results = retriever.search("python", traverse_relations=True)
-
-# Deeper traversal (2 hops)
-results = retriever.search("python", traverse_relations=True, relation_depth=2)
-
-# Direct store traversal
-traversal = store.traverse_relations(["id1", "id2"], max_depth=2)
-# Returns: [{"target_id": ..., "relation_type": ..., "distance": 1, "relation_score": 0.5}, ...]
-```
-
-Results with traversal include these extra fields:
-- `relation_score` (float) — 0.5^distance for traversal-surfaced memories, 0.0 for direct matches
-- `relation_type` (str) — the relation type that surfaced this memory
-- `supersedes` (list[str]) — IDs this memory supersedes (only present when applicable)
-- `contradicted_by` (list[str]) — IDs that contradict this memory (only present when applicable)
+Relations are managed internally by the dream system and extraction pipeline. The Go backend supports relation traversal in search (exposed via the `Retriever` API) but the CLI does not yet expose `--traverse-relations` as a flag.
 
 ### Multi-Signal Reranking
 
@@ -280,7 +181,7 @@ After RRF fusion, search results are automatically reranked using a blend of the
 final_score = rrf_score * (1 - blend) + weighted_signal * blend
 ```
 
-**Default blend factor: 0.3** (70% RRF, 30% signals). Configure via `Retriever(store, embedder, blend=0.5)`. Range: 0.0 (pure RRF) to 1.0 (pure signals). Out-of-range values raise `ValueError`.
+**Default blend factor: 0.3** (70% RRF, 30% signals).
 
 **Signals and weights:**
 
@@ -304,40 +205,18 @@ final_score = rrf_score * (1 - blend) + weighted_signal * blend
 | event | 0.9 |
 | conversation | 0.7 |
 
-Search results include both `_rrf_score` (raw RRF fusion score) and `_rerank_score` (blended final score). Results are sorted by `_rerank_score` descending, with ties broken by ascending memory ID.
-
-**Python API:**
-
-```python
-from llmem.retrieve import Retriever
-
-# Default blend (0.3): 70% RRF + 30% signals
-retriever = Retriever(store, embedder=embedder)
-
-# Pure RRF (disable reranking)
-retriever = Retriever(store, embedder=embedder, blend=0.0)
-
-# Equal weight RRF and signals
-retriever = Retriever(store, embedder=embedder, blend=0.5)
-```
-
 ## Important Notes
 
+- **Go binary** — `llmem` is now a compiled Go binary at `~/.local/bin/llmem`, symlinked from `/usr/local/bin/llmem`. No Python virtualenv needed.
 - **Invalidate, don't delete** unless the memory was wrong. Invalidated memories stay for reference but aren't returned in searches.
-- **Embeddings** require Ollama running with `nomic-embed-text` pulled. If Ollama is down, `--no-embed` skips embeddings.
-- **ANN vector index** — semantic search uses sqlite-vec (`vec0` virtual table) for fast ANN retrieval. In environments without sqlite-vec, pass `disable_vec=True` to `MemoryStore` to fall back to brute-force search.
-- **Dimension configuration** — `MemoryStore(db_path=..., vec_dimensions=768)` sets the embedding dimensions for the vec0 index. Changing dimensions on an existing database raises `ValueError`. Default is 768 (nomic-embed-text).
-- **Clearing embeddings** — use `MemoryStore.update(id, clear_embedding=True)` to remove an embedding (sets to NULL and syncs the vec0 index). Passing both `embedding=` and `clear_embedding=True` raises `ValueError`.
-- **Extraction** uses `qwen2.5:1.5b` by default. It runs locally via Ollama.
+- **Embeddings** require Ollama running with `nomic-embed-text` pulled. If Ollama is down, semantic search falls back to FTS5-only.
+- **ANN vector index** — semantic search uses sqlite-vec (`vec0` virtual table) for fast ANN retrieval, with automatic fallback to brute-force cosine similarity if sqlite-vec is not available.
 - **Confidence** is 0.0-1.0. Higher = more certain. Facts from the user directly should be 0.9+, auto-extracted should be 0.7.
-- **Context generation** is what gets injected into the system prompt for context. Use `llmem context` to preview what gets injected.
-- **Auto-extraction** uses `llmem hook idle <session_id>` to extract memories from session transcripts. The idle hook processes the session's transcript, extracts memories, and runs introspection automatically. It uses the `extraction_log` table with `source_type='session'` to prevent re-extraction. The `auto_extract` flag in `~/.config/llmem/config.yaml` controls whether `llmem hook` runs extraction (defaults to true).
-- **Auto-introspection** runs by default with `llmem hook idle`, producing `self_assessment` memories from each session transcript. For standalone introspection, use `llmem introspect --auto` or `--interactive` to analyze a single file. Both use `qwen2.5:1.5b` via Ollama and the `extraction_log` table with `source_type='introspection'` for deduplication. Use `--force` to re-analyze an already-processed file. Interactive mode presents the LLM analysis for user confirmation before storing.
-- **Session hook** can be called from an agent's instructions or cron to make memory collection ambient — no need to remember `llmem extract` after every session.
-- **Access tracking** — `llmem get` is read-only and does not update `access_count` or `accessed_at`. Use the Python API `MemoryStore.get(id, track_access=True)` or `MemoryStore.touch(id)` to record access. **Search operations (`Retriever.search()` and `Retriever.hybrid_search()`) now automatically track access** — each returned result's `access_count` and `accessed_at` are updated (best-effort, errors are logged not raised). This ensures the recency and access frequency reranking signals stay current.
-- **Iteration count** — use `llmem introspect --iteration-count N` to record how many attempts before success. This feeds calibration tracking: if average iteration counts for a category decrease after a behavioral adaptation, the adaptation is marked effective.
+- **Context generation** is what gets injected into the system prompt for context. Use `llmem context --session-id <id>` to preview what gets injected.
+- **Session hooks** use `llmem hook --type <idle|created|ending|compacting> --session-id <id>`. The idle hook processes the session's transcript, extracts memories, and runs introspection automatically.
+- **Access tracking** — `llmem get` is read-only and does not update `access_count` or `accessed_at`. Search operations automatically track access — each returned result's `access_count` and `accessed_at` are updated (best-effort).
 - **Calibration status metadata** — procedure memories created by behavioral insights receive `calibration_status` (trend: `decreasing`, `stable`, or `increasing`) and `calibrated_at` metadata when calibration runs. Stale procedures get `stale_procedure: true` and `stale_at` metadata. These are visible via `llmem get <id>`.
-- **Review outcome tracking** — `llmem track-review` persists review findings as `self_assessment` memories automatically. It is the mechanical post-review hook for adversarial code reviews. Three modes: single finding (`--category` + `--what-happened`), batch (`--finding-file` with JSON array), and clean review (no flags → `REVIEW_PASSED`). `--category` and `--finding-file` are mutually exclusive. Every review invocation MUST produce at least one memory — clean reviews create a `REVIEW_PASSED` memory automatically. Use `llmem suggest-categories <TIER>` to see valid categories for a severity tier (Blocking, Required, Strong Suggestions, Noted, Passed).
+- **Review outcome tracking** — `llmem track-review` persists review findings as `self_assessment` memories. Three modes: `--single` for a single finding, `--findings <file>` for batch from JSON, or no flags for a clean review (creates `REVIEW_PASSED` memory). Use `--clean` to invalidate all existing track-review memories before storing new ones.
 
 
 ## Dream — Background Consolidation
@@ -348,7 +227,7 @@ The dream system is an automated memory maintenance pipeline that runs three pha
 - **Deep** — decays idle memories (confidence decreases over time), boosts frequently accessed memories, promotes high-scoring memories, and merges near-duplicates using LLM-assisted merge with fallback to concatenation.
 - **REM** — extracts themes and clusters from memory, writes a human-readable dream diary to `~/.config/llmem/dream-diary.md`. Self-assessment memories are grouped by error taxonomy category (e.g. "2 self_assessment memories about NULL_SAFETY") for pattern detection. When a category has 3+ occurrences (configurable via `skill_patch_threshold`), the REM phase generates three outputs: (1) a **procedural memory** (Tier 1 — automatic, low confidence), (2) a **behavioral insight** entry in `proposed-changes.md` (Tier 2 — human review), and (3) a **skill patch** entry in `proposed-changes.md` marked with `[SKILL PATCH]` (Tier 3 — human review). Skill patches are structured markdown snippets with Detection Rule, Checklist, Pitfall, and Verification sections that can be appended to existing skills or used as mini-skills. They are NOT auto-applied — they require human review and deployment. When behavioral insights are generated, **calibration tracking** compares self_assessment error rates (or average iteration counts) before and after each adaptation was introduced, marking them as effective (decreasing) or ineffective (stable/increasing). Procedure memories that are never accessed and older than `stale_procedure_days` are aggressively decayed (confidence reduced at double the normal decay rate). The dream diary includes a `### Calibration` section with per-category effectiveness and stale procedure counts.
 
-**Default mode is dry-run** — use `--apply` to actually make changes. Without it, `llmem dream` only previews what would happen.
+**Default mode is dry-run** — use `--apply` to actually make changes. Without it, `llmem dream` only previews what would happen. Use `--report /path/to/report.html` to generate an HTML dream report.
 
 **Scheduling**: A systemd user timer (`llmem-dream.timer`) runs `llmem dream --apply` nightly at 3am. See `harness/llmem-dream.service` and `harness/llmem-dream.timer`.
 
@@ -363,16 +242,8 @@ The dream system is an automated memory maintenance pipeline that runs three pha
 | `confidence_floor` | 0.3 | Memories at or below this are invalidated |
 | `boost_threshold` | 5 | Access count that triggers confidence boost |
 | `boost_amount` | 0.05 | Confidence boost amount |
-| `min_score` | 0.5 | Minimum promotion score |
-| `min_recall_count` | 3 | Minimum access count for promotion |
-| `min_unique_queries` | 1 | Minimum hint queries for promotion |
-| `boost_on_promote` | 0.1 | Confidence boost when promoted |
-| `merge_model` | qwen2.5:1.5b | Ollama model for LLM-assisted merge |
-| `skill_patch_threshold` | 3 | Minimum self_assessment occurrences in a category to generate a skill patch (0 to disable) |
 | `diary_path` | ~/.config/llmem/dream-diary.md | Path to dream diary file |
+| `report_path` | (none) | Path for HTML dream report output |
 | `behavioral_threshold` | 3 | Minimum self_assessment occurrences to trigger behavioral insight |
 | `behavioral_lookback_days` | 30 | Days of self_assessment memories for behavioral insights |
-| `proposed_changes_path` | ~/.config/llmem/proposed-changes.md | Path for proposed-changes output |
-| `calibration_enabled` | true | Whether to compute calibration metrics during REM phase |
-| `stale_procedure_days` | 30 | Days without access before a procedure memory is considered stale |
-| `calibration_lookback_days` | 90 | How far back to look for self_assessment memories when computing calibration |
+| `auto_link_threshold` | (none) | Cosine similarity threshold for auto-linking related memories |

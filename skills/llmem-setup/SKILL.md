@@ -133,10 +133,10 @@ Memory is working memory, not a startup ritual. Search before assuming.
 - Topic shift (debugging → design, one codebase → another)
 
 **Write when you learn:**
-- `llmem add --type decision "chose X over Y because Z"` — decisions and rationale
-- `llmem add --type fact "project uses pytest for testing"` — objective truths
-- `llmem add --type preference "prefer dark theme" --confidence 0.9` — user preferences
-- `llmem add --type procedure "how to deploy: step 1, step 2..."` — how-to knowledge
+- `llmem add --type decision --content "chose X over Y because Z"` — decisions and rationale
+- `llmem add --type fact --content "project uses pytest for testing"` — objective truths
+- `llmem add --type preference --content "prefer dark theme" --confidence 0.9` — user preferences
+- `llmem add --type procedure --content "how to deploy: step 1, step 2..."` — how-to knowledge
 
 **Invalidate, don't delete:**
 - `llmem invalidate <id> --reason "no longer relevant"` — soft-delete, stays for reference
@@ -166,9 +166,9 @@ OpenCode agents need the `opencode-llmem` plugin (installed in Step 1) and the l
 ```
 
 The plugin handles session hooks automatically:
-- `session.created` → `llmem context <session_id>` (injects relevant memories)
-- `session.idle` → `llmem hook idle <session_id>` (extracts new memories)
-- `session.compacting` → `llmem context --compacting <session_id>` (preserves key memories)
+- `session.created` → `llmem context --session-id <session_id>` (injects relevant memories)
+- `session.idle` → `llmem hook --type idle --session-id <session_id>` (extracts new memories)
+- `session.compacting` → `llmem context --compacting --session-id <session_id>` (preserves key memories)
 
 Skills are installed to `~/.agents/skills/`. OpenCode discovers them automatically.
 
@@ -198,7 +198,7 @@ ls ~/.agents/skills/llmem-setup/SKILL.md
 ls ~/.agents/plugins/llmem/
 
 # Session hooks work
-llmem context "test-session-id"
+llmem context --session-id "test-session-id"
 ```
 
 ### Step 6: Dream Timer (Optional)

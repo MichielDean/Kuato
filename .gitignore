@@ -1,19 +1,10 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-*.pyc
-*.pyo
+# Build output
+*.db
+llmem-bin
 
-# Distribution / packaging
-*.egg-info/
-*.egg
-dist/
-build/
+# IDE
+.vscode/
+.idea/
 
-# Test cache
-.pytest_cache/
-
-# Virtual environments
-.venv/
-venv/
+# OS
+.DS_Store
