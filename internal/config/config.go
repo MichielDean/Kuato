@@ -18,7 +18,7 @@ import (
 // DreamConfig holds dream consolidation settings.
 // Only fields that are wired through to DreamerConfig are included.
 // Removed dead fields: MinScore, MinRecallCount, MinUniqueQueries,
-// BoostOnPromote, MergeModel, CalibrationEnabled, StaleProcedureDays,
+// BoostOnPromote, MergeModel, CalibrationEnabled,
 // CalibrationLookbackDays, Enabled, Schedule — these were defined in
 // config but never read by any method, creating a contract violation.
 // Enabled and Schedule control systemd timer behaviour, not dream
@@ -36,6 +36,7 @@ type DreamConfig struct {
 	BehavioralThreshold    int     `yaml:"behavioral_threshold"`
 	BehavioralLookbackDays int     `yaml:"behavioral_lookback_days"`
 	AutoLinkThreshold      float64 `yaml:"auto_link_threshold"`
+	StaleProcedureDays     int     `yaml:"stale_procedure_days"`
 }
 
 // SessionConfig holds session lifecycle settings.
@@ -93,12 +94,13 @@ func DefaultConfig() Config {
 			DecayFloor:             0.3,
 			ConfidenceFloor:        0.3,
 			BoostThreshold:         5,
-			BoostAmount:            0.05,
+			BoostAmount:             0.05,
 			DiaryPath:              paths.GetDreamDiaryPath(),
 			ReportPath:             paths.GetDreamReportPath(),
 			BehavioralThreshold:    3,
 			BehavioralLookbackDays: 30,
 			AutoLinkThreshold:      0.85,
+			StaleProcedureDays:     30,
 		},
 		OpenCode: OpenCodeConfig{
 			DBPath:      openCodeDefaultDBPath(),
@@ -178,6 +180,7 @@ func (c *Config) DreamerConfig() dream.DreamerConfig {
 		AutoLinkThreshold:      c.Dream.AutoLinkThreshold,
 		BehavioralThreshold:    c.Dream.BehavioralThreshold,
 		BehavioralLookbackDays: c.Dream.BehavioralLookbackDays,
+		StaleProcedureDays:     c.Dream.StaleProcedureDays,
 		DiaryPath:              c.Dream.DiaryPath,
 		ReportPath:             c.Dream.ReportPath,
 	}
