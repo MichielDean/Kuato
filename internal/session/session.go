@@ -4,6 +4,8 @@ package session
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/MichielDean/LLMem/internal/paths"
 	"github.com/MichielDean/LLMem/internal/store"
@@ -53,40 +57,309 @@ type SessionInfo struct {
 }
 
 // OpenCodeAdapter reads session data from the OpenCode SQLite database.
+// This is specific to OpenCode and will not be reused.
 type OpenCodeAdapter struct {
 	dbPath string
+	db     *sql.DB
+	closed bool
+	mu     sync.Mutex
 }
 
 // NewOpenCodeAdapter creates an adapter that reads from the given DB path.
-func NewOpenCodeAdapter(dbPath string) *OpenCodeAdapter {
-	return &OpenCodeAdapter{dbPath: dbPath}
+// The constructor opens the database connection eagerly and leaves the adapter
+// in a fully usable state. If dbPath is empty, the adapter returns empty/nil
+// results from all methods (safe no-op mode).
+// The database is opened in read-only mode (mode=ro) to prevent any modifications
+// to the external OpenCode database.
+func NewOpenCodeAdapter(dbPath string) (*OpenCodeAdapter, error) {
+	if dbPath == "" {
+		return &OpenCodeAdapter{dbPath: "", db: nil, closed: false}, nil
+	}
+
+	// Open the database in read-only mode — we must not modify the external
+	// OpenCode database. No WAL pragma or migrations are applied.
+	db, err := sql.Open("sqlite", dbPath+"?mode=ro")
+	if err != nil {
+		return nil, fmtErr("open opencode db %s: %w", dbPath, err)
+	}
+
+	// Verify the connection works
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmtErr("ping opencode db %s: %w", dbPath, err)
+	}
+
+	return &OpenCodeAdapter{dbPath: dbPath, db: db, closed: false}, nil
+}
+
+// Close closes the underlying database connection. Safe to call multiple times
+// (idempotent, returns nil on subsequent calls).
+func (a *OpenCodeAdapter) Close() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		return nil
+	}
+	a.closed = true
+	if a.db != nil {
+		return a.db.Close()
+	}
+	return nil
 }
 
 // ReadTranscript reads the session transcript from the OpenCode database.
-// Currently returns an empty string — the full implementation requires SQLite
-// queries against the opencode schema.
+// If dbPath is empty, returns ("", nil). If sessionID fails validation,
+// returns ("", error). If the session ID does not exist, returns ("", nil).
+// When session.time_compacting is set (non-NULL), returns only messages
+// created after the compaction time (recent context), not the full transcript.
+// The transcript format is a text-based conversation log where each message
+// shows the role ("User:" or "Assistant:") followed by content. Text parts
+// are included, reasoning parts are prefixed with "Reasoning: ", tool call
+// parts show tool name + input summary, patch parts show diff summary.
+// Step-start, step-finish, and compaction parts are excluded.
 func (a *OpenCodeAdapter) ReadTranscript(sessionID string) (string, error) {
 	if a.dbPath == "" {
 		return "", nil
 	}
-	// Validate session ID
+	// Validate session ID to prevent path traversal
 	if _, err := paths.ValidateSessionID(sessionID); err != nil {
 		return "", fmtErr("read transcript: %w", err)
 	}
-	// OpenCode SQLite integration is not yet implemented
-	slog.Debug("llmem: session: OpenCode transcript reading not yet implemented", "session_id", sessionID)
-	return "", nil
+
+	// Check if session exists and get time_compacting
+	var timeCompacting sql.NullInt64
+	err := a.db.QueryRow(
+		"SELECT `time_compacting` FROM `session` WHERE `id` = ?",
+		sessionID,
+	).Scan(&timeCompacting)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// Session not found — return empty, no error
+			return "", nil
+		}
+		return "", fmtErr("read transcript: query session %s: %w", sessionID, err)
+	}
+
+	// Build query based on whether compacting is set
+	query := "SELECT `id`, `data` FROM `message` WHERE `session_id` = ? ORDER BY `time_created` ASC"
+	args := []any{sessionID}
+
+	if timeCompacting.Valid {
+		// Only return messages after the compaction time (recent context)
+		query = "SELECT `id`, `data` FROM `message` WHERE `session_id` = ? AND `time_created` > ? ORDER BY `time_created` ASC"
+		args = []any{sessionID, timeCompacting.Int64}
+	}
+
+	rows, err := a.db.Query(query, args...)
+	if err != nil {
+		return "", fmtErr("read transcript: query messages for session %s: %w", sessionID, err)
+	}
+	defer rows.Close()
+
+	var transcript strings.Builder
+	for rows.Next() {
+		var msgID, data string
+		if err := rows.Scan(&msgID, &data); err != nil {
+			return "", fmtErr("read transcript: scan message for session %s: %w", sessionID, err)
+		}
+
+		// Parse the message data JSON to extract role
+		var msgData struct {
+			Role string `json:"role"`
+		}
+		if err := json.Unmarshal([]byte(data), &msgData); err != nil {
+			slog.Debug("llmem: session: skipping unparseable message data", "session_id", sessionID, "message_id", msgID, "error", err)
+			continue
+		}
+
+		// Get parts for this message
+		parts, err := a.readParts(msgID)
+		if err != nil {
+			slog.Debug("llmem: session: error reading parts", "session_id", sessionID, "message_id", msgID, "error", err)
+			continue
+		}
+
+		if len(parts) == 0 {
+			continue
+		}
+
+		// Determine role label
+		roleLabel := "Assistant:"
+		if msgData.Role == "user" {
+			roleLabel = "User:"
+		}
+
+		transcript.WriteString(roleLabel)
+		transcript.WriteString("\n")
+		for _, part := range parts {
+			transcript.WriteString(part)
+			transcript.WriteString("\n")
+		}
+		transcript.WriteString("\n")
+	}
+
+	if err := rows.Err(); err != nil {
+		return "", fmtErr("read transcript: iterate messages for session %s: %w", sessionID, err)
+	}
+
+	return transcript.String(), nil
 }
 
-// ListSessions returns available session information.
-// Currently returns an empty list — the full implementation requires SQLite queries.
+// partContent holds the extracted text content and type from a message part.
+type partContent struct {
+	text     string
+	partType string
+	toolName string
+}
+
+// readParts reads all parts for a message, filtering out excluded types
+// and returning formatted text for each included part.
+func (a *OpenCodeAdapter) readParts(messageID string) ([]string, error) {
+	rows, err := a.db.Query(
+		"SELECT `data` FROM `part` WHERE `message_id` = ? ORDER BY `time_created` ASC",
+		messageID,
+	)
+	if err != nil {
+		return nil, fmtErr("read parts: query parts for message %s: %w", messageID, err)
+	}
+	defer rows.Close()
+
+	var result []string
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, fmtErr("read parts: scan part for message %s: %w", messageID, err)
+		}
+
+		parsed, err := parsePartData(data)
+		if err != nil {
+			slog.Debug("llmem: session: skipping unparseable part data", "message_id", messageID, "error", err)
+			continue
+		}
+
+		// Filter excluded part types
+		switch parsed.partType {
+		case "step-start", "step-finish", "compaction":
+			continue
+		}
+
+		var formatted string
+		switch parsed.partType {
+		case "text":
+			formatted = parsed.text
+		case "reasoning":
+			formatted = "Reasoning: " + parsed.text
+		case "tool":
+			if parsed.toolName != "" {
+				formatted = "Tool: " + parsed.toolName
+			}
+		case "patch":
+			formatted = "Patch"
+		default:
+			// Include unknown types as text if they have content
+			if parsed.text != "" {
+				formatted = parsed.text
+			}
+		}
+
+		if formatted != "" {
+			result = append(result, formatted)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmtErr("read parts: iterate parts for message %s: %w", messageID, err)
+	}
+
+	return result, nil
+}
+
+// parsePartData extracts the part type, text, and tool name from a part's JSON data.
+func parsePartData(data string) (partContent, error) {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+		return partContent{}, fmtErr("parse part data: %w", err)
+	}
+
+	pc := partContent{}
+
+	// Extract type
+	if typ, ok := raw["type"]; ok {
+		pc.partType, _ = typ.(string)
+	}
+
+	// Extract text
+	if text, ok := raw["text"]; ok {
+		pc.text, _ = text.(string)
+	}
+
+	// Extract tool name from tool invocations
+	if pc.partType == "tool" {
+		// Tool name might be at "name" or "tool" key
+		if name, ok := raw["name"]; ok {
+			pc.toolName, _ = name.(string)
+		}
+	}
+
+	return pc, nil
+}
+
+// ListSessions returns available session information from the OpenCode database.
+// Times are converted from Unix milliseconds to RFC3339 strings.
+// If dbPath is empty, returns ([], nil).
 func (a *OpenCodeAdapter) ListSessions() ([]SessionInfo, error) {
 	if a.dbPath == "" {
 		return []SessionInfo{}, nil
 	}
-	// OpenCode SQLite integration is not yet implemented
-	slog.Debug("llmem: session: OpenCode session listing not yet implemented")
-	return []SessionInfo{}, nil
+
+	rows, err := a.db.Query(
+		"SELECT `id`, `time_created`, `time_updated`, `directory`, `path` FROM `session` ORDER BY `time_created` DESC",
+	)
+	if err != nil {
+		return nil, fmtErr("list sessions: query sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []SessionInfo
+	for rows.Next() {
+		var id string
+		var timeCreated, timeUpdated sql.NullInt64
+		var directory, sessionPath sql.NullString
+		if err := rows.Scan(&id, &timeCreated, &timeUpdated, &directory, &sessionPath); err != nil {
+			return nil, fmtErr("list sessions: scan session: %w", err)
+		}
+
+		var startTime, endTime string
+		if timeCreated.Valid {
+			startTime = time.UnixMilli(timeCreated.Int64).UTC().Format(time.RFC3339)
+		}
+		if timeUpdated.Valid {
+			endTime = time.UnixMilli(timeUpdated.Int64).UTC().Format(time.RFC3339)
+		}
+
+		// Prefer directory, fall back to path
+		workDir := directory.String
+		if workDir == "" {
+			workDir = sessionPath.String
+		}
+
+		sessions = append(sessions, SessionInfo{
+			ID:        id,
+			StartTime: startTime,
+			EndTime:   endTime,
+			WorkDir:   workDir,
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmtErr("list sessions: iterate sessions: %w", err)
+	}
+
+	if sessions == nil {
+		sessions = []SessionInfo{}
+	}
+
+	return sessions, nil
 }
 
 // SessionHookConfig contains configuration for creating a SessionHookCoordinator.
