@@ -189,7 +189,7 @@ Run the dream consolidation cycle, which performs automated memory maintenance i
 
 - **Light phase:** Sort and deduplicate near-duplicate memories (cosine similarity ≥ `dream.similarity_threshold`).
 - **Deep phase:** Score, promote, decay, and merge memories. Also promotes inbox items to long-term memory (items with attention_score ≥ `dream.min_score` become permanent; lower-scored items are evicted). Decays confidence on idle memories. Boosts frequently accessed memories. Performs LLM-assisted merging of similar pairs. Auto-links memories with high cosine similarity (≥ `dream.auto_link_threshold`, default 0.85).
-- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection). When Ollama is available, generates actionable behavioral insights via LLM; falls back to count-based summaries when Ollama is unavailable.
+- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection). When Ollama is available, generates actionable behavioral insights via LLM with "Do" directives, "Verify" steps, and `[SKILL PATCH]` sections (Detection Rule, Checklist, Pitfall, Verification); falls back to count-based summaries when Ollama is unavailable. When run with `--apply`, also appends behavioral insight and skill patch sections to `proposed-changes.md` at `~/.config/llmem/proposed-changes.md` (or `LMEM_HOME/proposed-changes.md`). Each dream run's entries are separated by a timestamp header. The file is append-only — existing content is preserved.
 
 Without `--apply`, the dream cycle runs as a **dry run** — output is prefixed with `[DRY RUN]` and no changes are written to the database.
 
