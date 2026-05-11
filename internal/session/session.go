@@ -399,8 +399,9 @@ type SessionHookConfig struct {
 	// Embedding generates embedding vectors. If nil, memories are stored without embeddings.
 	Embedding *embed.EmbeddingEngine
 
-	// OllamaClient is used for introspection in OnEnding. If nil, OnEnding skips
-	// IntrospectTranscript and falls back to a simple session_end event memory.
+	// OllamaClient is used for introspection in OnEnding. If nil, IntrospectTranscript
+	// falls back to degraded storage immediately (no LLM call attempted) and still
+	// produces a self_assessment memory with a plain-text session summary.
 	OllamaClient *ollama.OllamaClient
 
 	// IntrospectModel is the LLM model name for IntrospectTranscript.
@@ -602,27 +603,30 @@ func (c *SessionHookCoordinator) OnEnding(ctx context.Context, sessionID string)
 		_ = extracted // extracted count logged by extractMemories
 	}
 
-	// Run introspection on the full session transcript
-	if transcript != "" && c.ollamaClient != nil {
-		introspectID, err := introspect.IntrospectTranscript(ctx, c.store, transcript, validID, c.ollamaClient, c.introspectModel)
-		if err != nil {
-			slog.Warn("llmem: session: on_ending: introspect_transcript failed, storing degraded event", "error", err, "session_id", validID)
-			// Fall back to storing a simple session-end event.
-			// Use context.Background() for the fallback store operation since the
-			// calling context may have expired during the LLM call.
-			_, storeErr := c.store.Add(context.Background(), store.AddParams{
-				Type:       "event",
-				Content:    fmt.Sprintf("Session ended: %s", validID),
-				Source:     "session_end",
-				Confidence: 0.7,
-				Metadata:   map[string]any{"source_type": "session", "source_id": validID},
-			})
-			if storeErr != nil {
-				slog.Debug("llmem: session: on_ending: store session_end event failed", "error", storeErr, "session_id", validID)
-			}
-		} else {
-			slog.Debug("llmem: session: on_ending: stored introspect_transcript memory", "id", introspectID, "session_id", validID)
+	// Run introspection on the full session transcript.
+	// IntrospectTranscript handles nil OllamaClient gracefully by producing
+	// degraded self_assessment content (no LLM call attempted). Do NOT guard
+	// with c.ollamaClient != nil — that bypasses the function's own nil-client
+	// degradation and results in zero introspection memories for sessions with
+	// valid transcripts but no configured Ollama connection.
+	introspectID, err := introspect.IntrospectTranscript(ctx, c.store, transcript, validID, c.ollamaClient, c.introspectModel)
+	if err != nil {
+		slog.Warn("llmem: session: on_ending: introspect_transcript failed, storing degraded event", "error", err, "session_id", validID)
+		// Fall back to storing a simple session-end event.
+		// Use context.Background() for the fallback store operation since the
+		// calling context may have expired during the LLM call.
+		_, storeErr := c.store.Add(context.Background(), store.AddParams{
+			Type:       "event",
+			Content:    fmt.Sprintf("Session ended: %s", validID),
+			Source:     "session_end",
+			Confidence: 0.7,
+			Metadata:   map[string]any{"source_type": "session", "source_id": validID},
+		})
+		if storeErr != nil {
+			slog.Debug("llmem: session: on_ending: store session_end event failed", "error", storeErr, "session_id", validID)
 		}
+	} else {
+		slog.Debug("llmem: session: on_ending: stored introspect_transcript memory", "id", introspectID, "session_id", validID)
 	}
 
 	logSessionEvent("ending", validID)

@@ -1636,8 +1636,9 @@ func TestSessionHookCoordinator_OnEnding_NilExtractionEngine(t *testing.T) {
 	coord, err := NewSessionHookCoordinator(SessionHookConfig{
 		Store:   ms,
 		Adapter: adapter,
-		// ExtractionEngine is nil — extraction should be skipped, but introspect still runs
-		// if OllamaClient is provided. Without OllamaClient, introspect is skipped.
+		// ExtractionEngine is nil — extraction should be skipped.
+		// OllamaClient is nil — IntrospectTranscript falls back to degraded storage
+		// (produces a self_assessment memory without LLM call).
 	})
 	if err != nil {
 		t.Fatalf("NewSessionHookCoordinator: %v", err)
@@ -1651,21 +1652,101 @@ func TestSessionHookCoordinator_OnEnding_NilExtractionEngine(t *testing.T) {
 		t.Errorf("expected %q, got %q", ResultSuccess, result)
 	}
 
-	// No session extraction memories and no introspect memories (no OllamaClient)
-	// The session_end event should still be stored as fallback
-	memories, err := ms.ListAll(context.Background(), store.ListParams{Type: "event", Limit: 10})
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	// With no extraction engine and no ollamaClient, there should be no self_assessment memories
+	// IntrospectTranscript is called even with nil OllamaClient — it falls back
+	// to degraded storage producing a self_assessment memory with a plain-text summary.
 	saMemories, err := ms.ListAll(context.Background(), store.ListParams{Type: "self_assessment", Limit: 10})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if len(saMemories) > 0 {
-		t.Errorf("expected no self_assessment memories without OllamaClient, got %d", len(saMemories))
+	if len(saMemories) == 0 {
+		t.Error("expected at least one self_assessment memory from IntrospectTranscript degraded storage (nil OllamaClient)")
 	}
-	_ = memories // just verify no errors
+	// Verify the degraded memory contains the session ID
+	found := false
+	for _, m := range saMemories {
+		if strings.Contains(m.Content, "sess-nil-end") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected degraded self_assessment memory to contain session ID 'sess-nil-end'")
+	}
+}
+
+// TestSessionHookCoordinator_OnEnding_NilOllamaClient_ProducesDegradedIntrospection
+// verifies the fix for issue ll-m8knf-vup88: OnEnding must call IntrospectTranscript
+// even when OllamaClient is nil. IntrospectTranscript has its own nil-client graceful
+// degradation — it produces a plain-text self_assessment memory. The bug was that
+// OnEnding guarded the call with c.ollamaClient != nil, bypassing this degradation
+// and producing zero introspection memories for sessions with valid transcripts.
+func TestSessionHookCoordinator_OnEnding_NilOllamaClient_ProducesDegradedIntrospection(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-nil-ollama", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-nil-ollama", "sess-nil-ollama", 1000, "user")
+	insertTestPart(t, dbPath, "part-nil-ollama", "msg-nil-ollama", "sess-nil-ollama", 1000,
+		`{"type": "text", "text": "The project uses Go 1.22 for robust concurrency"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	// Set up an extraction engine working normally
+	extractor, _ := newTestExtractionEngine(t, []map[string]any{
+		{"type": "fact", "content": "The project uses Go 1.22", "confidence": 0.9},
+	})
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		Adapter:          adapter,
+		ExtractionEngine: extractor,
+		// OllamaClient is nil — IntrospectTranscript must still be called
+		// and must produce a degraded self_assessment memory
+	})
+
+	result, err := coord.OnEnding(context.Background(), "sess-nil-ollama")
+	if err != nil {
+		t.Fatalf("OnEnding: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+
+	// Verify that IntrospectTranscript produced a degraded self_assessment memory
+	saMemories, err := ms.ListAll(context.Background(), store.ListParams{Type: "self_assessment", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(saMemories) == 0 {
+		t.Error("expected at least one self_assessment memory from IntrospectTranscript degraded path (nil OllamaClient)")
+	}
+
+	// Verify the degraded memory contains the session ID
+	found := false
+	for _, m := range saMemories {
+		if strings.Contains(m.Content, "sess-nil-ollama") {
+			found = true
+			if m.Source != "introspect" {
+				t.Errorf("expected source 'introspect', got %q", m.Source)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected degraded self_assessment memory to contain session ID")
+	}
+
+	// Also verify extraction memories were still stored
+	sessionMemories, err := ms.ListAll(context.Background(), store.ListParams{Type: "fact", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListAll facts: %v", err)
+	}
+	if len(sessionMemories) == 0 {
+		t.Error("expected at least one fact memory from extraction")
+	}
 }
 
 func TestSessionHookCoordinator_OnIdle_WithAdapter_VerifiesMemoriesStored(t *testing.T) {
