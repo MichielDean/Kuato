@@ -134,6 +134,7 @@ type BehavioralInsight struct {
 	Count          int
 	InsightID      string
 	ContentSnippet string
+	Samples        []string
 }
 
 // RemPhaseResult holds the results of the REM (reflect) phase.
@@ -706,6 +707,7 @@ func (d *Dreamer) extractBehavioralInsights(ctx context.Context, apply bool) []B
 				Count:          count,
 				InsightID:      insightID,
 				ContentSnippet: contentSnippet,
+				Samples:        categorySamples[cat],
 			})
 		}
 	}
@@ -910,27 +912,7 @@ func (d *Dreamer) WriteProposedChanges(result *DreamResult) error {
 	}
 
 	for _, insight := range result.Rem.BehavioralInsights {
-		// Get category samples for this insight from the DB
-		cutoff := time.Now().UTC().AddDate(0, 0, -d.behavioralLookbackDays).Format(time.RFC3339)
-		selfAssessments, _ := d.store.Search(context.Background(), store.SearchParams{
-			Type:      "self_assessment",
-			ValidOnly: true,
-			Limit:     500,
-		})
-		categorySamples := []string{}
-		for _, m := range selfAssessments {
-			if m.UpdatedAt != "" && m.UpdatedAt >= cutoff {
-				if strings.Contains(m.Content, "Category: "+insight.Category) {
-					snippet := m.Content
-					if len(snippet) > maxSampleLength {
-						snippet = snippet[:maxSampleLength]
-					}
-					if len(categorySamples) < maxBehavioralSamples {
-						categorySamples = append(categorySamples, snippet)
-					}
-				}
-			}
-		}
+		categorySamples := insight.Samples
 
 		sb.WriteString(fmt.Sprintf("## %s (×%d)\n\n", insight.Category, insight.Count))
 		sb.WriteString(fmt.Sprintf("**Category:** %s\n", insight.Category))
@@ -958,7 +940,7 @@ func (d *Dreamer) WriteProposedChanges(result *DreamResult) error {
 			if response != "" {
 				sb.WriteString("**Do:**\n")
 				// Parse Do and Verify from the LLM response
-				doLines, verifyLine := parseLLMDirectiveResponse(response)
+				doLines, verifyLine := parseLLMDirectiveResponse(response, insight.Category)
 				for _, line := range doLines {
 					sb.WriteString(fmt.Sprintf("- %s\n", line))
 				}
@@ -1003,7 +985,8 @@ func (d *Dreamer) WriteProposedChanges(result *DreamResult) error {
 
 // parseLLMDirectiveResponse extracts Do lines and Verify text from an LLM response.
 // Returns doLines (behavioral directives) and verifyLine (verification step).
-func parseLLMDirectiveResponse(response string) ([]string, string) {
+// category is used in the fallback when no Do lines are parsed.
+func parseLLMDirectiveResponse(response string, category string) ([]string, string) {
 	var doLines []string
 	var verifyLine string
 
@@ -1042,7 +1025,7 @@ func parseLLMDirectiveResponse(response string) ([]string, string) {
 	}
 
 	if len(doLines) == 0 {
-		doLines = []string{fmt.Sprintf("Apply %s checks from taxonomy", "category")}
+		doLines = []string{fmt.Sprintf("Apply %s checks from taxonomy", category)}
 	}
 	if verifyLine == "" {
 		verifyLine = "Run llmem search to confirm reduction"
