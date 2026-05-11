@@ -47,6 +47,7 @@ dream:
   behavioral_threshold: 3
   behavioral_lookback_days: 30
   auto_link_threshold: 0.85    # Cosine similarity threshold for auto-linking related memories
+  stale_procedure_days: 30     # Days after which an unaccessed procedure memory decays at 2x rate
 
 opencode:
   db_path: ~/.local/share/opencode/opencode.db
@@ -57,7 +58,7 @@ session:
   debounce_seconds: 30        # Idle debounce interval in seconds
 ```
 
-> **Note:** The following fields exist in the Python config but are **not wired** in the Go implementation: `min_score`, `min_recall_count`, `min_unique_queries`, `boost_on_promote`, `merge_model`, `calibration_enabled`, `stale_procedure_days`, `calibration_lookback_days`, `inbox_capacity`, `correction_detection` (top-level), `copilot` (top-level), and `proposed_changes_path`. Setting these in `config.yaml` has no effect when using the Go CLI.
+> **Note:** The following fields exist in the Python config but are **not wired** in the Go implementation: `min_score`, `min_recall_count`, `min_unique_queries`, `boost_on_promote`, `merge_model`, `calibration_enabled`, `calibration_lookback_days`, `inbox_capacity`, `correction_detection` (top-level), `copilot` (top-level), and `proposed_changes_path`. Setting these in `config.yaml` has no effect when using the Go CLI.
 
 > **Note:** The Go config resolves `db_path` for OpenCode as `~/.local/share/opencode/opencode.db` using `filepath.Join` with proper path handling.
 

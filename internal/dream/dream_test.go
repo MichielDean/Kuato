@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/MichielDean/LLMem/internal/store"
 )
@@ -338,5 +339,213 @@ func TestDreamer_GenerateDreamReport_UsesResolvedPath(t *testing.T) {
 	// Verify file was written at the expected path
 	if _, err := os.Stat(reportPath); err != nil {
 		t.Errorf("expected report file at %s: %v", reportPath, err)
+	}
+}
+
+// setTimestamps updates a memory's created_at and accessed_at columns
+// via raw SQL on the store's database. This is needed for time-dependent
+// decay tests where we need memories older than the decay/stale cutoffs.
+func setTimestamps(t *testing.T, ms *store.MemoryStore, id, createdAt, accessedAt string) {
+	t.Helper()
+	db := ms.DB()
+	if createdAt != "" {
+		_, err := db.Exec(`UPDATE "memories" SET "created_at" = ? WHERE "id" = ?`, createdAt, id)
+		if err != nil {
+			t.Fatalf("set created_at for %s: %v", id, err)
+		}
+	}
+	if accessedAt != "" {
+		_, err := db.Exec(`UPDATE "memories" SET "accessed_at" = ? WHERE "id" = ?`, accessedAt, id)
+		if err != nil {
+			t.Fatalf("set accessed_at for %s: %v", id, err)
+		}
+	}
+}
+
+func TestNewDreamer_DefaultStaleProcedureDays(t *testing.T) {
+	ms := newTestStore(t)
+	d, err := NewDreamer(DreamerConfig{Store: ms})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+	if d.staleProcedureDays != defaultStaleProcedureDays {
+		t.Errorf("expected default stale procedure days %d, got %d", defaultStaleProcedureDays, d.staleProcedureDays)
+	}
+}
+
+func TestDreamer_DeepPhase_StaleProcedureDoubleDecay(t *testing.T) {
+	// Verify that a procedure memory older than staleProcedureDays decays at 2x the normal rate.
+	ms := newTestStore(t)
+
+	// Use DecayIntervalDays: 1 so memories older than 1 day are eligible for decay.
+	// Use StaleProcedureDays: 1 so procedures not accessed within 1 day are stale.
+	d, err := NewDreamer(DreamerConfig{
+		Store:               ms,
+		DecayIntervalDays:  1,
+		StaleProcedureDays: 1,
+		DecayRate:           0.05,
+		DecayFloor:          0.1,
+		ConfidenceFloor:     0.1,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	// Add a procedure memory with high confidence
+	procID, err := ms.Add(context.Background(), store.AddParams{
+		Type:       "procedure",
+		Content:    "stale procedure test",
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add procedure: %v", err)
+	}
+
+	// Set created_at to 60 days ago and leave accessed_at empty (never accessed = stale)
+	oldCreated := time.Now().UTC().AddDate(0, 0, -60).Format(time.RFC3339)
+	setTimestamps(t, ms, procID, oldCreated, "")
+
+	// Run deep phase with apply=true
+	result, err := d.Run(context.Background(), true, "deep")
+	if err != nil {
+		t.Fatalf("Run deep: %v", err)
+	}
+	if result.Deep == nil {
+		t.Fatal("expected Deep result")
+	}
+
+	// The stale procedure should have been decayed at 2x rate:
+	// 0.9 - (0.05 * 2) = 0.8
+	if result.Deep.StaleProcedureDecayedCount != 1 {
+		t.Errorf("expected StaleProcedureDecayedCount=1, got %d", result.Deep.StaleProcedureDecayedCount)
+	}
+	if result.Deep.DecayedCount < 1 {
+		t.Errorf("expected DecayedCount >= 1, got %d", result.Deep.DecayedCount)
+	}
+
+	// Verify the actual confidence on the memory
+	mem, err := ms.Get(context.Background(), procID, false)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// Should be 0.9 - 0.10 = 0.8
+	expectedConf := 0.9 - (0.05 * 2)
+	if mem.Confidence < expectedConf-0.01 || mem.Confidence > expectedConf+0.01 {
+		t.Errorf("expected stale procedure confidence ~%f, got %f", expectedConf, mem.Confidence)
+	}
+}
+
+func TestDreamer_DeepPhase_StaleProcedureNotDoubleDecayedWhenFresh(t *testing.T) {
+	// Verify that a procedure memory accessed recently (within staleProcedureDays) is NOT double-decayed.
+	ms := newTestStore(t)
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:               ms,
+		DecayIntervalDays:  1,
+		StaleProcedureDays: 1,
+		DecayRate:           0.05,
+		DecayFloor:          0.1,
+		ConfidenceFloor:     0.1,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	// Add a procedure memory with high confidence
+	procID, err := ms.Add(context.Background(), store.AddParams{
+		Type:       "procedure",
+		Content:    "fresh procedure test",
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add procedure: %v", err)
+	}
+
+	// Set created_at to 60 days ago but accessed_at to just now (freshly accessed)
+	oldCreated := time.Now().UTC().AddDate(0, 0, -60).Format(time.RFC3339)
+	recentAccessed := time.Now().UTC().Format(time.RFC3339)
+	setTimestamps(t, ms, procID, oldCreated, recentAccessed)
+
+	// Run deep phase with apply=true — but the memory should be skipped entirely
+	// because it was recently accessed (accessedAt > cutoff)
+	result, err := d.Run(context.Background(), true, "deep")
+	if err != nil {
+		t.Fatalf("Run deep: %v", err)
+	}
+	if result.Deep == nil {
+		t.Fatal("expected Deep result")
+	}
+
+	// Recently accessed memory should not be decayed at all
+	if result.Deep.StaleProcedureDecayedCount != 0 {
+		t.Errorf("expected StaleProcedureDecayedCount=0 for freshly accessed procedure, got %d", result.Deep.StaleProcedureDecayedCount)
+	}
+
+	// Verify confidence unchanged
+	mem, err := ms.Get(context.Background(), procID, false)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if mem.Confidence != 0.9 {
+		t.Errorf("expected confidence unchanged at 0.9 for freshly accessed procedure, got %f", mem.Confidence)
+	}
+}
+
+func TestDreamer_DeepPhase_NonProcedureNotDoubleDecayed(t *testing.T) {
+	// Verify that a non-procedure memory (e.g., type "fact") older than staleProcedureDays
+	// decays at the normal rate, not double.
+	ms := newTestStore(t)
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:               ms,
+		DecayIntervalDays:  1,
+		StaleProcedureDays: 1,
+		DecayRate:           0.05,
+		DecayFloor:          0.1,
+		ConfidenceFloor:     0.1,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	// Add a fact memory with high confidence
+	factID, err := ms.Add(context.Background(), store.AddParams{
+		Type:       "fact",
+		Content:    "stale fact test",
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add fact: %v", err)
+	}
+
+	// Set created_at to 60 days ago and leave accessed_at empty (never accessed)
+	oldCreated := time.Now().UTC().AddDate(0, 0, -60).Format(time.RFC3339)
+	setTimestamps(t, ms, factID, oldCreated, "")
+
+	// Run deep phase with apply=true
+	result, err := d.Run(context.Background(), true, "deep")
+	if err != nil {
+		t.Fatalf("Run deep: %v", err)
+	}
+	if result.Deep == nil {
+		t.Fatal("expected Deep result")
+	}
+
+	// Non-procedure memory should NOT be counted as stale procedure double-decayed
+	if result.Deep.StaleProcedureDecayedCount != 0 {
+		t.Errorf("expected StaleProcedureDecayedCount=0 for non-procedure, got %d", result.Deep.StaleProcedureDecayedCount)
+	}
+
+	// Verify the actual confidence - should decay at normal rate: 0.9 - 0.05 = 0.85
+	mem, err := ms.Get(context.Background(), factID, false)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	expectedConf := 0.9 - 0.05
+	if mem.Confidence < expectedConf-0.01 || mem.Confidence > expectedConf+0.01 {
+		t.Errorf("expected non-procedure confidence ~%f (normal decay), got %f", expectedConf, mem.Confidence)
 	}
 }

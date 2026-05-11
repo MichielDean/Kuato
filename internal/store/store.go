@@ -154,6 +154,12 @@ func NewMemoryStore(cfg StoreConfig) (*MemoryStore, error) {
 	return ms, nil
 }
 
+// DB returns the underlying database connection for advanced queries.
+// Most callers should use the higher-level methods instead.
+func (ms *MemoryStore) DB() *sql.DB {
+	return ms.db
+}
+
 // Close closes the database connection. Safe to call multiple times.
 func (ms *MemoryStore) Close() error {
 	ms.mu.Lock()

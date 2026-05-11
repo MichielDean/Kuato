@@ -222,3 +222,33 @@ func TestWriteConfigYAML_Force(t *testing.T) {
 		t.Error("expected written=true when force=true")
 	}
 }
+
+func TestConfig_DreamerConfig_StaleProcedureDays(t *testing.T) {
+	// Verify that DefaultConfig maps StaleProcedureDays correctly
+	cfg := DefaultConfig()
+	dc := cfg.DreamerConfig()
+
+	if dc.StaleProcedureDays != 30 {
+		t.Errorf("expected StaleProcedureDays=30 from default config, got %d", dc.StaleProcedureDays)
+	}
+}
+
+func TestConfig_DreamerConfig_StaleProcedureDays_CustomValues(t *testing.T) {
+	dir := newTestConfigDir(t)
+	configPath := filepath.Join(dir, "config.yaml")
+
+	yamlContent := []byte("dream:\n  similarity_threshold: 0.85\n  decay_rate: 0.1\n  stale_procedure_days: 14\n")
+	if err := os.WriteFile(configPath, yamlContent, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	dc := cfg.DreamerConfig()
+	if dc.StaleProcedureDays != 14 {
+		t.Errorf("expected StaleProcedureDays=14 from custom config, got %d", dc.StaleProcedureDays)
+	}
+}

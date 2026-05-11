@@ -31,6 +31,7 @@ const (
 	defaultAutoLinkThreshold      = 0.85
 	defaultBehavioralThreshold    = 3
 	defaultBehavioralLookbackDays = 30
+	defaultStaleProcedureDays     = 30
 )
 
 // DreamerConfig contains the configuration for creating a Dreamer.
@@ -68,6 +69,11 @@ type DreamerConfig struct {
 	// BehavioralLookbackDays for REM insights. Defaults to 30.
 	BehavioralLookbackDays int
 
+	// StaleProcedureDays is the age threshold (in days) after which a procedure
+	// memory with no recent access is considered stale and decays at double rate.
+	// Defaults to 30. Zero value uses the default.
+	StaleProcedureDays int
+
 	// DiaryPath path for writing dream diary. Defaults from paths.GetDreamDiaryPath().
 	DiaryPath string
 
@@ -83,11 +89,12 @@ type LightPhaseResult struct {
 
 // DeepPhaseResult holds the results of the deep (decay/boost/merge) phase.
 type DeepPhaseResult struct {
-	DecayedCount     int
-	BoostedCount     int
-	InvalidatedCount int
-	MergedCount      int
-	AutoLinkedCount  int
+	DecayedCount              int
+	StaleProcedureDecayedCount int
+	BoostedCount               int
+	InvalidatedCount          int
+	MergedCount               int
+	AutoLinkedCount           int
 }
 
 // BehavioralInsight represents a behavioral pattern detected during REM phase.
@@ -115,20 +122,21 @@ type DreamResult struct {
 
 // Dreamer performs 3-phase dream consolidation.
 type Dreamer struct {
-	store                   *store.MemoryStore
-	similarityThreshold     float64
-	decayRate               float64
-	decayIntervalDays       int
-	decayFloor              float64
-	confidenceFloor         float64
-	boostThreshold          int
-	boostAmount             float64
-	autoLinkThreshold       float64
-	behavioralThreshold     int
-	behavioralLookbackDays  int
-	diaryPath               string
-	reportPath              string
-	mu                      sync.Mutex
+	store                    *store.MemoryStore
+	similarityThreshold      float64
+	decayRate                float64
+	decayIntervalDays        int
+	decayFloor               float64
+	confidenceFloor          float64
+	boostThreshold           int
+	boostAmount              float64
+	autoLinkThreshold        float64
+	behavioralThreshold      int
+	behavioralLookbackDays   int
+	staleProcedureDays       int
+	diaryPath                string
+	reportPath               string
+	mu                       sync.Mutex
 }
 
 // fmtErr wraps an error with the "llmem: dream:" domain prefix.
@@ -184,6 +192,10 @@ func NewDreamer(cfg DreamerConfig) (*Dreamer, error) {
 	if behavioralLookbackDays == 0 {
 		behavioralLookbackDays = defaultBehavioralLookbackDays
 	}
+	staleProcedureDays := cfg.StaleProcedureDays
+	if staleProcedureDays == 0 {
+		staleProcedureDays = defaultStaleProcedureDays
+	}
 	diaryPath := cfg.DiaryPath
 	if diaryPath == "" {
 		diaryPath = paths.GetDreamDiaryPath()
@@ -194,19 +206,20 @@ func NewDreamer(cfg DreamerConfig) (*Dreamer, error) {
 	}
 
 	return &Dreamer{
-		store:                  cfg.Store,
-		similarityThreshold:    similarityThreshold,
-		decayRate:               decayRate,
-		decayIntervalDays:       decayIntervalDays,
-		decayFloor:              decayFloor,
-		confidenceFloor:        confidenceFloor,
-		boostThreshold:          boostThreshold,
-		boostAmount:             boostAmount,
-		autoLinkThreshold:       autoLinkThreshold,
+		store:                    cfg.Store,
+		similarityThreshold:      similarityThreshold,
+		decayRate:                decayRate,
+		decayIntervalDays:        decayIntervalDays,
+		decayFloor:               decayFloor,
+		confidenceFloor:         confidenceFloor,
+		boostThreshold:           boostThreshold,
+		boostAmount:              boostAmount,
+		autoLinkThreshold:        autoLinkThreshold,
 		behavioralThreshold:     behavioralThreshold,
-		behavioralLookbackDays:  behavioralLookbackDays,
-		diaryPath:               diaryPath,
-		reportPath:              reportPath,
+		behavioralLookbackDays:   behavioralLookbackDays,
+		staleProcedureDays:       staleProcedureDays,
+		diaryPath:                diaryPath,
+		reportPath:               reportPath,
 	}, nil
 }
 
@@ -266,6 +279,7 @@ func (d *Dreamer) deepPhase(ctx context.Context, apply bool, mergeCandidates []*
 	// Decay idle memories
 	now := time.Now().UTC()
 	cutoff := now.AddDate(0, 0, -d.decayIntervalDays)
+	staleCutoff := now.AddDate(0, 0, -d.staleProcedureDays)
 
 	memories, err := d.store.Search(ctx, store.SearchParams{ValidOnly: true, Limit: 500})
 	if err != nil {
@@ -291,7 +305,14 @@ func (d *Dreamer) deepPhase(ctx context.Context, apply bool, mergeCandidates []*
 				}
 			}
 
-			newConf := clampFloat(m.Confidence-d.decayRate, d.decayFloor, 1.0)
+			// Check if this is a stale procedure eligible for double-decay
+			decayAmount := d.decayRate
+			isStaleProcedure := m.Type == "procedure" && isStaleProcedure(m, staleCutoff)
+			if isStaleProcedure {
+				decayAmount = d.decayRate * 2
+			}
+
+			newConf := clampFloat(m.Confidence-decayAmount, d.decayFloor, 1.0)
 			if newConf < d.confidenceFloor {
 				if apply {
 					_, err := d.store.Invalidate(ctx, m.ID, "Dream decay: confidence below floor")
@@ -306,6 +327,9 @@ func (d *Dreamer) deepPhase(ctx context.Context, apply bool, mergeCandidates []*
 				if err != nil {
 					slog.Debug("llmem: dream: failed to decay memory", "id", m.ID, "error", err)
 				}
+			}
+			if isStaleProcedure {
+				result.StaleProcedureDecayedCount++
 			}
 			result.DecayedCount++
 		}
@@ -593,6 +617,7 @@ func (d *Dreamer) WriteDiary(result *DreamResult) error {
 	if result.Deep != nil {
 		sb.WriteString("## Deep Phase\n\n")
 		sb.WriteString(fmt.Sprintf("- Decayed memories: %d\n", result.Deep.DecayedCount))
+		sb.WriteString(fmt.Sprintf("- Stale procedures double-decayed: %d\n", result.Deep.StaleProcedureDecayedCount))
 		sb.WriteString(fmt.Sprintf("- Boosted memories: %d\n", result.Deep.BoostedCount))
 		sb.WriteString(fmt.Sprintf("- Invalidated memories: %d\n", result.Deep.InvalidatedCount))
 		sb.WriteString(fmt.Sprintf("- Merged memories: %d\n", result.Deep.MergedCount))
@@ -664,6 +689,7 @@ func buildReportHTML(result *DreamResult) string {
 		sb.WriteString("<h2>Deep Phase</h2>\n")
 		sb.WriteString("<table><tr><th>Metric</th><th>Count</th></tr>\n")
 		sb.WriteString(fmt.Sprintf("<tr><td>Decayed</td><td>%d</td></tr>\n", result.Deep.DecayedCount))
+		sb.WriteString(fmt.Sprintf("<tr><td>Stale procedures double-decayed</td><td>%d</td></tr>\n", result.Deep.StaleProcedureDecayedCount))
 		sb.WriteString(fmt.Sprintf("<tr><td>Boosted</td><td>%d</td></tr>\n", result.Deep.BoostedCount))
 		sb.WriteString(fmt.Sprintf("<tr><td>Invalidated</td><td>%d</td></tr>\n", result.Deep.InvalidatedCount))
 		sb.WriteString(fmt.Sprintf("<tr><td>Merged</td><td>%d</td></tr>\n", result.Deep.MergedCount))
@@ -699,6 +725,20 @@ func sortPair(a, b string) string {
 		return a + ":" + b
 	}
 	return b + ":" + a
+}
+
+// isStaleProcedure checks whether a procedure memory is stale based on its
+// AccessedAt timestamp. A procedure is stale if it was never accessed
+// (AccessedAt is empty) or if its last access is older than the stale cutoff.
+func isStaleProcedure(m *store.Memory, staleCutoff time.Time) bool {
+	if m.AccessedAt == "" {
+		return true // never accessed = stale
+	}
+	accessed, err := time.Parse(time.RFC3339, m.AccessedAt)
+	if err != nil {
+		return true // unparseable = treat as stale
+	}
+	return !accessed.After(staleCutoff)
 }
 
 // clampFloat returns val clamped between min and max.
