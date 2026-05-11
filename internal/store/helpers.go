@@ -13,7 +13,6 @@ import (
 var (
 	reNonWord       = regexp.MustCompile(`[^\w]+`)
 	reValidTypeName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
-	reVecDimensions = regexp.MustCompile(`float\[(\d+)\]`)
 )
 
 // nowUTC returns the current UTC time formatted as ISO 8601 (RFC 3339).

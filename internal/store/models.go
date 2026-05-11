@@ -1,5 +1,5 @@
 // Package store provides a SQLite-backed memory store with FTS5 full-text
-// search and optional vec0 vector search for the LLMem project.
+// search and vector search via sqlite-vec for the LLMem project.
 package store
 
 // Memory represents a single memory record in the store.
@@ -167,11 +167,11 @@ type StoreConfig struct {
 	// If empty, defaults to ~/.config/llmem/memory.db.
 	DBPath string
 
-	// VecDimensions is the dimensionality for the vec0 embedding index.
+	// VecDimensions is the dimensionality for the embedding index.
 	// Defaults to 768 if zero. Must be positive.
 	VecDimensions int
 
-	// DisableVec skips vec0 virtual table creation and vector search.
+	// DisableVec skips vec virtual table creation and vector search.
 	DisableVec bool
 
 	// RegisteredTypes lists the memory types to register at construction.
