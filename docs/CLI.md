@@ -168,7 +168,7 @@ Run the dream consolidation cycle, which performs automated memory maintenance i
 
 - **Light phase:** Sort and deduplicate near-duplicate memories (cosine similarity ≥ `dream.similarity_threshold`).
 - **Deep phase:** Score, promote, decay, and merge memories. Also promotes inbox items to long-term memory (items with attention_score ≥ `dream.min_score` become permanent; lower-scored items are evicted). Decays confidence on idle memories. Boosts frequently accessed memories. Performs LLM-assisted merging of similar pairs. Auto-links memories with high cosine similarity (≥ `dream.auto_link_threshold`, default 0.85).
-- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection).
+- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection). When Ollama is available, generates actionable behavioral insights via LLM; falls back to count-based summaries when Ollama is unavailable.
 
 Without `--apply`, the dream cycle runs as a **dry run** — output is prefixed with `[DRY RUN]` and no changes are written to the database.
 
@@ -178,7 +178,7 @@ Flags:
 - `--phase`: Run a specific dream phase only. Choices: `light`, `deep`, `rem`. Default: all phases.
 - `--report PATH`: Write an HTML dream report to the given path. The path is validated — it must not target a protected system directory (e.g. `/etc`, `/var`), contain `..` traversal, or be a symlink. Paths outside the llmem home directory are allowed (e.g. custom report output locations). On validation failure, prints an error to stderr and exits with code 1.
 
-All dream configuration (thresholds, model, schedule, etc.) is read from the `dream:` section of `config.yaml` (see [Configuration](../docs/CONFIGURATION.md)). The `ollama_url` is read from the `memory:` section, not `dream:`.
+All dream configuration (thresholds, model, schedule, etc.) is read from the `dream:` section of `config.yaml` (see [Configuration](../docs/CONFIGURATION.md)). The `dream.ollama_url` and `dream.model` fields control Ollama connectivity for behavioral insight generation; they fall back to `memory.ollama_url` and `memory.extract_model` respectively if not set.
 
 Output is printed to stdout. On `--report` path validation errors, the error message is printed to stderr.
 
