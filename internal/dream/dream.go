@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -334,7 +333,7 @@ func (d *Dreamer) Run(ctx context.Context, apply bool, phase string) (*DreamResu
 
 	// Write proposed-changes.md if applied and REM phase has behavioral insights
 	if apply && result.Rem != nil && len(result.Rem.BehavioralInsights) > 0 {
-		if err := d.WriteProposedChanges(result); err != nil {
+		if err := d.WriteProposedChanges(ctx, result); err != nil {
 			slog.Warn("llmem: dream: failed to write proposed changes", "error", err)
 		}
 	}
@@ -682,24 +681,12 @@ func (d *Dreamer) extractBehavioralInsights(ctx context.Context, apply bool) []B
 					Content:    contentSnippet,
 					Source:     "dream_rem",
 					Confidence: 0.7,
-					Metadata:   map[string]any{"proposed": true, "source": "dream_rem", "category": cat, "occurrences": count},
+					Metadata:   map[string]any{"proposed": true, "source": "dream_rem", "category": cat, "occurrences": count, "proposed_changes_link": d.proposedChangesPath},
 				})
 				if err != nil {
 					slog.Debug("llmem: dream: failed to store REM insight", "error", err)
 				} else {
 					insightID = id
-					// Link the procedure memory to its proposed-changes.md entry
-					metadata, getErr := d.store.Get(ctx, id, false)
-					if getErr == nil && metadata != nil {
-						mergedMetadata := maps.Clone(metadata.Metadata)
-						if mergedMetadata == nil {
-							mergedMetadata = map[string]any{}
-						}
-						mergedMetadata["proposed_changes_link"] = d.proposedChangesPath
-						if _, updateErr := d.store.Update(ctx, store.UpdateParams{ID: id, Metadata: mergedMetadata}); updateErr != nil {
-							slog.Debug("llmem: dream: failed to update proposed_changes_link metadata", "id", id, "error", updateErr)
-						}
-					}
 				}
 			}
 			insights = append(insights, BehavioralInsight{
@@ -864,7 +851,7 @@ func (d *Dreamer) WriteDiary(result *DreamResult) error {
 // Uses sync.Mutex for concurrency safety within the process.
 // Only writes when result.Rem has behavioral insights.
 // Specific to Dreamer; not reusable outside the dream package.
-func (d *Dreamer) WriteProposedChanges(result *DreamResult) error {
+func (d *Dreamer) WriteProposedChanges(ctx context.Context, result *DreamResult) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -906,7 +893,7 @@ func (d *Dreamer) WriteProposedChanges(result *DreamResult) error {
 	// Determine if we should try to get LLM-generated SKILL PATCH content
 	useLLM := false
 	if d.ollama != nil {
-		availCtx, availCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		availCtx, availCancel := context.WithTimeout(ctx, 5*time.Second)
 		useLLM = d.ollama.IsAvailable(availCtx)
 		availCancel()
 	}
@@ -931,7 +918,7 @@ func (d *Dreamer) WriteProposedChanges(result *DreamResult) error {
 		// Generate Do and Verify from the LLM or use fallback
 		if useLLM {
 			prompt := buildBehavioralInsightPrompt(insight.Category, insight.Count, d.behavioralLookbackDays, categorySamples)
-			llmCtx, llmCancel := context.WithTimeout(context.Background(), defaultDreamModelTimeout)
+			llmCtx, llmCancel := context.WithTimeout(ctx, defaultDreamModelTimeout)
 			response, llmErr := d.ollama.Generate(llmCtx, prompt, d.model)
 			llmCancel()
 			if llmErr != nil {
@@ -959,7 +946,7 @@ func (d *Dreamer) WriteProposedChanges(result *DreamResult) error {
 
 		if useLLM {
 			skillPrompt := buildSkillPatchPrompt(insight.Category, insight.Count, d.behavioralLookbackDays, categorySamples)
-			skillCtx, skillCancel := context.WithTimeout(context.Background(), defaultDreamModelTimeout)
+			skillCtx, skillCancel := context.WithTimeout(ctx, defaultDreamModelTimeout)
 			skillResponse, skillErr := d.ollama.Generate(skillCtx, skillPrompt, d.model)
 			skillCancel()
 			if skillErr != nil {

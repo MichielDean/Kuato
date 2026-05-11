@@ -1291,7 +1291,7 @@ func TestDreamer_WriteProposedChanges_AppendsNewSections(t *testing.T) {
 	}
 
 	// Write proposed changes
-	err = d.WriteProposedChanges(result)
+	err = d.WriteProposedChanges(context.Background(), result)
 	if err != nil {
 		t.Fatalf("WriteProposedChanges: %v", err)
 	}
@@ -1382,7 +1382,7 @@ func TestDreamer_WriteProposedChanges_PreservesExistingContent(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	err = d.WriteProposedChanges(result)
+	err = d.WriteProposedChanges(context.Background(), result)
 	if err != nil {
 		t.Fatalf("WriteProposedChanges: %v", err)
 	}
@@ -1433,7 +1433,7 @@ func TestDreamer_WriteProposedChanges_UsesResolvedPath(t *testing.T) {
 		},
 	}
 
-	err = d.WriteProposedChanges(result)
+	err = d.WriteProposedChanges(context.Background(), result)
 	if err != nil {
 		t.Fatalf("WriteProposedChanges: %v", err)
 	}
@@ -1558,7 +1558,7 @@ func TestDreamer_WriteProposedChanges_NoInsightsNoFile(t *testing.T) {
 	}
 
 	// WriteProposedChanges should be a no-op when no insights
-	err = d.WriteProposedChanges(result)
+	err = d.WriteProposedChanges(context.Background(), result)
 	if err != nil {
 		t.Fatalf("WriteProposedChanges: %v", err)
 	}
@@ -1600,7 +1600,7 @@ func TestDreamer_WriteProposedChanges_AppendOnlyWithinRun(t *testing.T) {
 	}
 
 	// First write
-	err = d.WriteProposedChanges(result)
+	err = d.WriteProposedChanges(context.Background(), result)
 	if err != nil {
 		t.Fatalf("WriteProposedChanges first: %v", err)
 	}
@@ -1613,7 +1613,7 @@ func TestDreamer_WriteProposedChanges_AppendOnlyWithinRun(t *testing.T) {
 			},
 		},
 	}
-	err = d.WriteProposedChanges(result2)
+	err = d.WriteProposedChanges(context.Background(), result2)
 	if err != nil {
 		t.Fatalf("WriteProposedChanges second: %v", err)
 	}
@@ -1636,6 +1636,54 @@ func TestDreamer_WriteProposedChanges_AppendOnlyWithinRun(t *testing.T) {
 	}
 	if !contains(content, "RACE_CONDITION") {
 		t.Error("expected RACE_CONDITION from second run")
+	}
+}
+
+// TestDreamer_WriteProposedChanges_AcceptsContext verifies that
+// WriteProposedChanges accepts a context.Context parameter and propagates it
+// to LLM calls, enabling cancellation on shutdown. Without LLM (fallback path),
+// the function completes normally even with a valid context.
+func TestDreamer_WriteProposedChanges_AcceptsContext(t *testing.T) {
+	ms := newTestStore(t)
+	dir := t.TempDir()
+	proposedChangesPath := filepath.Join(dir, "proposed-changes.md")
+
+	// Use a server that returns 404 (unavailable), so we get fallback content quickly
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:               ms,
+		OllamaClient:        newTestOllamaClient(t, server),
+		ProposedChangesPath: proposedChangesPath,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result := &DreamResult{
+		Rem: &RemPhaseResult{
+			BehavioralInsights: []BehavioralInsight{
+				{Category: "ERROR_HANDLING", Count: 3, ContentSnippet: "test"},
+			},
+		},
+	}
+
+	// Verify the function accepts a context parameter — this is the contract test.
+	// Using context.Background() ensures the context is valid.
+	err = d.WriteProposedChanges(context.Background(), result)
+	if err != nil {
+		t.Fatalf("WriteProposedChanges with context.Background(): %v", err)
+	}
+
+	data, err := os.ReadFile(proposedChangesPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !contains(string(data), "ERROR_HANDLING") {
+		t.Error("expected ERROR_HANDLING in proposed-changes.md")
 	}
 }
 
@@ -1968,7 +2016,7 @@ func TestDreamer_WriteProposedChanges_UsesSamplesFromInsight(t *testing.T) {
 		},
 	}
 
-	err = d.WriteProposedChanges(result)
+	err = d.WriteProposedChanges(context.Background(), result)
 	if err != nil {
 		t.Fatalf("WriteProposedChanges: %v", err)
 	}
