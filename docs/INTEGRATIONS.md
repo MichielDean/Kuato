@@ -1,10 +1,42 @@
 # LLMem Integrations
 
-Integration guides for OpenCode, Copilot CLI, and custom tool implementations. [Back to README](../README.md)
+Integration guides for OpenCode, Claude Code, Copilot CLI, and custom tool implementations. [Back to README](../README.md)
 
-## OpenCode Integration (Ecosystem)
+## Architecture: Plugin-First, Zero-Config
 
-LLMem integrates with [OpenCode](https://opencode.ai) through the `opencode-llmem` npm package, providing session lifecycle hooks that inject relevant memories and extract new ones automatically.
+LLMem uses a **plugin-first architecture**. The plugin handles automatic memory lifecycle hooks — context injection at session start, memory extraction on idle/end, and context preservation during compaction. **No manual instruction editing required.**
+
+```
+Agent Session
+    │
+    ├── Plugin (auto, no instructions needed)
+    │   ├── session.created/start → llmem stats + search → inject context
+    │   ├── session.idle/end      → llmem hook idle/ending → extract + introspect
+    │   └── session.compacting    → llmem context --compacting → preserve memories
+    │
+    ├── Skills (on-demand, loaded by trigger)
+    │   ├── llmem                      → CLI reference, memory types, commands
+    │   ├── llmem-setup                → Install and configure LLMem
+    │   ├── introspection              → Self-assessment framework, error taxonomy
+    │   └── introspection-review-tracker → Review outcome tracking
+    │
+    └── Custom Tools (structural, zero-instruction)
+        ├── llmem-search   → Search memories
+        ├── llmem-add      → Add a memory
+        ├── llmem-context  → Get context for a topic
+        ├── llmem-invalidate → Soft-delete a memory
+        ├── llmem-stats    → Show memory statistics
+        └── llmem-hook     → Run extraction hook
+```
+
+### Why Plugin-First?
+
+- **No instruction pollution.** The plugin injects context automatically. Skills load on-demand. Your AGENTS.md/CLAUDE.md stays clean.
+- **Platform-agnostic core.** Same Go binary, same skills, same CLI across OpenCode, Claude Code, and Copilot CLI. Only the thin adapter plugin differs.
+- **Single install command.** `npm install` deploys skills, plugins, and tools for your platform.
+- **No per-platform instruction docs to maintain.** The plugin handles behavioral injection, not 80-line instruction blocks.
+
+## OpenCode Integration
 
 ### Installation
 
@@ -16,209 +48,134 @@ curl -sSL https://raw.githubusercontent.com/MichielDean/LLMem/main/setup.sh | ba
 
 #### Manual install
 
-If you installed from source instead of using the setup script, run `npm install` from the `opencode-llmem/` directory inside the LLMem repo. After installation, the `postinstall` script copies skill directories to `~/.agents/skills/` where OpenCode discovers them. No manual setup is required — the hooks are discovered automatically on the next OpenCode session.
-
-### Session Hooks
-
-The `opencode-llmem` package registers three session lifecycle hooks:
-
-| Event | Hook | Behavior |
-|-------|------|----------|
-| `session.created` | `on_created(session_id)` | Queries the memory store for relevant memories and writes a context file for the new session. |
-| `session.idle` | `on_idle(session_id)` | Extracts memories from the session transcript after a 30-second debounce period. |
-| `session.compacting` | `on_compacting(session_id)` | Injects high-confidence key memories to preserve context during compaction. |
-
-These hooks run the `llmem` CLI under the hood, so the Python package must be installed from source and available on your `PATH`. Install it from the repo root:
-
 ```bash
 git clone https://github.com/MichielDean/LLMem.git
-cd LLMem
-pip install .
+cd LLMem && ./setup.sh
+```
+
+The setup script installs the Go binary, runs `npm install` (which deploys skills, plugins, and tools), and initializes the database.
+
+### Plugin
+
+The OpenCode plugin (`plugins/opencode/llmem.js`) handles:
+
+| Event | Action |
+|-------|--------|
+| `session.created` | Runs `llmem stats` + `llmem search behavioral/proposed` — injects results as log context |
+| `session.idle` | Runs `llmem hook idle <session_id>` — extracts memories from transcript |
+| `session.ending` | (not yet wired — agent-driven via skills) |
+| `experimental.session.compacting` | Runs `llmem context --compacting` — preserves key memories |
+
+The plugin is deployed to `~/.config/opencode/plugins/llmem.js` by the install script. No manual configuration needed — OpenCode auto-discovers plugins in this directory.
+
+To explicitly add it to your `opencode.json`:
+
+```json
+{
+  "plugin": ["llmem"]
+}
+```
+
+### Custom Tools
+
+The `.opencode/tools/` directory contains six type-safe tools that the agent can invoke directly without loading a skill:
+
+| Tool | CLI Equivalent | Description |
+|------|----------------|-------------|
+| `llmem-search` | `llmem search <query> --json` | Search memories; returns JSON array |
+| `llmem-add` | `llmem add --type T --content C` | Add a memory; returns ID and type |
+| `llmem-context` | `llmem search <query> --limit 20` | Retrieve formatted context for a topic |
+| `llmem-invalidate` | `llmem invalidate <ID>` | Invalidate a memory by ID |
+| `llmem-stats` | `llmem stats` | Show memory statistics |
+| `llmem-hook` | `llmem hook <type>` | Run the extraction hook |
+
+### Skills
+
+Four skills ship with LLMem and are installed to `~/.agents/skills/`:
+
+| Skill | Description |
+|-------|-------------|
+| **llmem** | Full CLI reference, memory types, commands, dream config |
+| **llmem-setup** | Install, configure, and integrate LLMem into a harness |
+| **introspection** | Self-assessment framework, error taxonomy, vigilance checks |
+| **introspection-review-tracker** | Review outcome tracking for code reviews |
+
+### Optional: AGENTS.md Pointer
+
+If you want a persistent reminder (not required — the plugin handles context injection), add this minimal line:
+
+```markdown
+## Memory
+
+Plugin-managed. Search when uncertain: `llmem search "topic"`. Add when you learn: `llmem add --type fact --content "..."`.
 ```
 
 ### Configuring Providers
 
-LLMem uses a provider abstraction layer to decouple embedding and text generation from any specific LLM backend. Provider configuration is managed in `~/.config/llmem/config.yaml`.
-
-See the [Provider Configuration](PROVIDERS.md#provider-configuration) section for the full YAML reference, including settings for Ollama, OpenAI, Anthropic, and local (sentence-transformers) providers.
-
-#### Quick Provider Setup
-
-The simplest way to configure providers is to run:
+LLMem uses a provider abstraction layer. The simplest configuration:
 
 ```bash
 llmem init
 ```
 
-This interactive command detects available providers (Ollama, OpenAI, Anthropic, local) and writes a sensible `config.yaml`. For non-interactive setup:
+This detects available providers (Ollama, OpenAI, Anthropic, local) and writes `config.yaml`. For non-interactive setup:
 
 ```bash
 llmem init --non-interactive
 ```
 
-### OpenCode Tools
+See [Provider Configuration](PROVIDERS.md) for the full YAML reference.
 
-LLMem also ships six type-safe OpenCode tools that provide direct access to the memory store from within OpenCode sessions:
+## Claude Code / Copilot CLI Integration
 
-| Tool | Description |
-|------|-------------|
-| `llmem-search` | Search memories via FTS5 full-text search |
-| `llmem-add` | Add a new memory with type, content, and confidence |
-| `llmem-context` | Retrieve formatted context for a topic within a character budget |
-| `llmem-invalidate` | Invalidate a memory by ID with optional reason |
-| `llmem-stats` | Show memory statistics (total, active, expired, by type) |
-| `llmem-hook` | Run the extraction hook on session transcripts |
+The agent plugin (`plugins/agent/`) uses the standard `.claude-plugin/` format and is compatible with both Claude Code and GitHub Copilot CLI.
 
-These tools are installed alongside the root `llmem` npm package (the skills distribution package) and are discovered by OpenCode automatically.
-
-### Architecture
+### Plugin Structure
 
 ```
-OpenCode Session
-    │
-    ├── session.created ──► on_created() ──► llmem CLI ──► MemoryStore (SQLite)
-    │                                                      ├─ FTS5 search
-    │                                                      └─ Vector search
-    ├── session.idle ────► on_idle() ────► llmem CLI ──► ExtractionEngine
-    │                                                      └─ Embed + store
-    └── session.compacting ► on_compacting() ► llmem CLI ► High-confidence memories
+plugins/agent/
+├── .claude-plugin/
+│   └── plugin.json          # Plugin manifest
+├── hooks/
+│   └── hooks.json           # Session lifecycle hooks
+└── skills/
+    ├── llmem/SKILL.md
+    ├── llmem-setup/SKILL.md
+    ├── introspection/SKILL.md
+    └── introspection-review-tracker/SKILL.md
 ```
 
-The `opencode-llmem` package acts as a thin adapter between OpenCode's plugin system and the `llmem` Python CLI. All memory operations go through the Python package, which provides the full-featured store, search, and extraction pipeline.
-
-### OpenCode Custom Tools
-
-LLMem ships six type-safe OpenCode tools that replace raw `llmem` CLI calls with described, schema-validated tool invocations. Tools run `llmem` as a subprocess with a 60-second timeout and return strings — errors are prefixed with `Error:`.
-
-| Tool | CLI Equivalent | Description |
-|------|----------------|-------------|
-| `llmem-search` | `llmem search <query> --json` | Search memories via FTS5; returns JSON array |
-| `llmem-add` | `llmem add --type T --content C` | Add a new memory; returns ID and type |
-| `llmem-context` | `llmem search <query> --json --limit 20` | Retrieve formatted context for a topic; returns a context block truncated to a character budget |
-| `llmem-invalidate` | `llmem invalidate <ID>` | Invalidate a memory by ID with optional reason |
-| `llmem-stats` | `llmem stats` | Show memory statistics (total, active, expired, by type) |
-| `llmem-hook` | `llmem hook` | Run the extraction hook on session transcripts |
-
-#### `llmem-search`
-
-```
-llmem-search(query: string, type?: string, limit?: number)
-```
-
-- `query` (required): Search query for FTS5 full-text search.
-- `type` (optional): Filter by memory type (fact, decision, preference, etc.).
-- `limit` (optional, min 1): Maximum number of results (default: 20).
-
-Returns a JSON string of matching memory objects on success, or an `Error:` string on failure (CLI error, invalid JSON, non-array response).
-
-#### `llmem-add`
-
-```
-llmem-add(type: string, content: string, source?: string, confidence?: number)
-```
-
-- `type` (required): Memory type (`fact`, `decision`, `preference`, `event`, `project_state`, `procedure`, `conversation`, `self_assessment`).
-- `content` (required): Memory content text.
-- `source` (optional): Source of memory (default: `manual`).
-- `confidence` (optional, 0–1): Confidence score (default: 0.8).
-
-Returns the memory ID and type on success, or an `Error:` string on failure (invalid type, CLI error).
-
-#### `llmem-context`
-
-```
-llmem-context(query: string, budget?: number)
-```
-
-- `query` (required): Topic or query to recall context for.
-- `budget` (optional, min 0): Character budget for the returned context block (default: 4000).
-
-Searches memories and formats results as a context block suitable for LLM injection:
-
-```
-- [fact] Project uses SQLite with WAL mode
-- [decision] Use pytest for testing (summary: Testing framework choice)
-```
-
-Returns `"No memories found."` if no results match, or an `Error:` string on failure. Truncation is Unicode-safe (splits on code points, not UTF-16 code units).
-
-#### `llmem-invalidate`
-
-```
-llmem-invalidate(id: string, reason?: string)
-```
-
-- `id` (required): Memory ID to invalidate.
-- `reason` (optional): Reason for invalidation.
-
-Returns a confirmation string on success, or an `Error:` string if the memory is not found or the CLI fails.
-
-#### `llmem-stats`
-
-```
-llmem-stats()
-```
-
-Takes no arguments. Returns a formatted statistics string (total, active, expired counts, and breakdown by type), or an `Error:` string on failure.
-
-#### `llmem-hook`
-
-```
-llmem-hook(force?: boolean, noEmbed?: boolean, noIntrospect?: boolean, file?: string, directory?: string)
-```
-
-- `force` (optional): Force re-extraction of already-processed sessions.
-- `noEmbed` (optional): Skip embedding generation (faster, no Ollama required).
-- `noIntrospect` (optional): Skip introspection for trivial sessions.
-- `file` (optional): Path to a specific transcript file. Resolved relative to `context.directory`; paths escaping the directory scope are rejected.
-- `directory` (optional): Path to a directory of transcript files. Same containment check as `file`.
-
-Returns the extraction result on success, or an `Error:` string on failure (path traversal, CLI error).
-
-#### Error Handling
-
-All tools follow a consistent contract:
-
-- **Success**: returns the CLI output as a string.
-- **Error**: returns a string starting with `Error:`.
-- **CLI not found**: returns `"Error: llmem CLI not found on PATH"` (exit code 127).
-- **Timeout**: returns `"Error: llmem <cmd> timed out after 60000ms"` (exit code 124).
-- Tools never throw — all errors are returned as strings.
-
-### OpenCode Integration (npm)
-
-The `opencode-llmem` npm package provides a JavaScript plugin that integrates LLMem session hooks into OpenCode via its plugin interface.
-
-#### Installation
+### Installation
 
 ```bash
-npm install opencode-llmem
+claude plugin install ~/.claude/plugins/llmem
+# Or for testing:
+claude --plugin-dir ./plugins/agent
 ```
 
-The `postinstall` script copies the hook source files to `~/.agents/plugins/llmem/` so OpenCode can discover and load them.
+The `hooks.json` declares:
 
-#### Usage
+| Event | Action |
+|-------|--------|
+| `SessionStart` | Runs `llmem stats` + behavioral + proposed searches — stdout injected as context |
+| `SessionEnd` | Runs `llmem hook ending` — extracts memories and runs introspection |
+| `PreCompact` | Runs `llmem context --compacting` — preserves key memories |
 
-Register all three session lifecycle hooks on an OpenCode session object:
+The `SessionStart` hook's **stdout is added as context that Claude can see and act on** — this is the key mechanism for zero-config integration. The agent sees the memory context at session start without any AGENTS.md modifications.
 
-```javascript
-const llmem = require("opencode-llmem");
+### Skills
 
-// In your OpenCode plugin setup:
-llmem.register(session);
+Skills are namespaced under the plugin: `/llmem:llmem`, `/llmem:llmem-setup`, etc. They're discovered automatically when the plugin is enabled.
+
+### Optional: CLAUDE.md Pointer
+
+If you want a persistent reminder (not required — the `SessionStart` hook handles context injection):
+
+```markdown
+## Memory
+
+Plugin-managed. Search when uncertain: `llmem search "topic"`. Add when you learn: `llmem add --type fact --content "..."`.
 ```
-
-This registers handlers for the `session.created`, `session.idle`, and `session.compacting` events. Each handler:
-
-- Validates the session ID against path traversal attacks.
-- Rate-limits process spawning to prevent flooding (1-second cooldown, max 3 concurrent processes).
-- Calls the `llmem` CLI via `execFileSync` (no shell, no injection risk).
-- Writes the resulting context to the LLMem context directory.
-- Degrades gracefully — errors are logged but never block the session.
-
-#### Configuration
-
-The JavaScript hooks read configuration from `LMEM_HOME/config.yaml` (or `~/.config/llmem/config.yaml` by default). The `opencode.context_dir` key controls where context files are written.
 
 ## Future Integrations
 
@@ -226,7 +183,12 @@ After installation, verify the skills are discoverable:
 
 ```bash
 ls ~/.agents/skills/llmem ~/.agents/skills/introspection ~/.agents/skills/introspection-review-tracker
-ls ~/.agents/agents/memory-assistant.agent.md
+
+# OpenCode plugin
+ls ~/.config/opencode/plugins/llmem.js
+
+# Claude Code / Copilot plugin
+ls ~/.claude/plugins/llmem/.claude-plugin/plugin.json
 ```
 
 Run the bundled tests:

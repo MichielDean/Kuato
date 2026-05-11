@@ -1,7 +1,7 @@
 {
   "name": "llmem",
-  "version": "1.0.0",
-  "description": "LLMem skills for OpenCode: llmem, llmem-setup, introspection, introspection-review-tracker",
+  "version": "1.1.0",
+  "description": "LLMem — structured memory with semantic search for AI agents. Skills, plugins, and tools.",
   "license": "MIT",
   "scripts": {
     "postinstall": "node install.js",
@@ -10,16 +10,20 @@
   "files": [
     "skills/",
     "templates/",
+    "plugins/",
     "install.js",
     "test.js",
     ".opencode/"
   ],
   "keywords": [
     "opencode",
+    "claude-code",
+    "copilot",
     "skills",
     "agent",
-    "git",
-    "code-review",
-    "testing"
+    "memory",
+    "embedding",
+    "semantic-search",
+    "plugin"
   ]
 }

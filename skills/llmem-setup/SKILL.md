@@ -1,11 +1,9 @@
 ---
 name: llmem-setup
 description: >
-  Install and configure LLMem for an agent harness. Handles cloning, pip/npm
-  installs, llmem init, and harness integration (AGENTS.md injection or minimal
-  harness creation). Use when setting up memory for a new or existing agent.
-  Triggers on: "install llmem", "set up memory", "configure memory",
-  "add llmem to harness", "memory setup".
+  Install and configure LLMem for an agent harness. Handles CLI install, plugin
+  deployment, skill registration, and provider setup. Triggers on: "install llmem",
+  "set up memory", "configure memory", "add llmem to harness", "memory setup".
 license: MIT
 ---
 
@@ -20,214 +18,225 @@ Install, configure, and integrate LLMem into an agent's harness so it can use st
 - After cloning LLMem and before first use
 - When an agent asks "how do I get llmem working?"
 
+## Installation Philosophy
+
+**Plugin-first, zero-config instructions.** LLMem uses platform plugins to inject memory context automatically at session start, extract memories on idle/end, and preserve context during compaction. This means:
+
+- **No manual instruction editing required.** The plugin handles automatic lifecycle hooks.
+- **Skills provide on-demand behavioral guidance.** When the agent encounters a memory-related situation, it loads the skill. No need to paste 80 lines of instructions into AGENTS.md.
+- **One line in config enables everything.** Add the plugin and you're done.
+
 ## Procedure
 
-### Step 1: Install LLMem
-
-Choose the right installation method based on the agent's platform:
-
-**All agents (CLI + library):**
+### Step 1: Install LLMem CLI
 
 ```bash
+# Option A: Install from source (Go binary)
 git clone https://github.com/MichielDean/LLMem.git
-cd LLMem && ./setup.sh --plugin <platform>
-```
+cd LLMem && make build
+# Binary at ~/.local/bin/llmem, symlinked to /usr/local/bin/llmem
 
-Where `<platform>` is:
-- `opencode` — for OpenCode-based agents
-- `copilot` — for GitHub Copilot CLI agents
-- `both` — for agents using both (default)
-- `none` — CLI only, no agent plugins
-
-**Or the one-liner:**
-
-```bash
+# Option B: One-liner
 curl -sSL https://raw.githubusercontent.com/MichielDean/LLMem/main/setup.sh | bash
 ```
 
-**Platform-specific plugin install (after CLI install):**
-
-OpenCode:
-
+Verify:
 ```bash
-cd LLMem/opencode-llmem && npm install
+llmem --help
+llmem stats
 ```
-
-Copilot CLI — use the `copilot plugin install` command with the repo subdirectory syntax. See [Installation docs](../docs/INSTALLATION.md) for the exact command.
 
 ### Step 2: Initialize
 
 ```bash
-llmem init
+llmem init          # Interactive — detects providers
+llmem init --non-interactive  # Script-friendly — uses defaults
 ```
 
-This creates `~/.config/llmem/config.yaml` and `~/.config/llmem/memory.db`. It detects available providers automatically.
-
-For non-interactive setup (scripts, CI):
-
-```bash
-llmem init --non-interactive
-```
+This creates `~/.config/llmem/config.yaml` and `~/.config/llmem/memory.db`.
 
 ### Step 3: Configure Provider
 
-LLMem needs an embedding/generation provider. Choose one:
+Choose one:
 
-**Option A: Ollama (local, free)**
-
+**Ollama (local, free):**
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
 ollama pull nomic-embed-text
 ollama pull qwen2.5:1.5b
+# Config auto-detected
 ```
 
-Config is auto-detected. No additional setup needed.
-
-**Option B: OpenAI (cloud, needs API key)**
-
+**OpenAI (cloud, needs API key):**
 ```bash
 export OPENAI_API_KEY=sk-...
+llmem init --non-interactive
 ```
 
-Then run `llmem init --non-interactive` to regenerate config.
-
-**Option C: Local (no server, uses sentence-transformers)**
-
+**Local (sentence-transformers, no server):**
 ```bash
 pip install ".[local]"
+# Set provider.default: local in config.yaml
 ```
 
-Config requires setting `provider.default: local` in `~/.config/llmem/config.yaml`.
+**None (FTS5-only mode):** Works without any provider. Semantic search disabled.
 
-**Option D: None (FTS5-only mode)**
+### Step 4: Install Plugin and Skills
 
-Works without any provider. Semantic search is disabled. Full-text search still works.
+**The recommended approach — fully automatic:**
 
-### Step 4: Integrate Into Harness
-
-An agent harness needs three things to use memory:
-
-1. **AGENTS.md (or equivalent) memory instructions** — tells the agent when to read/write memory
-2. **Session hooks** — automatically inject context on session start and extract on idle
-3. **Provider config** — already done in Step 3
-
-#### Existing Harness (has AGENTS.md)
-
-Add memory instructions to the agent's AGENTS.md. Insert these sections:
-
-```markdown
-## Memory — Search at Every Decision Point
-
-Memory is working memory, not a startup ritual. Search before assuming.
-
-**Session start — MANDATORY:**
-1. `llmem stats` — check memory health
-2. `llmem search "behavioral" --type self_assessment --limit 5` — surface recurring error patterns
-3. `llmem search "proposed" --type procedure --limit 5` — check for proposed procedural memories
-
-**Mid-session search triggers — search whenever:**
-- Looking up how something works
-- Making a choice between approaches
-- Encountering a project-specific name/concept
-- Answering a state question ("where are we with X?")
-- Topic shift (debugging → design, one codebase → another)
-
-**Write when you learn:**
-- `llmem add --type decision --content "chose X over Y because Z"` — decisions and rationale
-- `llmem add --type fact --content "project uses pytest for testing"` — objective truths
-- `llmem add --type preference --content "prefer dark theme" --confidence 0.9` — user preferences
-- `llmem add --type procedure --content "how to deploy: step 1, step 2..."` — how-to knowledge
-
-**Invalidate, don't delete:**
-- `llmem invalidate <id> --reason "no longer relevant"` — soft-delete, stays for reference
-```
-
-#### New Harness (no AGENTS.md)
-
-Create a minimal harness with memory support:
+The npm postinstall script deploys everything: skills, platform plugin, and tools.
 
 ```bash
-mkdir -p harness
-cp LLMem/templates/identity.md harness/identity.md
-cp LLMem/templates/rules.md harness/rules.md
-cp LLMem/templates/user.md harness/user.md
+cd LLMem && npm install
 ```
 
-Then edit `harness/identity.md` to set the agent's name and personality. Edit `harness/user.md` to set the user's name and timezone. Add the memory instructions from "Existing Harness" above into `harness/rules.md`.
+This runs `install.js` which:
+1. Copies 4 skill directories to `~/.agents/skills/`
+2. Auto-detects your platform (OpenCode, Claude Code, Copilot CLI)
+3. Deploys the correct plugin to the right location
+4. Deploys OpenCode custom tools to `.opencode/tools/` (if OpenCode detected)
 
-#### OpenCode Agents
+**Manual plugin deployment:**
 
-OpenCode agents need the `opencode-llmem` plugin (installed in Step 1) and the llmem skill registered in `opencode.json`:
+If you can't use npm install, deploy manually:
+
+| Platform | Plugin file | Target |
+|----------|------------|--------|
+| OpenCode | `plugins/opencode/llmem.js` | `~/.config/opencode/plugins/llmem.js` |
+| Claude Code / Copilot CLI | Entire `plugins/agent/` directory | `~/.claude/plugins/llmem/` |
+
+**Force a specific platform:**
+
+```bash
+node install.js --platform opencode    # OpenCode only
+node install.js --platform claude-code # Claude Code / Copilot only
+node install.js --platform both         # Both platforms
+node install.js --platform none         # Skills only, no plugins
+```
+
+### Step 5: Configure Agent (Platform-Specific)
+
+#### OpenCode
+
+Add the plugin to your `opencode.json`:
 
 ```json
 {
-  "skills": ["llmem", "llmem-setup"]
+  "plugin": ["llmem"]
 }
 ```
 
-The plugin handles session hooks automatically:
-- `session.created` → `llmem context --session-id <session_id>` (injects relevant memories)
-- `session.idle` → `llmem hook --type idle --session-id <session_id>` (extracts new memories)
-- `session.compacting` → `llmem context --compacting --session-id <session_id>` (preserves key memories)
+Or, if using local plugin deployment (the file was already copied by install.js), no config needed — OpenCode auto-discovers plugins in `~/.config/opencode/plugins/`.
 
-Skills are installed to `~/.agents/skills/`. OpenCode discovers them automatically.
+**Custom tools** (`.opencode/tools/`) are auto-discovered by OpenCode when working in the LLMem repo. For other projects, copy the `.opencode/tools/` directory or reference it via `OPENCODE_CONFIG_DIR`.
 
-### Step 5: Verify
+**Instructions in AGENTS.md — optional.** The plugin injects context at session start. The `llmem` skill loads on-demand. If you want a persistent reminder, add this minimal line:
 
-Run these checks to confirm everything works:
+```markdown
+## Memory
+
+Plugin-managed. Search when uncertain: `llmem search "topic"`. Add when you learn: `llmem add --type fact --content "..."`.
+```
+
+#### Claude Code / Copilot CLI
+
+The plugin is installed at `~/.claude/plugins/llmem/`. Enable it:
 
 ```bash
-# CLI is available
-llmem --help
+claude plugin install ~/.claude/plugins/llmem
+# Or use --plugin-dir for testing:
+claude --plugin-dir ~/.claude/plugins/llmem
+```
 
-# Database is initialized
+The plugin provides:
+- **`SessionStart` hook**: Injects `llmem stats` + behavioral patterns + proposed procedures at session start
+- **`SessionEnd` hook**: Runs `llmem hook ending` for memory extraction + introspection
+- **`PreCompact` hook**: Injects key memories before compaction
+- **Skills**: `llmem`, `llmem-setup`, `introspection`, `introspection-review-tracker` — loaded on-demand
+
+**Instructions in CLAUDE.md — optional.** The `SessionStart` hook injects context. If you want a persistent reminder:
+
+```markdown
+## Memory
+
+Plugin-managed. Search when uncertain: `llmem search "topic"`. Add when you learn: `llmem add --type fact --content "..."`.
+```
+
+### Step 6: Verify
+
+```bash
+# CLI works
+llmem --help
 llmem stats
 
 # Can add and search
 llmem add --type fact --content "test memory"
 llmem search "test"
 
-# Provider is working (will show provider type)
-llmem search "test" --json | head -5
+# Skills are discoverable
+ls ~/.agents/skills/llmem ~/.agents/skills/introspection
 
-# Skills are discoverable (OpenCode/Copilot only)
-ls ~/.agents/skills/llmem/SKILL.md
-ls ~/.agents/skills/llmem-setup/SKILL.md
+# Plugin deployed
+# OpenCode:
+ls ~/.config/opencode/plugins/llmem.js
+# Claude Code:
+ls ~/.claude/plugins/llmem/.claude-plugin/plugin.json
 
-# OpenCode plugin (OpenCode only)
-ls ~/.agents/plugins/llmem/
-
-# Session hooks work
-llmem context --session-id "test-session-id"
+# Optional: verify OpenCode tools
+ls .opencode/tools/llmem-*.ts
 ```
 
-### Step 6: Dream Timer (Optional)
+### Step 7: Dream Timer (Optional)
 
-For automatic memory consolidation, set up the systemd dream timer:
+For automatic memory consolidation:
 
 ```bash
-# Copy timer and service files (adjust paths for your system)
-cp LLMem/harness/llmem-dream.service ~/.config/systemd/user/
-cp LLMem/harness/llmem-dream.timer ~/.config/systemd/user/
-
-# Edit the service file to point to your llmem binary
-# ExecStart=/path/to/llmem dream --apply
-
+# Copy and enable systemd timer
+cp harness/llmem-dream.service ~/.config/systemd/user/
+cp harness/llmem-dream.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable llmem-dream.timer
 systemctl --user start llmem-dream.timer
 ```
 
-Dream runs nightly at 3am by default. Configure in `~/.config/llmem/config.yaml` under `dream:`.
+Runs nightly at 3am by default. Configure in `~/.config/llmem/config.yaml` under `dream:`.
+
+## Architecture
+
+```
+Agent Session
+    │
+    ├── Plugin (auto, no instructions needed)
+    │   ├── session.created/start → llmem stats + search behavioral/proposed → inject context
+    │   ├── session.idle/end      → llmem hook idle/ending → extract + introspect
+    │   └── session.compacting    → llmem context --compacting → preserve key memories
+    │
+    ├── Skills (on-demand, loaded by trigger)
+    │   ├── llmem                      → CLI reference, memory types, commands
+    │   ├── llmem-setup                → This file
+    │   ├── introspection              → Self-assessment framework, error taxonomy
+    │   └── introspection-review-tracker → Review outcome tracking
+    │
+    └── Custom Tools (structural, zero-instruction)
+        ├── llmem-search   → Search memories
+        ├── llmem-add      → Add a memory
+        ├── llmem-context  → Get context for a topic
+        ├── llmem-invalidate → Soft-delete a memory
+        ├── llmem-stats    → Show memory statistics
+        └── llmem-hook     → Run extraction hook
+```
+
+The plugin handles everything the agent physically cannot do itself (inject context before the first message, extract on idle). The skills provide behavioral guidance when the agent needs it. Custom tools provide typed access to memory operations without requiring skill loading.
 
 ## Troubleshooting
 
-**`llmem: command not found`** — The pip install didn't put the binary on PATH. Try `python3 -m llmem.cli` or check `pip show llmem` for the install location. On some systems you may need `pip install --break-system-packages .` or a virtual environment.
+**`llmem: command not found`** — Binary not on PATH. Check `which llmem` or `ls ~/.local/bin/llmem`. May need `ln -s ~/.local/bin/llmem /usr/local/bin/llmem`.
 
-**`Ollama not reachable`** — Either start Ollama (`ollama serve`), pull the models (`ollama pull nomic-embed-text`), or switch to a different provider. LLMem falls back through: Ollama → OpenAI → Anthropic → local → none (FTS5-only).
+**`Ollama not reachable`** — Start Ollama (`ollama serve`), pull models (`ollama pull nomic-embed-text`), or switch providers. LLMem falls back: Ollama → OpenAI → Anthropic → local → none (FTS5-only).
 
-**`Permission denied on ~/.config/llmem/`** — Check directory permissions: `ls -la ~/.config/llmem/`. The database and config need to be readable/writable by the current user. `llmem init` creates them with correct permissions.
+**Plugin not loading** — Verify the plugin file exists at the expected path. For OpenCode, check `~/.config/opencode/plugins/llmem.js`. For Claude Code, check `~/.claude/plugins/llmem/`.
 
-**`sqlite-vec not available`** — Semantic search falls back to brute-force cosine similarity automatically. For ANN vector search, install with `pip install ".[vec]"`.
+**Skills not discovered** — Verify skill directories: `ls ~/.agents/skills/llmem/`. If missing, re-run `node install.js`.
 
-**Skills not discovered** — Verify the skill directories exist: `ls ~/.agents/skills/`. If missing, re-run the plugin install step: `cd LLMem/opencode-llmem && npm install`.
+**Context not injected at session start** — Check the plugin log. For OpenCode, run `llmem stats` and `llmem search behavioral --type self_assessment --limit 5` manually to verify the commands work. The plugin runs these same commands.

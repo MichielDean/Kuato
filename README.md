@@ -83,14 +83,30 @@ safe := urlvalidate.IsSafeURL(urlStr, false)
 
 See [docs/INSTALLATION.md](docs/INSTALLATION.md) for Go build dependencies and [docs/API.md](docs/API.md) for the full API reference.
 
+## Plugin Architecture: Zero-Config Integration
+
+LLMem uses platform plugins to inject memory context automatically. **No manual instruction editing required.** The plugin handles:
+
+- **Session start**: Injects memory stats, behavioral patterns, and proposed procedures as context
+- **Session idle/end**: Extracts memories from the session transcript
+- **Compaction**: Preserves key memories across context compaction
+
+| Platform | Plugin | Install |
+|----------|--------|---------|
+| **OpenCode** | `plugins/opencode/llmem.js` → `~/.config/opencode/plugins/` | Auto-deployed by `npm install` |
+| **Claude Code** | `plugins/agent/` → `~/.claude/plugins/llmem/` | `claude plugin install ~/.claude/plugins/llmem` |
+| **Copilot CLI** | `plugins/agent/` → same as Claude Code | Same plugin format |
+
+The plugin-first approach means your AGENTS.md or CLAUDE.md stays clean — no 80-line memory instruction blocks. See [Integrations](docs/INTEGRATIONS.md) for platform-specific setup.
+
 ## Skills
 
-LLMem ships four skills focused on memory management. Agent workflow skills (git-sync, task-intake, test-and-verify, branch-strategy, critical-code-reviewer, pre-pr-review, visual-explainer) are distributed separately as part of agent harnesses.
+LLMem ships four skills focused on memory management. They load on-demand via the skill system — no need to paste their content into instruction files.
 
 | Skill | Description |
 |-------|-------------|
 | **llmem** | Manage LLMem memories — add, search, consolidate, dream, introspect, and track review outcomes. |
-| **llmem-setup** | Install and configure LLMem for an agent harness — provider setup, skill registration, harness integration. |
+| **llmem-setup** | Install and configure LLMem — plugin deployment, provider setup, skill registration. |
 | **introspection** | Operational reference for the introspection framework — self-assessment, sampajanna checks, error taxonomy. |
 | **introspection-review-tracker** | Reference for the automated ReviewOutcomeTracker hook that persists review findings as self_assessment memories. |
 
@@ -117,7 +133,7 @@ The `opencode.json` configuration loads `harness/identity.md`, `harness/user.md`
 
 ## Verification
 
-After installing from source, verify everything works:
+After installing, verify everything works:
 
 ```bash
 # Check the CLI is available
@@ -129,8 +145,14 @@ llmem init
 # Confirm the store is working
 llmem stats
 
-# Verify skills are discoverable (OpenCode plugin only)
-ls ~/.agents/skills/llmem ~/.agents/skills/introspection ~/.agents/skills/git-sync
+# Verify skills are deployed
+ls ~/.agents/skills/llmem ~/.agents/skills/introspection
+
+# Verify plugin deployed (OpenCode)
+ls ~/.config/opencode/plugins/llmem.js
+
+# Verify plugin deployed (Claude Code / Copilot CLI)
+ls ~/.claude/plugins/llmem/.claude-plugin/plugin.json
 ```
 
 ## Quick Start

@@ -204,7 +204,7 @@ function testFrontmatterNameValidFormat(skillDir) {
 
 function checkNoPersonalReferences(dirPath, label) {
   var foundProblems = [];
-  var allowedPatterns = [/github\.com\/MichielDean\//];
+  var allowedPatterns = [/github\.com\/MichielDean\//, /"name":\s*"Michiel Dean"/];
   function checkFile(filePath, relativePath) {
     var content = fs.readFileSync(filePath, 'utf8');
     for (var i = 0; i < FORBIDDEN_PATTERNS.length; i++) {
@@ -721,36 +721,54 @@ function testNoLobsterdogRefsInPython() {
     (foundProblems.length > 0 ? ' (found: ' + foundProblems.join('; ') + ')' : ''));
 }
 
-// ── opencode-llmem Package Validation Tests ─────────────────────────────
+// ── Plugin Validation Tests ──────────────────────────────────────────
 
-var LLMEM_PKG_DIR = path.join(__dirname, 'opencode-llmem');
+var PLUGINS_DIR = path.join(__dirname, 'plugins');
+var OPENCODE_PLUGIN = path.join(PLUGINS_DIR, 'opencode', 'llmem.js');
+var AGENT_PLUGIN_DIR = path.join(PLUGINS_DIR, 'agent');
+var AGENT_PLUGIN_MANIFEST = path.join(AGENT_PLUGIN_DIR, '.claude-plugin', 'plugin.json');
+var AGENT_PLUGIN_HOOKS = path.join(AGENT_PLUGIN_DIR, 'hooks', 'hooks.json');
 
-function testLlmemPackageJsonExists() {
-  var pkgPath = path.join(LLMEM_PKG_DIR, 'package.json');
-  if (!fs.existsSync(pkgPath)) {
-    assert(false, 'opencode-llmem/package.json exists');
-    return;
-  }
-  var pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-  assert(pkg.name === 'opencode-llmem', 'opencode-llmem package name is opencode-llmem');
-  assert(pkg.files && pkg.files.indexOf('src/') !== -1, 'opencode-llmem package files includes "src/"');
-  assert(pkg.scripts && pkg.scripts.postinstall === 'node install.js', 'opencode-llmem has postinstall script');
+function testOpenCodePluginExists() {
+  assert(fs.existsSync(OPENCODE_PLUGIN), 'plugins/opencode/llmem.js exists');
 }
 
-function testLlmemNoForbiddenRefs() {
-  if (!fs.existsSync(LLMEM_PKG_DIR)) {
-    return; // skip if directory doesn't exist
-  }
-  // Only check the src/ directory — test files contain pattern strings used for detection
-  var srcDir = path.join(LLMEM_PKG_DIR, 'src');
-  if (fs.existsSync(srcDir)) {
-    checkNoPersonalReferences(srcDir, 'opencode-llmem/src');
+function testOpenCodePluginNoPersonalRefs() {
+  if (!fs.existsSync(OPENCODE_PLUGIN)) return;
+  checkNoPersonalReferences(path.dirname(OPENCODE_PLUGIN), 'plugins/opencode');
+}
+
+function testAgentPluginManifestExists() {
+  assert(fs.existsSync(AGENT_PLUGIN_MANIFEST), 'plugins/agent/.claude-plugin/plugin.json exists');
+  if (!fs.existsSync(AGENT_PLUGIN_MANIFEST)) return;
+  var manifest = JSON.parse(fs.readFileSync(AGENT_PLUGIN_MANIFEST, 'utf8'));
+  assert(manifest.name === 'llmem', 'agent plugin name is llmem');
+  assert(manifest.description && manifest.description.length > 0, 'agent plugin has description');
+  assert(manifest.license === 'MIT', 'agent plugin license is MIT');
+}
+
+function testAgentPluginHooksExists() {
+  assert(fs.existsSync(AGENT_PLUGIN_HOOKS), 'plugins/agent/hooks/hooks.json exists');
+  if (!fs.existsSync(AGENT_PLUGIN_HOOKS)) return;
+  var hooks = JSON.parse(fs.readFileSync(AGENT_PLUGIN_HOOKS, 'utf8'));
+  assert(hooks.hooks && hooks.hooks.SessionStart, 'agent hooks has SessionStart');
+  assert(hooks.hooks && hooks.hooks.SessionEnd, 'agent hooks has SessionEnd');
+  assert(hooks.hooks && hooks.hooks.PreCompact, 'agent hooks has PreCompact');
+}
+
+function testAgentPluginSkillsExist() {
+  var skillsDir = path.join(AGENT_PLUGIN_DIR, 'skills');
+  assert(fs.existsSync(skillsDir), 'plugins/agent/skills/ directory exists');
+  if (!fs.existsSync(skillsDir)) return;
+  for (var s = 0; s < EXPECTED_SKILLS.length; s++) {
+    assert(fs.existsSync(path.join(skillsDir, EXPECTED_SKILLS[s], 'SKILL.md')),
+      'plugins/agent/skills/' + EXPECTED_SKILLS[s] + '/SKILL.md exists');
   }
 }
 
-function testLlmemInstallScript() {
-  var installPath = path.join(LLMEM_PKG_DIR, 'install.js');
-  assert(fs.existsSync(installPath), 'opencode-llmem/install.js exists');
+function testAgentPluginNoPersonalRefs() {
+  if (!fs.existsSync(AGENT_PLUGIN_DIR)) return;
+  checkNoPersonalReferences(AGENT_PLUGIN_DIR, 'plugins/agent');
 }
 
 // ── Main ──────────────────────────────────────────────────────────────
@@ -818,11 +836,14 @@ testShareShRejectsSecrets();
 testTemplatesInPackageJsonFiles();
 testOpencodeJsonLoadsAllTemplateFiles();
 
-console.log('\n=== opencode-llmem Package Validation Tests ===\n');
+console.log('\n=== Plugin Validation Tests ===\n');
 
-testLlmemPackageJsonExists();
-testLlmemNoForbiddenRefs();
-testLlmemInstallScript();
+testOpenCodePluginExists();
+testOpenCodePluginNoPersonalRefs();
+testAgentPluginManifestExists();
+testAgentPluginHooksExists();
+testAgentPluginSkillsExist();
+testAgentPluginNoPersonalRefs();
 
 console.log('\n=== Results ===\n');
 console.log('Passed: ' + passes);

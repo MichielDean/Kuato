@@ -1,0 +1,13 @@
+{
+  "name": "llmem",
+  "description": "Structured memory with semantic search for AI agents. Automatic context injection at session start and memory extraction at session end.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Michiel Dean",
+    "url": "https://github.com/MichielDean/LLMem"
+  },
+  "homepage": "https://github.com/MichielDean/LLMem",
+  "repository": "https://github.com/MichielDean/LLMem",
+  "license": "MIT",
+  "keywords": ["memory", "embedding", "semantic-search", "agent", "llmem"]
+}
