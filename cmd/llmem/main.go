@@ -83,29 +83,14 @@ func loadConfig() (*config.Config, error) {
 	return cfg, nil
 }
 
-// openStore creates a MemoryStore and returns it with a cleanup function.
-// Vec is disabled — use openStoreWithVec for operations that need embeddings.
+// openStore creates a MemoryStore with vector search enabled.
 func openStore() (*store.MemoryStore, error) {
 	cfg := store.StoreConfig{
-		DBPath:     resolveDBPath(),
-		DisableVec: true,
+		DBPath: resolveDBPath(),
 	}
 	ms, err := store.NewMemoryStore(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("llmem: failed to initialize store: %w", err)
-	}
-	return ms, nil
-}
-
-// openStoreWithVec creates a MemoryStore with vec0 enabled for embedding operations.
-func openStoreWithVec() (*store.MemoryStore, error) {
-	cfg := store.StoreConfig{
-		DBPath:     resolveDBPath(),
-		DisableVec: false,
-	}
-	ms, err := store.NewMemoryStore(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("llmem: failed to initialize store with vec: %w", err)
 	}
 	return ms, nil
 }
@@ -1208,7 +1193,7 @@ func backfillEmbeddingsCmd() *cobra.Command {
 		Use:   "backfill-embeddings",
 		Short: "Generate embeddings for memories that lack them",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ms, err := openStoreWithVec()
+			ms, err := openStore()
 			if err != nil {
 				return err
 			}

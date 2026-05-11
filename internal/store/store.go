@@ -15,6 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/google/uuid"
+	"github.com/viant/sqlite-vec/vec"
 )
 
 const (
@@ -27,12 +28,11 @@ const (
 )
 
 // MemoryStore is a SQLite-backed memory store with FTS5 full-text search
-// and optional vec0 vector search.
+// and vector search via sqlite-vec.
 type MemoryStore struct {
 	dbPath          string
 	vecDimensions   int
 	vecAvailable    bool
-	disableVec      bool
 	registeredTypes map[string]struct{}
 	db              *sql.DB
 	mu              sync.RWMutex
@@ -104,19 +104,42 @@ func NewMemoryStore(cfg StoreConfig) (*MemoryStore, error) {
 		dbPath:          dbPath,
 		vecDimensions:   cfg.VecDimensions,
 		vecAvailable:    false,
-		disableVec:      cfg.DisableVec,
 		registeredTypes: registeredTypes,
 		db:              db,
 	}
 
-	// Drop vec0 virtual table and triggers before running migrations.
-	// The vec0 module may not be registered in this connection (e.g., when
-	// migrating from Python LLMem where sqlite-vec was loaded as a C extension).
-	// Existing triggers reference the vec0 virtual table module, which causes
-	// "no such module: vec0" errors during DDL operations (like ALTER TABLE).
-	// initVecTable() will recreate them after migrations if vec0 is available.
-	if err := dropVec0Objects(db); err != nil {
-		slog.Warn("llmem: store: failed to drop vec0 objects before migration", "error", err)
+	// Initialize vector search: register the vec module early so we can
+	// drop stale vec0 virtual tables (they require the vec0 module for DROP
+	// TABLE, which isn't available — we need writable_schema instead,
+	// but having vec registered helps with cleanup).
+	vecRegistered := false
+	if !cfg.DisableVec {
+		if err := vec.Register(db); err != nil {
+			slog.Warn("llmem: store: failed to register sqlite-vec module, vector search disabled", "error", err)
+		} else {
+			vecRegistered = true
+			// vec.Register adds the module to the driver's global registry, but it
+			// only takes effect on NEW connections. The openDB PRAGMAs (WAL mode,
+			// foreign keys) already created a warm connection in the pool that lacks
+			// the vec module. Close and reopen the DB so all pool connections pick up
+			// the module registration.
+			if dbPath != ":memory:" {
+				if err := db.Close(); err != nil {
+					return nil, fmtErr("close db after vec register: %w", err)
+				}
+				db, err = openDB(dbPath)
+				if err != nil {
+					return nil, fmtErr("reopen db after vec register: %w", err)
+				}
+				ms.db = db
+			}
+		}
+	}
+
+	// Drop legacy vec0 virtual tables, triggers, and auxiliary tables
+	// from earlier Python LLMem or C extension versions.
+	if err := dropLegacyVec0Objects(db); err != nil {
+		slog.Warn("llmem: store: failed to drop legacy vec0 objects before migration", "error", err)
 	}
 
 	// Run migrations
@@ -130,17 +153,13 @@ func NewMemoryStore(cfg StoreConfig) (*MemoryStore, error) {
 		slog.Warn("llmem: store: failed to rebuild FTS index", "error", err)
 	}
 
-	// Register vec virtual table module if available
-	if !cfg.DisableVec {
-		// Try to register the vec0 virtual table module.
-		// If sqlite-vec is available, it will be registered via the
-		// modernc.org/sqlite extension mechanism. The CREATE VIRTUAL TABLE
-		// statement is attempted in initVecTable, and if it fails, we
-		// fall back to brute-force search.
-		ms.vecAvailable = true
+	// Create the vec virtual table now that migrations are done and the
+	// stale vec0 table has been cleaned up.
+	if vecRegistered {
 		if err := ms.initVecTable(); err != nil {
-			slog.Warn("llmem: store: sqlite-vec unavailable, using brute-force fallback", "error", err)
-			ms.vecAvailable = false
+			slog.Warn("llmem: store: failed to initialize vec virtual table, vector search disabled", "error", err)
+		} else {
+			ms.vecAvailable = true
 		}
 	}
 
@@ -202,8 +221,10 @@ func (ms *MemoryStore) Add(ctx context.Context, params AddParams) (string, error
 		return "", fmtErr("add: embedding size %d bytes exceeds maximum %d bytes", len(params.Embedding), maxEmbeddingBytes)
 	}
 
-	// Validate embedding dimensions
-	if len(params.Embedding) > 0 && !ms.disableVec {
+	// Validate embedding dimensions only when vec is available.
+	// Without vec, embeddings are stored as opaque blobs and dimension
+	// doesn't matter for correctness — only the vec index requires matching dims.
+	if len(params.Embedding) > 0 && ms.vecAvailable {
 		actualDim := len(params.Embedding) / 4
 		if actualDim != ms.vecDimensions {
 			return "", fmtErr("add: embedding dimension %d does not match vec_dimensions %d — use %d-dimensional embeddings", actualDim, ms.vecDimensions, ms.vecDimensions)
@@ -263,6 +284,17 @@ func (ms *MemoryStore) Add(ctx context.Context, params AddParams) (string, error
 	if err != nil {
 		return "", fmtErr("add: insert memory: %w", err)
 	}
+
+	// Sync embedding to vec shadow table
+	if params.Embedding != nil && ms.vecAvailable {
+		if _, syncErr := ms.db.ExecContext(ctx,
+			`INSERT OR REPLACE INTO "_vec_memories_vec"("dataset_id", "id", "content", "meta", "embedding") VALUES ('memories', ?, ?, ?, ?)`,
+			memID, params.Content, string(metadataJSON), params.Embedding,
+		); syncErr != nil {
+			slog.Debug("llmem: store: add: failed to sync embedding to vec shadow", "id", memID, "error", syncErr)
+		}
+	}
+
 	return memID, nil
 }
 
@@ -413,6 +445,27 @@ func (ms *MemoryStore) Update(ctx context.Context, params UpdateParams) (bool, e
 		return false, fmtErr("update: %w", err)
 	}
 	n, _ := result.RowsAffected()
+
+	// Sync embedding changes to vec shadow table
+	if n > 0 && ms.vecAvailable {
+		if params.ClearEmbedding {
+			// Embedding was explicitly cleared — remove from shadow table
+			ms.db.ExecContext(ctx, `DELETE FROM "_vec_memories_vec" WHERE dataset_id = 'memories' AND id = ?`, params.ID)
+		} else if params.Embedding != nil {
+			// Embedding was updated — upsert with new embedding.
+			// Content is available if Content pointer is non-nil.
+			content := ""
+			if params.Content != nil {
+				content = *params.Content
+			}
+			ms.db.ExecContext(ctx, `INSERT OR REPLACE INTO "_vec_memories_vec"("dataset_id", "id", "content", "meta", "embedding") VALUES ('memories', ?, ?, '', ?)`, params.ID, content, params.Embedding)
+		} else if params.Content != nil {
+			// Content changed without embedding change — update content in shadow table,
+			// preserve the existing embedding
+			ms.db.ExecContext(ctx, `UPDATE "_vec_memories_vec" SET content = ? WHERE dataset_id = 'memories' AND id = ?`, *params.Content, params.ID)
+		}
+	}
+
 	return n > 0, nil
 }
 
@@ -451,6 +504,12 @@ func (ms *MemoryStore) Invalidate(ctx context.Context, id string, reason string)
 		return false, fmtErr("invalidate: %w", err)
 	}
 	n, _ := result.RowsAffected()
+
+	// Remove from vec shadow table since embedding is cleared
+	if n > 0 && ms.vecAvailable {
+		ms.db.ExecContext(ctx, `DELETE FROM "_vec_memories_vec" WHERE dataset_id = 'memories' AND id = ?`, id)
+	}
+
 	return n > 0, nil
 }
 
@@ -467,6 +526,12 @@ func (ms *MemoryStore) Delete(ctx context.Context, id string) (bool, error) {
 		return false, fmtErr("delete: %w", err)
 	}
 	n, _ := result.RowsAffected()
+
+	// Remove from vec shadow table
+	if n > 0 && ms.vecAvailable {
+		ms.db.ExecContext(ctx, `DELETE FROM "_vec_memories_vec" WHERE dataset_id = 'memories' AND id = ?`, id)
+	}
+
 	return n > 0, nil
 }
 
@@ -476,7 +541,8 @@ func (ms *MemoryStore) Search(ctx context.Context, params SearchParams) ([]*Memo
 	if params.SemanticOnly && params.FTSOnly {
 		return nil, fmtErr("search: cannot specify both fts-only and semantic-only")
 	}
-	if params.SemanticOnly && ms.disableVec {
+	if params.SemanticOnly && !ms.vecAvailable {
+		return nil, fmtErr("search: semantic search requires vector index (store opened with DisableVec=false and sqlite-vec available)")
 		return nil, fmtErr("search: semantic search requires embeddings (store opened with DisableVec=false)")
 	}
 
@@ -690,7 +756,7 @@ func (ms *MemoryStore) searchCountNoQuery(ctx context.Context, params SearchCoun
 }
 
 // SearchByEmbedding searches memories by vector similarity.
-// Uses vec0 if available, brute-force fallback otherwise.
+// Uses the vec virtual table if available, brute-force fallback otherwise.
 // If limit <= 0, defaults to 20.
 func (ms *MemoryStore) SearchByEmbedding(ctx context.Context, queryVec []float32, validOnly bool, limit int, threshold float64) ([]*ScoredMemory, error) {
 	if limit <= 0 {
@@ -705,116 +771,64 @@ func (ms *MemoryStore) SearchByEmbedding(ctx context.Context, queryVec []float32
 func (ms *MemoryStore) searchByEmbeddingVec(ctx context.Context, queryVec []float32, validOnly bool, limit int, threshold float64) ([]*ScoredMemory, error) {
 	queryBytes := VecToBytes(queryVec)
 
-	multipliers := []int{3, 10, 50, 0}
-	var scored []*ScoredMemory
+	// Query the vec virtual table for k-NN search.
+	// The vec vtab schema is (dataset_id, doc_id, match_score HIDDEN).
+	// MATCH is applied to the doc_id column, which maps to our memory IDs.
+	// viant/sqlite-vec returns match_score as cosine similarity (0-1).
+	// The shadow table _vec_memories_vec stores (dataset_id, id, content, meta, embedding).
+	rows, err := ms.db.QueryContext(ctx,
+		`SELECT doc_id, match_score FROM memories_vec WHERE dataset_id = 'memories' AND doc_id MATCH ? AND match_score >= ?`,
+		queryBytes, threshold,
+	)
+	if err != nil {
+		slog.Debug("llmem: store: search_by_embedding: vec query failed, falling back", "error", err)
+		return ms.searchByEmbeddingBrute(ctx, queryVec, validOnly, limit, threshold)
+	}
+	defer rows.Close()
 
-	for _, multiplier := range multipliers {
-		var searchLimit int
-		if multiplier == 0 {
-			var totalRows int
-			err := ms.db.QueryRowContext(ctx, `SELECT count(*) FROM "memories_vec"`).Scan(&totalRows)
-			if err != nil {
-				return nil, fmtErr("search_by_embedding: vec count: %w", err)
-			}
-			searchLimit = totalRows
-		} else {
-			searchLimit = limit*multiplier + 1
+	type vecResult struct {
+		id     string
+		score  float64
+	}
+	var results []vecResult
+	for rows.Next() {
+		var r vecResult
+		if err := rows.Scan(&r.id, &r.score); err != nil {
+			return nil, fmtErr("search_by_embedding: vec scan: %w", err)
 		}
-
-		rows, err := ms.db.QueryContext(ctx,
-			`SELECT "rowid", "distance" FROM "memories_vec" WHERE "embedding" MATCH ? AND k = ? ORDER BY "distance"`,
-			queryBytes, searchLimit,
-		)
-		if err != nil {
-			// Fall back to brute-force
-			return ms.searchByEmbeddingBrute(ctx, queryVec, validOnly, limit, threshold)
-		}
-
-		type vecRow struct {
-			rowid    int64
-			distance float64
-		}
-		var vecRows []vecRow
-		for rows.Next() {
-			var r vecRow
-			if err := rows.Scan(&r.rowid, &r.distance); err != nil {
-				rows.Close()
-				return nil, fmtErr("search_by_embedding: vec scan: %w", err)
-			}
-			vecRows = append(vecRows, r)
-		}
-		rows.Close()
-
-		if len(vecRows) == 0 {
-			return nil, nil
-		}
-
-		// Fetch matching memory IDs
-		rowids := make([]any, len(vecRows))
-		for i, r := range vecRows {
-			rowids[i] = r.rowid
-		}
-		ph := placeholders(len(rowids))
-		where := fmt.Sprintf(`"rowid" IN (%s)`, ph)
-		if validOnly {
-			where += ` AND "valid_until" IS NULL`
-		}
-
-		memRows, err := ms.db.QueryContext(ctx,
-			fmt.Sprintf(`SELECT "id", "rowid" FROM "memories" WHERE %s`, where),
-			rowids...,
-		)
-		if err != nil {
-			return nil, fmtErr("search_by_embedding: fetch memories: %w", err)
-		}
-
-		rowidToMemID := make(map[int64]string)
-		for memRows.Next() {
-			var memID string
-			var rid int64
-			if err := memRows.Scan(&memID, &rid); err != nil {
-				memRows.Close()
-				return nil, fmtErr("search_by_embedding: scan mem: %w", err)
-			}
-			rowidToMemID[rid] = memID
-		}
-		memRows.Close()
-
-		// Build scored list
-		scored = scored[:0]
-		for _, r := range vecRows {
-			cosineSim := 1.0 - r.distance
-			if memID, ok := rowidToMemID[r.rowid]; ok && cosineSim >= threshold {
-				scored = append(scored, &ScoredMemory{Memory: &Memory{ID: memID}, Score: cosineSim})
-			}
-		}
-
-		if len(scored) >= limit || multiplier == 0 {
-			break
+		if r.score >= threshold {
+			results = append(results, r)
 		}
 	}
-
-	// Truncate to limit
-	if len(scored) > limit {
-		scored = scored[:limit]
+	if err := rows.Err(); err != nil {
+		return nil, fmtErr("search_by_embedding: vec rows: %w", err)
 	}
 
-	if len(scored) == 0 {
+	if len(results) == 0 {
 		return nil, nil
 	}
 
-	// Fetch full memories
-	topIDs := make([]any, len(scored))
-	for i, sm := range scored {
-		topIDs[i] = sm.Memory.ID
+	// Cap at limit
+	if len(results) > limit {
+		results = results[:limit]
+	}
+
+	// Fetch full memories by ID
+	topIDs := make([]any, len(results))
+	for i, r := range results {
+		topIDs[i] = r.id
 	}
 	ph := placeholders(len(topIDs))
+	var where string
+	if validOnly {
+		where = ` AND "valid_until" IS NULL`
+	}
 	memRows, err := ms.db.QueryContext(ctx,
-		fmt.Sprintf(`SELECT "id", "type", "content", "summary", "hints", "source", "confidence", "valid_from", "valid_until", "created_at", "updated_at", "accessed_at", "access_count", "metadata", "embedding" FROM "memories" WHERE "id" IN (%s)`, ph),
+		fmt.Sprintf(`SELECT "id", "type", "content", "summary", "hints", "source", "confidence", "valid_from", "valid_until", "created_at", "updated_at", "accessed_at", "access_count", "metadata", "embedding" FROM "memories" WHERE "id" IN (%s)%s`, ph, where),
 		topIDs...,
 	)
 	if err != nil {
-		return nil, fmtErr("search_by_embedding: fetch full: %w", err)
+		return nil, fmtErr("search_by_embedding: fetch memories: %w", err)
 	}
 	defer memRows.Close()
 
@@ -822,18 +836,18 @@ func (ms *MemoryStore) searchByEmbeddingVec(ctx context.Context, queryVec []floa
 	for memRows.Next() {
 		m, err := scanMemoryFromRows(memRows)
 		if err != nil {
-			return nil, fmtErr("search_by_embedding: scan: %w", err)
+			return nil, fmtErr("search_by_embedding: scan mem: %w", err)
 		}
 		memMap[m.ID] = m
 	}
 
-	var results []*ScoredMemory
-	for _, sm := range scored {
-		if m, ok := memMap[sm.Memory.ID]; ok {
-			results = append(results, &ScoredMemory{Memory: m, Score: sm.Score})
+	var scored []*ScoredMemory
+	for _, r := range results {
+		if m, ok := memMap[r.id]; ok {
+			scored = append(scored, &ScoredMemory{Memory: m, Score: r.score})
 		}
 	}
-	return results, nil
+	return scored, nil
 }
 
 func (ms *MemoryStore) searchByEmbeddingBrute(ctx context.Context, queryVec []float32, validOnly bool, limit int, threshold float64) ([]*ScoredMemory, error) {
@@ -1354,8 +1368,8 @@ func (ms *MemoryStore) ImportMemories(ctx context.Context, memories []ImportMemo
 			continue
 		}
 
-		// Validate embedding dimensions
-		if len(m.Embedding) > 0 && !ms.disableVec {
+		// Validate embedding dimensions only when vec is available
+		if len(m.Embedding) > 0 && ms.vecAvailable {
 			expectedLen := ms.vecDimensions * 4
 			if len(m.Embedding) != expectedLen {
 				slog.Warn("llmem: store: import: skipping entry: embedding dimension mismatch", "index", i, "got", len(m.Embedding), "expected", expectedLen)
@@ -1520,131 +1534,170 @@ func (ms *MemoryStore) rebuildFTSIfEmpty() error {
 	return nil
 }
 
-// dropVec0Objects removes existing vec0 virtual table, chunk tables, and triggers
-// from the database. This is necessary before running migrations because the vec0
-// module may not be registered in the Go connection, and existing triggers that
-// reference vec0 will cause "no such module: vec0" errors during DDL operations.
-// initVecTable() will recreate these objects after migrations if vec0 is available.
-func dropVec0Objects(db *sql.DB) error {
+// dropLegacyVec0Objects removes legacy vec0 virtual tables, auxiliary tables,
+// and triggers from earlier Python LLMem or C extension versions.
+// The Go version uses viant/sqlite-vec which has a different schema.
+//
+// Key challenge: if the database was created with vec0 (Python LLMem or C extension),
+// the memories_vec virtual table is registered with the vec0 module. Since vec0
+// isn't available in the Go version, DROP TABLE on that virtual table returns
+// "no such module: vec0". We work around this by:
+// 1. Dropping the auxiliary chunk/rowid/info tables (these are real tables, not virtual)
+// 2. Dropping the triggers (they reference vec0, causing "no such module" errors)
+// 3. Trying DROP TABLE on the vtab; if it fails (missing module), using
+//    PRAGMA writable_schema to delete the stale entry from sqlite_master
+// 4. Dropping any viant shadow/storage tables from prior runs
+func dropLegacyVec0Objects(db *sql.DB) error {
 	// Drop triggers first (they reference the vec0 virtual table)
 	for _, name := range []string{"memories_vec_insert", "memories_vec_update", "memories_vec_update_null", "memories_vec_delete"} {
 		_, _ = db.Exec(fmt.Sprintf(`DROP TRIGGER IF EXISTS "%s"`, name))
 	}
-	// Drop vec0 auxiliary tables (created by sqlite-vec)
+	// Drop vec0 auxiliary tables (real tables, not virtual)
 	for _, name := range []string{"memories_vec_chunks", "memories_vec_rowids", "memories_vec_vector_chunks00", "memories_vec_info"} {
 		_, _ = db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, name))
 	}
-	// Drop the vec0 virtual table last
-	_, _ = db.Exec(`DROP TABLE IF EXISTS "memories_vec"`)
+	// Drop viant/sqlite-vec shadow and storage tables from prior runs.
+	// These are real tables and can always be dropped.
+	for _, name := range []string{"_vec_memories_vec", "vector_storage", "vector_storage_locks"} {
+		_, _ = db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, name))
+	}
+	// Drop the vec0 virtual table. If the database was created with the old
+	// sqlite-vec C extension or Python LLMem, the vtab is registered under
+	// the "vec0" module. Since vec0 isn't loaded in Go, DROP TABLE fails with
+	// "no such module: vec0". Use PRAGMA writable_schema to remove the stale
+	// entry from sqlite_master directly.
+	_, err := db.Exec(`DROP TABLE IF EXISTS "memories_vec"`)
+	if err != nil {
+		slog.Debug("llmem: store: DROP TABLE memories_vec failed, using writable_schema workaround", "error", err)
+		if dropErr := dropStaleVirtualTable(db, "memories_vec"); dropErr != nil {
+			slog.Warn("llmem: store: failed to remove stale memories_vec vtab", "error", dropErr)
+		}
+	}
 	return nil
 }
 
-// initVecTable creates the vec0 virtual table and triggers if sqlite-vec is available.
+// dropStaleVirtualTable removes a virtual table entry from sqlite_master when
+// the module that created it is unavailable (e.g., vec0 in a Go-only build).
+// Uses PRAGMA writable_schema to allow direct modification of sqlite_master.
+func dropStaleVirtualTable(db *sql.DB, tableName string) error {
+	// Enable writable_schema to allow modification of sqlite_master
+	if _, err := db.Exec("PRAGMA writable_schema=ON"); err != nil {
+		return fmtErr("enable writable_schema: %w", err)
+	}
+	// Remove the stale virtual table entry
+	result, err := db.Exec(
+		"DELETE FROM sqlite_master WHERE type='table' AND name=?",
+		tableName,
+	)
+	if err != nil {
+		// Always try to restore writable_schema=OFF even on error
+		_, _ = db.Exec("PRAGMA writable_schema=OFF")
+		return fmtErr("delete stale vtab from sqlite_master: %w", err)
+	}
+	rowsAffected, _ := result.RowsAffected()
+	slog.Info("llmem: store: removed stale virtual table from sqlite_master", "table", tableName, "rows_removed", rowsAffected)
+	// Disable writable_schema and verify integrity
+	if _, err := db.Exec("PRAGMA writable_schema=OFF"); err != nil {
+		return fmtErr("disable writable_schema: %w", err)
+	}
+	// Verify database integrity after modifying sqlite_master
+	var integrity string
+	if err := db.QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil || integrity != "ok" {
+		return fmtErr("integrity check failed after removing stale vtab: status=%s err=%w", integrity, err)
+	}
+	return nil
+}
+
+// initVecTable creates the vec virtual table and populates it from memories.embedding.
+// Uses viant/sqlite-vec which provides a pure Go vector search implementation
+// compatible with modernc.org/sqlite. No CGO or shared libraries required.
+//
+// The vec virtual table uses a shadow table (_vec_memories_vec) with columns:
+// dataset_id, id, content, meta, embedding. We use dataset_id='memories'
+// as a fixed partition since LLMem doesn't have multi-tenancy.
+//
+// Sync between memories.embedding and the shadow table is handled in Go code
+// (Add/Update/Invalidate/Delete), not via SQL triggers.
 func (ms *MemoryStore) initVecTable() error {
-	// Try to create the vec0 virtual table directly.
-	// If sqlite-vec extension is not available, this will fail gracefully.
+	// Create the vec virtual table. viant/sqlite-vec uses 'vec' module (not vec0).
 	_, err := ms.db.Exec(fmt.Sprintf(
-		`CREATE VIRTUAL TABLE IF NOT EXISTS "memories_vec" USING vec0(rowid INTEGER PRIMARY KEY, embedding float[%d] distance_metric=cosine)`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS "memories_vec" USING vec(doc_id, embedding float[%d] distance_metric=cosine)`,
 		ms.vecDimensions,
 	))
 	if err != nil {
-		return fmtErr("init_vec: vec0 virtual table unavailable: %w", err)
+		return fmtErr("init_vec: create vec virtual table: %w", err)
 	}
 
-	// Check if vec table exists and has matching dimensions
-	var tableName string
-	err = ms.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='memories_vec'`).Scan(&tableName)
-	if err == nil {
-		// Table exists, verify dimensions
-		var sql string
-		err = ms.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='memories_vec'`).Scan(&sql)
-		if err == nil {
-			matches := reVecDimensions.FindStringSubmatch(sql)
-			if len(matches) > 1 {
-				var existingDim int
-				if _, err := fmt.Sscanf(matches[1], "%d", &existingDim); err != nil {
-					return fmtErr("init_vec: parse dimension from vec0 table schema: %w", err)
-				}
-				if existingDim != ms.vecDimensions {
-					return fmtErr("init_vec: existing vec0 table has dimensions=%d but vec_dimensions=%d", existingDim, ms.vecDimensions)
-				}
-			}
+	// Eagerly create the shadow table, vector_storage, and vector_storage_locks.
+	// viant/sqlite-vec creates these lazily on first query, but that causes
+	// deadlocks with database/sql connection pooling (the SELECT holds the
+	// connection, and CREATE TABLE needs another). Create them upfront.
+	for _, ddl := range []string{
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+			dataset_id TEXT NOT NULL,
+			id TEXT NOT NULL,
+			content TEXT,
+			meta TEXT,
+			embedding BLOB,
+			PRIMARY KEY(dataset_id, id)
+		)`, "_vec_memories_vec"),
+		`CREATE TABLE IF NOT EXISTS vector_storage (
+			shadow_table_name TEXT NOT NULL,
+			dataset_id TEXT NOT NULL DEFAULT '',
+			"index" BLOB,
+			PRIMARY KEY (shadow_table_name, dataset_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS vector_storage_locks (
+			shadow_table_name TEXT NOT NULL,
+			dataset_id TEXT NOT NULL DEFAULT '',
+			owner TEXT NOT NULL,
+			locked_at INTEGER NOT NULL,
+			PRIMARY KEY (shadow_table_name, dataset_id)
+		)`,
+	} {
+		if _, err := ms.db.Exec(ddl); err != nil {
+			return fmtErr("init_vec: create vector infrastructure: %w", err)
 		}
 	}
 
-	// Populate vec table if behind
-	var vecCount, memEmbCount int
-	if err := ms.db.QueryRow(`SELECT count(*) FROM "memories_vec"`).Scan(&vecCount); err != nil {
-		return fmtErr("init_vec: count vec rows: %w", err)
-	}
-	if err := ms.db.QueryRow(`SELECT count(*) FROM "memories" WHERE "embedding" IS NOT NULL`).Scan(&memEmbCount); err != nil {
-		return fmtErr("init_vec: count memory embeddings: %w", err)
+	// Populate shadow table from existing embeddings in memories table.
+	// This syncs any embeddings that were added before vec was initialized.
+	var embCount int
+	if err := ms.db.QueryRow(`SELECT count(*) FROM "memories" WHERE "embedding" IS NOT NULL AND "valid_until" IS NULL`).Scan(&embCount); err != nil {
+		return fmtErr("init_vec: count embeddings: %w", err)
 	}
 
-	if vecCount < memEmbCount {
-		if _, err := ms.db.Exec(`DELETE FROM "memories_vec"`); err != nil {
-			return fmtErr("init_vec: clear vec table for repopulation: %w", err)
-		}
-		rows, err := ms.db.Query(`SELECT "rowid", "embedding" FROM "memories" WHERE "embedding" IS NOT NULL`)
+	if embCount > 0 {
+		rows, err := ms.db.Query(`SELECT "id", "content", "metadata", "embedding" FROM "memories" WHERE "embedding" IS NOT NULL AND "valid_until" IS NULL`)
 		if err != nil {
-			return fmtErr("init_vec: fetch embeddings for repopulation: %w", err)
+			return fmtErr("init_vec: fetch embeddings: %w", err)
 		}
+		synced := 0
 		for rows.Next() {
-			var rowid int64
-			var emb []byte
-			if err := rows.Scan(&rowid, &emb); err != nil {
+			var id, content string
+			var metadataJSON, emb []byte
+			if err := rows.Scan(&id, &content, &metadataJSON, &emb); err != nil {
 				rows.Close()
-				return fmtErr("init_vec: scan embedding for repopulation: %w", err)
+				return fmtErr("init_vec: scan embedding: %w", err)
 			}
-			if _, err := ms.db.Exec(`INSERT INTO "memories_vec"("rowid", "embedding") VALUES (?, ?)`, rowid, emb); err != nil {
-				rows.Close()
-				return fmtErr("init_vec: insert embedding into vec table for rowid %d: %w", rowid, err)
+			meta := ""
+			if len(metadataJSON) > 0 && string(metadataJSON) != "null" {
+				meta = string(metadataJSON)
 			}
+			if _, err := ms.db.Exec(
+				`INSERT OR REPLACE INTO "_vec_memories_vec"("dataset_id", "id", "content", "meta", "embedding") VALUES ('memories', ?, ?, ?, ?)`,
+				id, content, meta, emb,
+			); err != nil {
+				slog.Debug("llmem: store: init_vec: failed to sync embedding", "id", id, "error", err)
+				continue
+			}
+			synced++
 		}
 		rows.Close()
-	}
-
-	// Create triggers
-	triggerDefs := []struct {
-		name string
-		sql  string
-	}{
-		{
-			"memories_vec_insert",
-			`CREATE TRIGGER IF NOT EXISTS "memories_vec_insert" AFTER INSERT ON "memories" WHEN new."embedding" IS NOT NULL BEGIN INSERT INTO "memories_vec"("rowid", "embedding") VALUES (new."rowid", new."embedding"); END`,
-		},
-		{
-			"memories_vec_update",
-			`CREATE TRIGGER IF NOT EXISTS "memories_vec_update" AFTER UPDATE ON "memories" WHEN new."embedding" IS NOT NULL BEGIN DELETE FROM "memories_vec" WHERE "rowid" = old."rowid"; INSERT INTO "memories_vec"("rowid", "embedding") VALUES (new."rowid", new."embedding"); END`,
-		},
-		{
-			"memories_vec_update_null",
-			`CREATE TRIGGER IF NOT EXISTS "memories_vec_update_null" AFTER UPDATE ON "memories" WHEN new."embedding" IS NULL AND old."embedding" IS NOT NULL BEGIN DELETE FROM "memories_vec" WHERE "rowid" = old."rowid"; END`,
-		},
-		{
-			"memories_vec_delete",
-			`CREATE TRIGGER IF NOT EXISTS "memories_vec_delete" AFTER DELETE ON "memories" WHEN old."embedding" IS NOT NULL BEGIN DELETE FROM "memories_vec" WHERE "rowid" = old."rowid"; END`,
-		},
-	}
-
-	for _, td := range triggerDefs {
-		_, err := ms.db.Exec(td.sql)
-		if err != nil {
-			slog.Debug("llmem: store: failed to create vec trigger", "trigger", td.name, "error", err)
-		}
+		slog.Info("llmem: store: vec shadow table populated", "embeddings", synced, "total", embCount)
 	}
 
 	return nil
-}
-
-// dropVecTriggers removes vec-related triggers when vec is disabled.
-// Logs errors but does not fail — triggers may not exist if vec was never enabled.
-func (ms *MemoryStore) dropVecTriggers() {
-	for _, name := range []string{"memories_vec_insert", "memories_vec_update", "memories_vec_update_null", "memories_vec_delete"} {
-		if _, err := ms.db.Exec(fmt.Sprintf(`DROP TRIGGER IF EXISTS "%s"`, name)); err != nil {
-			slog.Debug("llmem: store: failed to drop vec trigger", "trigger", name, "error", err)
-		}
-	}
 }
 
 // chmodDBFiles sets 0600 permissions on the DB file and its WAL/SHM sidecars.

@@ -1750,9 +1750,9 @@ func TestSearch_SemanticOnly_DisabledVec_ReturnsError(t *testing.T) {
 		SemanticOnly: true,
 	})
 	if err == nil {
-		t.Error("expected error when SemanticOnly=true with DisableVec=true, got nil")
+		t.Error("expected error when SemanticOnly=true with vec unavailable, got nil")
 	}
-	if !strings.Contains(err.Error(), "semantic search requires embeddings") {
+	if !strings.Contains(err.Error(), "semantic search requires") {
 		t.Errorf("expected semantic search error, got: %v", err)
 	}
 }
