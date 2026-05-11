@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/MichielDean/LLMem/internal/dream"
 	"github.com/MichielDean/LLMem/internal/paths"
@@ -39,6 +40,9 @@ type DreamConfig struct {
 	StaleProcedureDays     int     `yaml:"stale_procedure_days"`
 	OllamaURL              string  `yaml:"ollama_url"`
 	Model                  string  `yaml:"model"`
+	// ModelTimeout is the timeout for each LLM call during REM behavioral insight generation.
+	// Parsed as a Go duration string (e.g. "5m", "120s"). Defaults to "5m".
+	ModelTimeout string `yaml:"model_timeout"`
 }
 
 // SessionConfig holds session lifecycle settings.
@@ -63,13 +67,16 @@ type Config struct {
 
 // MemoryConfig holds memory store settings.
 type MemoryConfig struct {
-	DBPath       string `yaml:"db"`
-	OllamaURL    string `yaml:"ollama_url"`
-	EmbedModel   string `yaml:"embed_model"`
-	ExtractModel string `yaml:"extract_model"`
-	ContextBudget int   `yaml:"context_budget"`
-	AutoExtract  bool   `yaml:"auto_extract"`
-	MaxFileSize  int64  `yaml:"max_file_size"`
+	DBPath            string `yaml:"db"`
+	OllamaURL         string `yaml:"ollama_url"`
+	EmbedModel        string `yaml:"embed_model"`
+	ExtractModel      string `yaml:"extract_model"`
+	ContextBudget     int    `yaml:"context_budget"`
+	AutoExtract       bool   `yaml:"auto_extract"`
+	MaxFileSize       int64  `yaml:"max_file_size"`
+	// CallModelTimeout is the timeout for LLM calls in introspect/learn.
+	// Parsed as a Go duration string (e.g. "5m", "120s"). Defaults to "5m".
+	CallModelTimeout string `yaml:"call_model_timeout"`
 }
 
 // fmtErr wraps an error with the "llmem: config:" domain prefix.
@@ -81,20 +88,21 @@ func fmtErr(format string, args ...any) error {
 func DefaultConfig() Config {
 	return Config{
 		Memory: MemoryConfig{
-			DBPath:        paths.GetDBPath(),
-			OllamaURL:     "http://localhost:11434",
-			EmbedModel:    "nomic-embed-text",
-			ExtractModel:  "glm-5.1:cloud",
-			ContextBudget: 4000,
-			AutoExtract:   true,
-			MaxFileSize:   10 * 1024 * 1024,
+			DBPath:             paths.GetDBPath(),
+			OllamaURL:          "http://localhost:11434",
+			EmbedModel:         "nomic-embed-text",
+			ExtractModel:       "glm-5.1:cloud",
+			ContextBudget:      4000,
+			AutoExtract:        true,
+			MaxFileSize:        10 * 1024 * 1024,
+			CallModelTimeout:   "5m",
 		},
 		Dream: DreamConfig{
 			SimilarityThreshold:    0.92,
 			DecayRate:              0.05,
 			DecayIntervalDays:      30,
 			DecayFloor:             0.3,
-			ConfidenceFloor:        0.3,
+			ConfidenceFloor:         0.3,
 			BoostThreshold:         5,
 			BoostAmount:             0.05,
 			DiaryPath:              paths.GetDreamDiaryPath(),
@@ -103,6 +111,7 @@ func DefaultConfig() Config {
 			BehavioralLookbackDays: 30,
 			AutoLinkThreshold:      0.85,
 			StaleProcedureDays:     30,
+			ModelTimeout:           "5m",
 		},
 		OpenCode: OpenCodeConfig{
 			DBPath:      openCodeDefaultDBPath(),
@@ -167,6 +176,20 @@ func (c *Config) OllamaURL() (string, error) {
 	return validated, nil
 }
 
+// CallModelTimeoutDuration parses the CallModelTimeout config value as a time.Duration.
+// Returns the default of 5 minutes if the value is empty or invalid, logging a warning.
+func (c *Config) CallModelTimeoutDuration() time.Duration {
+	if c.Memory.CallModelTimeout == "" {
+		return 5 * time.Minute
+	}
+	parsed, err := time.ParseDuration(c.Memory.CallModelTimeout)
+	if err != nil {
+		slog.Warn("llmem: config: invalid call_model_timeout, using default 5m", "value", c.Memory.CallModelTimeout, "error", err)
+		return 5 * time.Minute
+	}
+	return parsed
+}
+
 // DreamerConfig returns a dream.DreamerConfig populated from the config.
 // Maps DreamConfig fields to their corresponding DreamerConfig fields.
 // Store must be set by the caller before passing to dream.NewDreamer.
@@ -190,6 +213,18 @@ func (c *Config) DreamerConfig() dream.DreamerConfig {
 		model = "glm-5.1:cloud"
 	}
 
+	// Parse dream model timeout from config
+	var modelTimeout time.Duration
+	if c.Dream.ModelTimeout != "" {
+		parsed, err := time.ParseDuration(c.Dream.ModelTimeout)
+		if err != nil {
+			slog.Warn("llmem: config: invalid dream model_timeout, using default 5m", "value", c.Dream.ModelTimeout, "error", err)
+			modelTimeout = 5 * time.Minute
+		} else {
+			modelTimeout = parsed
+		}
+	}
+
 	return dream.DreamerConfig{
 		SimilarityThreshold:    c.Dream.SimilarityThreshold,
 		DecayRate:              c.Dream.DecayRate,
@@ -206,6 +241,7 @@ func (c *Config) DreamerConfig() dream.DreamerConfig {
 		ReportPath:             c.Dream.ReportPath,
 		BaseURL:                ollamaURL,
 		Model:                  model,
+		ModelTimeout:           modelTimeout,
 	}
 }
 

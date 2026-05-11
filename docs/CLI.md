@@ -133,7 +133,7 @@ Report the count of embeddings stored in the database. In the Go CLI, this comma
 
 ```bash
 llmem introspect --what-happened TEXT [--category CATEGORY] [--context CONTEXT] \
-  [--caught-by WHO] [--proposed-fix FIX]
+  [--caught-by WHO] [--proposed-fix FIX] [--no-llm] [--timeout DURATION]
 ```
 
 Analyze a failure and store a `self_assessment` memory. Uses LLM expansion via Ollama when available, with graceful degradation to storage-only mode when Ollama is unavailable.
@@ -143,11 +143,20 @@ Analyze a failure and store a `self_assessment` memory. Uses LLM expansion via O
 - `--context`: Context where the failure occurred (e.g., `handler.go:42`).
 - `--caught-by`: How the finding was discovered (e.g., `self-review`, `CI`).
 - `--proposed-fix`: Proposed fix for the issue.
+- `--no-llm`: Skip LLM enrichment entirely, store raw fields only. Exit code 0.
+- `--timeout`: LLM call timeout as a Go duration string (e.g. `120s`, `2m`). Must be ≥ 10s. Defaults to the `call_model_timeout` config value (5m if unset).
+
+**Exit codes:**
+- `0`: Success, LLM enrichment succeeded (or `--no-llm` was specified).
+- `1`: Error (e.g., invalid arguments, storage failure).
+- `2`: LLM enrichment was skipped because Ollama was unavailable or timed out. A `WARNING` is printed to stderr. The memory is still stored with raw fields.
+
+**Output:** Prints `Stored self_assessment: <id>` to stdout. When LLM enrichment is skipped or disabled, a `WARNING` is printed to stderr explaining why.
 
 ### `llmem learn`
 
 ```bash
-llmem learn --wrong TEXT --right TEXT [--context CONTEXT]
+llmem learn --wrong TEXT --right TEXT [--context CONTEXT] [--no-llm] [--timeout DURATION]
 ```
 
 Learn a lesson from a wrong→right correction and store it as a `procedure` memory. Uses LLM expansion via Ollama when available, with graceful degradation to storage-only mode.
@@ -155,6 +164,15 @@ Learn a lesson from a wrong→right correction and store it as a `procedure` mem
 - `--wrong` (required): What was wrong.
 - `--right` (required): What is correct.
 - `--context`: Additional context for the correction.
+- `--no-llm`: Skip LLM expansion entirely, store raw fields only. Exit code 0.
+- `--timeout`: LLM call timeout as a Go duration string (e.g. `120s`, `2m`). Must be ≥ 10s. Defaults to the `call_model_timeout` config value (5m if unset).
+
+**Exit codes:**
+- `0`: Success, LLM expansion succeeded (or `--no-llm` was specified).
+- `1`: Error (e.g., invalid arguments, storage failure).
+- `2`: LLM expansion was skipped because Ollama was unavailable or timed out. A `WARNING` is printed to stderr. The memory is still stored with raw fields.
+
+**Output:** Prints `Stored procedure: <id>` to stdout. When LLM expansion is skipped or disabled, a `WARNING` is printed to stderr explaining why.
 
 > **Note:** In the Python CLI, `llmem learn` ingests a codebase directory into the code index. In the Go CLI, `llmem learn` is for wrong→right lesson corrections.
 

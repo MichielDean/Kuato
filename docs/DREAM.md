@@ -8,7 +8,7 @@ The dream cycle performs automated memory maintenance during idle periods. It ca
 
 - **Light phase:** Sort and deduplicate near-duplicate memories (cosine similarity ≥ threshold).
 - **Deep phase:** Score, promote, decay, and merge memories. Decays confidence on idle memories. Boosts frequently accessed memories. Auto-links memories with high cosine similarity (≥ `dream.auto_link_threshold`, default 0.85) by creating `related_to` relations between them. Procedure memories older than `dream.stale_procedure_days` (default 30 days) with no recent access decay at double the normal rate — proposed-but-never-adopted procedures fade faster than confirmed ones.
-- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection). Also extracts behavioral insights (patterns exceeding `dream.behavioral_threshold` occurrences within `dream.behavioral_lookback_days` days). When Ollama is available, uses an LLM call to generate specific, actionable procedural rules with "Do" directives and "Verify" steps. Falls back to count-based summaries when Ollama is unavailable.
+- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection). Also extracts behavioral insights (patterns exceeding `dream.behavioral_threshold` occurrences within `dream.behavioral_lookback_days` days). When Ollama is available, uses an LLM call to generate specific, actionable procedural rules with "Do" directives and "Verify" steps. Falls back to count-based summaries when Ollama is unavailable, logging a `WARNING` to indicate the fallback.
 
 Configuration is under the `dream:` key in `config.yaml`. See [Configuration](CONFIGURATION.md) for all dream settings.
 
@@ -86,6 +86,7 @@ err = dreamer.GenerateDreamReport(result, "/path/to/report.html")
 | BaseURL | string | `"http://localhost:11434"` | Ollama API base URL for behavioral insight generation. Validated for SSRF. |
 | HTTPClient | *http.Client | nil | Optional pre-configured HTTP client (for testing with httptest.NewServer). Only used when OllamaClient is nil. |
 | Model | string | `"glm-5.1:cloud"` | Ollama model name for behavioral insight generation |
+| ModelTimeout | time.Duration | 0 → 5m | Timeout for each LLM call during REM behavioral insight generation. When zero, defaults to 5 minutes. Parsed from `dream.model_timeout` config. |
 | DiaryPath | string | paths.GetDreamDiaryPath() | Path for dream diary markdown |
 | ReportPath | string | paths.GetDreamReportPath() | Path for HTML dream report |
 
@@ -186,20 +187,28 @@ The `internal/introspect` package provides failure analysis and lesson learning:
 import "github.com/MichielDean/LLMem/internal/introspect"
 
 // Analyze a failure and store self_assessment
-id, err := introspect.IntrospectFailure(ctx, ms, introspect.IntrospectFailureParams{
+result, err := introspect.IntrospectFailure(ctx, ms, introspect.IntrospectFailureParams{
     WhatHappened: "null pointer dereference in handler",
     Category:     "NULL_SAFETY",
     Context:      "handler.go:42",
     CaughtBy:     "self-review",
     ProposedFix:  "add nil check before access",
+    NoLLM:        false,            // set true to skip LLM entirely
+    Timeout:      2 * time.Minute,  // 0 → default 5m; must be ≥ 10s
 })
+// result.MemoryID → stored memory ID (non-empty on success)
+// result.LLMStatus → Enriched, Skipped, or Disabled
 
 // Learn a lesson from a wrong→right correction
-id, err := introspect.LearnLesson(ctx, ms, introspect.LearnLessonParams{
-    WhatWasWrong: "used global state",
+result, err := introspect.LearnLesson(ctx, ms, introspect.LearnLessonParams{
+    WhatWasWrong:  "used global state",
     WhatIsCorrect: "inject dependency via constructor",
     Context:       "service.go:15",
+    NoLLM:         false,
+    Timeout:       0,  // 0 → default 5m
 })
+// result.MemoryID → stored memory ID
+// result.LLMStatus → Enriched, Skipped, or Disabled
 ```
 
-Both `IntrospectFailure` and `LearnLesson` use LLM expansion via Ollama when available, with graceful degradation to storage-only mode when Ollama is unavailable.
+Both `IntrospectFailure` and `LearnLesson` use LLM expansion via Ollama when available. When Ollama is unavailable, they degrade gracefully: the memory is still stored with raw fields and `LLMStatus` is set to `Skipped`. When `NoLLM` is true, LLM is bypassed entirely (`LLMStatus = Disabled`). The `Timeout` field controls the LLM call timeout (0 defaults to 5 minutes; values below 10 seconds are rejected with an error).

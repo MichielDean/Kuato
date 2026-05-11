@@ -31,6 +31,7 @@ memory:
   context_budget: 4000
   auto_extract: true
   max_file_size: 10485760      # 10MB
+  call_model_timeout: 5m       # Timeout for LLM calls in introspect/learn (Go duration: "5m", "120s")
 
 dream:
   enabled: true                # (Python only — not wired in Go CLI dream command)
@@ -48,6 +49,7 @@ dream:
   behavioral_lookback_days: 30
   ollama_url: http://localhost:11434  # Ollama API URL for LLM-generated behavioral insights
   model: glm-5.1:cloud                # Model for behavioral insight generation
+  model_timeout: 5m                  # Timeout for LLM calls during REM behavioral insight generation (Go duration)
   auto_link_threshold: 0.85    # Cosine similarity threshold for auto-linking related memories
   stale_procedure_days: 30     # Days after which an unaccessed procedure memory decays at 2x rate
 
