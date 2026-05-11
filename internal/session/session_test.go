@@ -2060,6 +2060,9 @@ func TestSessionHookCoordinator_OnIdle_WithEmbedding_VerifiesMemoriesHaveEmbeddi
 	for _, m := range memories {
 		if m.Content == "The system uses SQLite for persistence" && m.Source == "session" {
 			found = true
+			if len(m.Embedding) == 0 {
+				t.Error("expected extracted memory to have non-zero embedding vector, but Embedding is empty")
+			}
 			break
 		}
 	}
