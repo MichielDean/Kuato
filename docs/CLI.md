@@ -233,7 +233,7 @@ The `idle` hook processes the session's transcript, extracts memories via the ex
 
 The `ending` hook extracts memories from the transcript (same pipeline as `idle`), then runs `IntrospectTranscript` to produce a session-end `self_assessment` memory. When the LLM is unavailable, `IntrospectTranscript` falls back to a degraded plain-text summary of the session (no LLM call attempted).
 
-The `ending` hook performs automatic introspection on the session transcript. It reads the transcript via the configured adapter, generates a `self_assessment` memory using `IntrospectAuto`, and outputs the result type and memory ID. If no adapter is configured or the transcript is empty, it returns `no_transcript`. If introspection fails but the transcript was read, it logs a warning and returns success without crashing the ending event.
+The `ending` hook performs automatic introspection on the session transcript. It reads the transcript via the configured adapter, generates a `self_assessment` memory using `IntrospectAuto`, and outputs the result type and memory ID. If no adapter is configured or the transcript is empty, it returns `no_transcript`. If introspection fails but the transcript was read, it logs a warning and returns success without crashing the ending event. When the introspection result includes a `ProposedUpdate` and `Category`, the hook patches the relevant skill file immediately (no human approval gate).
 
 ### `llmem track-review`
 

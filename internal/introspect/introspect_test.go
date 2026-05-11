@@ -665,15 +665,15 @@ func TestIntrospectAuto_WithText(t *testing.T) {
 	defer cancel()
 
 	ms := newTestStore(t)
-	id, err := IntrospectAuto(ctx, ms, "Encountered a null pointer error when processing user input", "", "http://localhost:59999")
+	result, err := IntrospectAuto(ctx, ms, "Encountered a null pointer error when processing user input", "", "http://localhost:59999")
 	if err != nil {
 		t.Fatalf("IntrospectAuto: %v", err)
 	}
-	if id == "" {
+	if result.MemoryID == "" {
 		t.Error("expected non-empty memory ID")
 	}
 
-	mem, err := ms.Get(context.Background(), id, false)
+	mem, err := ms.Get(context.Background(), result.MemoryID, false)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -713,15 +713,15 @@ func TestIntrospectAuto_WithTextAndModel(t *testing.T) {
 	defer cancel()
 
 	ms := newTestStore(t)
-	id, err := IntrospectAuto(ctx, ms, "Got null pointer error processing input", "test-model", server.URL)
+	result, err := IntrospectAuto(ctx, ms, "Got null pointer error processing input", "test-model", server.URL)
 	if err != nil {
 		t.Fatalf("IntrospectAuto with model: %v", err)
 	}
-	if id == "" {
+	if result.MemoryID == "" {
 		t.Error("expected non-empty memory ID")
 	}
 
-	mem, err := ms.Get(context.Background(), id, false)
+	mem, err := ms.Get(context.Background(), result.MemoryID, false)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -755,15 +755,15 @@ func TestIntrospectAuto_GracefulDegradation(t *testing.T) {
 
 	ms := newTestStore(t)
 	// Point at a non-existent Ollama URL to trigger graceful degradation
-	id, err := IntrospectAuto(ctx, ms, "test failure in error handling", "", "http://localhost:59999")
+	result, err := IntrospectAuto(ctx, ms, "test failure in error handling", "", "http://localhost:59999")
 	if err != nil {
 		t.Fatalf("IntrospectAuto graceful degradation: %v", err)
 	}
-	if id == "" {
+	if result.MemoryID == "" {
 		t.Error("expected non-empty memory ID even when Ollama is unavailable")
 	}
 
-	mem, _ := ms.Get(context.Background(), id, false)
+	mem, _ := ms.Get(context.Background(), result.MemoryID, false)
 	if mem == nil {
 		t.Fatal("expected memory to be stored")
 	}
@@ -779,6 +779,13 @@ func TestIntrospectAuto_GracefulDegradation(t *testing.T) {
 	}
 	if mem.Confidence != 0.9 {
 		t.Errorf("expected confidence 0.9, got %f", mem.Confidence)
+	}
+	// Without LLM enrichment, ProposedUpdate and Category should be empty
+	if result.ProposedUpdate != "" {
+		t.Errorf("expected empty ProposedUpdate on graceful degradation, got %q", result.ProposedUpdate)
+	}
+	if result.Category != "" {
+		t.Errorf("expected empty Category on graceful degradation, got %q", result.Category)
 	}
 }
 
@@ -804,15 +811,15 @@ func TestIntrospectAuto_WithModel(t *testing.T) {
 	defer cancel()
 
 	ms := newTestStore(t)
-	id, err := IntrospectAuto(ctx, ms, "Edge case with empty slice", "test-model", server.URL)
+	result, err := IntrospectAuto(ctx, ms, "Edge case with empty slice", "test-model", server.URL)
 	if err != nil {
 		t.Fatalf("IntrospectAuto with model: %v", err)
 	}
-	if id == "" {
+	if result.MemoryID == "" {
 		t.Error("expected non-empty memory ID")
 	}
 
-	mem, err := ms.Get(context.Background(), id, false)
+	mem, err := ms.Get(context.Background(), result.MemoryID, false)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -824,6 +831,38 @@ func TestIntrospectAuto_WithModel(t *testing.T) {
 	}
 	if mem.Source != "introspect-auto" {
 		t.Errorf("expected source introspect-auto, got %q", mem.Source)
+	}
+	// When LLM enrichment succeeds (Enriched), ProposedUpdate and Category are
+	// populated from the structured response. When Ollama is unavailable
+	// (Skipped), they remain empty since there is no structured content to parse.
+	// Note: this test may hit URL validation blocking the mock server,
+	// so ProposedUpdate/Category may be empty on graceful degradation.
+	// The enrichment parsing logic is tested via IntrospectFailure with HTTPClient.
+}
+
+// TestIntrospectAuto_ResultType_ReturnsFieldsOnGracfulDegradation verifies that
+// IntrospectAutoResult has MemoryID, ProposedUpdate, and Category fields,
+// and that ProposedUpdate and Category are empty on graceful degradation
+// (no LLM enrichment to parse structured content from).
+func TestIntrospectAuto_ResultType_ReturnsFieldsOnGracefulDegradation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	result, err := IntrospectAuto(ctx, ms, "graceful degradation test", "", "http://localhost:59999")
+	if err != nil {
+		t.Fatalf("IntrospectAuto: %v", err)
+	}
+	// MemoryID must be non-empty
+	if result.MemoryID == "" {
+		t.Error("expected non-empty MemoryID on graceful degradation")
+	}
+	// ProposedUpdate and Category are empty on graceful degradation (no LLM content to parse)
+	if result.ProposedUpdate != "" {
+		t.Errorf("expected empty ProposedUpdate on graceful degradation, got %q", result.ProposedUpdate)
+	}
+	if result.Category != "" {
+		t.Errorf("expected empty Category on graceful degradation, got %q", result.Category)
 	}
 }
 

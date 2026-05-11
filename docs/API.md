@@ -1284,12 +1284,18 @@ All three functions use LLM expansion via Ollama when available. When Ollama is 
 #### IntrospectAuto
 
 ```go
-id, err := introspect.IntrospectAuto(ctx, ms, "Session transcript text...", "glm-5.1:cloud", "http://localhost:11434")
+result, err := introspect.IntrospectAuto(ctx, ms, "Session transcript text...", "glm-5.1:cloud", "http://localhost:11434")
+// result.MemoryID, result.ProposedUpdate, result.Category
 ```
 
 `IntrospectAuto` performs automatic introspection on arbitrary text (typically a session transcript) and stores a `self_assessment` memory. When Ollama is available, it uses the LLM to expand the introspection into a richer assessment; when unavailable, it stores the raw text directly (graceful degradation). The `model` and `baseURL` parameters default to `"glm-5.1:cloud"` and `"http://localhost:11434"` respectively when empty.
 
-Contract: never returns `("", nil)` — either creates a memory or returns an error. Even on LLM failure, a storage-only memory is created.
+Returns an `IntrospectAutoResult` with three fields:
+- `MemoryID`: always non-empty on success
+- `ProposedUpdate`: extracted from LLM-enriched content when available; empty on graceful degradation
+- `Category`: extracted from LLM-enriched content when available; empty on graceful degradation
+
+Contract: never returns `(IntrospectAutoResult{}, nil)` — either creates a memory or returns an error. Even on LLM failure, a storage-only memory is created.
 
 ### Ollama Client (internal/ollama)
 

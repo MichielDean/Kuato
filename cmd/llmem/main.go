@@ -836,11 +836,17 @@ func introspectCmd() *cobra.Command {
 				}
 				defer ms.Close()
 
-				id, err := introspect.IntrospectAuto(context.Background(), ms, description, modelVal, baseURLVal)
+				autoResult, err := introspect.IntrospectAuto(context.Background(), ms, description, modelVal, baseURLVal)
 				if err != nil {
 					return err
 				}
-				fmt.Printf("Stored self_assessment: %s\n", id)
+				fmt.Printf("Stored self_assessment: %s\n", autoResult.MemoryID)
+
+				// Patch skill file if ProposedUpdate and Category are available
+				if autoResult.ProposedUpdate != "" && autoResult.Category != "" {
+					patchSkillAfterIntrospect(ms, autoResult.Category, autoResult.ProposedUpdate)
+				}
+
 				return nil
 			}
 

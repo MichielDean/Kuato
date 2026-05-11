@@ -213,10 +213,11 @@ id, err := introspect.LearnLesson(ctx, ms, introspect.LearnLessonParams{
 })
 
 // Automatic introspection from text (e.g., a session transcript)
-id, err := introspect.IntrospectAuto(ctx, ms, "Session transcript text...", "glm-5.1:cloud", "http://localhost:11434")
+result, err := introspect.IntrospectAuto(ctx, ms, "Session transcript text...", "glm-5.1:cloud", "http://localhost:11434")
+// result.MemoryID, result.ProposedUpdate, result.Category
 ```
 
-All three functions use LLM expansion via Ollama when available, with graceful degradation to storage-only mode when Ollama is unavailable. `IntrospectAuto` never returns `("", nil)` — either creates a memory or returns an error.
+All three functions use LLM expansion via Ollama when available, with graceful degradation to storage-only mode when Ollama is unavailable. `IntrospectAuto` returns an `IntrospectAutoResult` with `MemoryID`, `ProposedUpdate`, and `Category` fields. `ProposedUpdate` and `Category` are populated when LLM enrichment succeeds; empty on graceful degradation.
 
 ```go
 // Introspect a session transcript (called by OnEnding)
