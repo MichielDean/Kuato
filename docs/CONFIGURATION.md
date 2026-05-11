@@ -15,6 +15,7 @@ LLMem looks for configuration at `~/.config/llmem/config.yaml`. If this file doe
 | Config file | `~/.config/llmem/config.yaml` | — |
 | Dream diary | `~/.config/llmem/dream-diary.md` | `config.yaml: dream.diary_path` |
 | Proposed changes | `~/.config/llmem/proposed-changes.md` | `config.yaml: dream.proposed_changes_path` |
+| Skill files | `~/.config/llmem/skills/` | `config.yaml: skill_patch.dir` |
 
 **Backward compatibility:** If `~/.lobsterdog/` exists and `~/.config/llmem/` doesn't, LLMem will use the legacy path. Call `migrate_from_lobsterdog()` to copy data to the new location.
 
@@ -53,6 +54,9 @@ dream:
   model_timeout: 5m                  # Timeout for LLM calls during REM behavioral insight generation (Go duration)
   auto_link_threshold: 0.85    # Cosine similarity threshold for auto-linking related memories
   stale_procedure_days: 30     # Days after which an unaccessed procedure memory decays at 2x rate
+
+skill_patch:
+  dir: null                    # Root directory for skill files (default: ~/.config/llmem/skills/)
 
 opencode:
   db_path: ~/.local/share/opencode/opencode.db

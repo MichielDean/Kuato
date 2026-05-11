@@ -8,7 +8,7 @@ The dream cycle performs automated memory maintenance during idle periods. It ca
 
 - **Light phase:** Sort and deduplicate near-duplicate memories (cosine similarity ≥ threshold).
 - **Deep phase:** Score, promote, decay, and merge memories. Decays confidence on idle memories. Boosts frequently accessed memories. Auto-links memories with high cosine similarity (≥ `dream.auto_link_threshold`, default 0.85) by creating `related_to` relations between them. Procedure memories older than `dream.stale_procedure_days` (default 30 days) with no recent access decay at double the normal rate — proposed-but-never-adopted procedures fade faster than confirmed ones.
-- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection). Also extracts behavioral insights (patterns exceeding `dream.behavioral_threshold` occurrences within `dream.behavioral_lookback_days` days). When Ollama is available, uses an LLM call to generate specific, actionable procedural rules with "Do" directives and "Verify" steps; also generates `[SKILL PATCH]` sections (Detection Rule, Checklist, Pitfall, Verification). Falls back to count-based summaries when Ollama is unavailable. When run with `--apply`, appends behavioral insight and skill patch sections to `proposed-changes.md`, with a timestamp header separating dream runs. Proposed procedure memories are linked to their `proposed-changes.md` entry via `proposed_changes_link` metadata.
+- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection). Also extracts behavioral insights (patterns exceeding `dream.behavioral_threshold` occurrences within `dream.behavioral_lookback_days` days). When Ollama is available, uses an LLM call to generate specific, actionable procedural rules with "Do" directives and "Verify" steps; also generates `[SKILL PATCH]` sections (Detection Rule, Checklist, Pitfall, Verification). Falls back to count-based summaries when Ollama is unavailable. When a `SkillPatcher` is configured, the REM phase validates previously applied skill patches by comparing error counts before and after each patch — patches where errors decreased are marked effective, patches where errors stayed the same or increased are flagged for review. Skill patches are applied directly to SKILL.md files immediately after introspection (no proposed-changes.md or human approval gate). The dream validates whether patches reduced errors; if not, they are flagged for review.
 
 Configuration is under the `dream:` key in `config.yaml`. See [Configuration](CONFIGURATION.md) for all dream settings.
 
@@ -49,6 +49,7 @@ dreamer, err := dream.NewDreamer(dream.DreamerConfig{
     DiaryPath:             "",     // defaults from paths.GetDreamDiaryPath()
     ReportPath:            "",     // defaults from paths.GetDreamReportPath()
     ProposedChangesPath:   "",     // defaults from paths.GetProposedChangesPath()
+    SkillPatcher:          nil,    // nil → skip patch validation in REM phase
 })
 if err != nil {
     log.Fatal(err)
@@ -65,6 +66,11 @@ err = dreamer.WriteDiary(result)
 
 // Write proposed-changes.md (behavioral insights + skill patches, append-only)
 err = dreamer.WriteProposedChanges(ctx, result)
+
+// Skill patch validation happens automatically during REM phase when SkillPatcher is set.
+// The REM phase compares error counts before and after each patch, marking effective
+// or flagged-for-review patches. Patches are applied immediately after introspection
+// (not via proposed-changes.md) — the dream validates whether patches reduced errors.
 
 // Generate HTML dream report
 err = dreamer.GenerateDreamReport(result, "/path/to/report.html")
@@ -93,6 +99,7 @@ err = dreamer.GenerateDreamReport(result, "/path/to/report.html")
 | DiaryPath | string | paths.GetDreamDiaryPath() | Path for dream diary markdown |
 | ReportPath | string | paths.GetDreamReportPath() | Path for HTML dream report |
 | ProposedChangesPath | string | paths.GetProposedChangesPath() | Path for proposed-changes.md (behavioral insights and skill patches) |
+| SkillPatcher | *skillpatch.SkillPatcher | nil | Skill patcher for validating applied patches during REM phase. When nil, patch validation is skipped. |
 
 #### DreamResult
 
@@ -194,8 +201,8 @@ The `internal/introspect` package provides failure analysis, lesson learning, an
 ```go
 import "github.com/MichielDean/LLMem/internal/introspect"
 
-// Analyze a failure and store self_assessment
-id, err := introspect.IntrospectFailure(ctx, ms, introspect.IntrospectFailureParams{
+// Analyze a failure and store self_assessment. Returns IntrospectResult with MemoryID, ProposedUpdate, and Category.
+result, err := introspect.IntrospectFailure(ctx, ms, introspect.IntrospectFailureParams{
     WhatHappened: "null pointer dereference in handler",
     Category:     "NULL_SAFETY",
     Context:      "handler.go:42",
@@ -204,9 +211,10 @@ id, err := introspect.IntrospectFailure(ctx, ms, introspect.IntrospectFailurePar
     Model:        "glm-5.1:cloud",
     BaseURL:      "http://localhost:11434",
 })
+// result.MemoryID, result.ProposedUpdate, result.Category
 
-// Learn a lesson from a wrong→right correction
-id, err := introspect.LearnLesson(ctx, ms, introspect.LearnLessonParams{
+// Learn a lesson from a wrong→right correction. Returns IntrospectResult with MemoryID, ProposedUpdate, and Category.
+result, err := introspect.LearnLesson(ctx, ms, introspect.LearnLessonParams{
     WhatWasWrong: "used global state",
     WhatIsCorrect: "inject dependency via constructor",
     Context:       "service.go:15",
@@ -217,7 +225,9 @@ result, err := introspect.IntrospectAuto(ctx, ms, "Session transcript text...", 
 // result.MemoryID, result.ProposedUpdate, result.Category
 ```
 
-All three functions use LLM expansion via Ollama when available, with graceful degradation to storage-only mode when Ollama is unavailable. `IntrospectAuto` returns an `IntrospectAutoResult` with `MemoryID`, `ProposedUpdate`, and `Category` fields. `ProposedUpdate` and `Category` are populated when LLM enrichment succeeds; empty on graceful degradation.
+All three functions use LLM expansion via Ollama when available, with graceful degradation to storage-only mode when Ollama is unavailable. `IntrospectFailure` and `LearnLesson` return `IntrospectResult{MemoryID, ProposedUpdate, Category}`. `IntrospectAuto` returns `IntrospectAutoResult{MemoryID, ProposedUpdate, Category}`. `ProposedUpdate` and `Category` are populated when LLM enrichment succeeds; empty on graceful degradation.
+
+When `ProposedUpdate` and `Category` are both non-empty, callers should patch the relevant skill file using a `SkillPatcher` (see [Skill Patching](#skill-patching-internalskillpatch)). The CLI commands `introspect`, `learn`, and `hook --type ending` all perform this patching automatically after introspection.
 
 ```go
 // Introspect a session transcript (called by OnEnding)
@@ -228,3 +238,36 @@ id, err := introspect.IntrospectTranscript(ctx, ms, transcript, "session-id", ol
 Both `IntrospectFailure` and `LearnLesson` use LLM expansion via Ollama when available, with graceful degradation to storage-only mode when Ollama is unavailable.
 
 `IntrospectTranscript` analyzes a session transcript and stores a `self_assessment` memory. It accepts a pre-configured `*ollama.OllamaClient` (reusing the session's connection). When `ollamaClient` is nil, it produces a degraded memory with a plain-text summary. On LLM availability, the model generates a structured self-assessment from the transcript content. Note: `IntrospectTranscript` uses `context.Background()` for the final store operation (not the caller's `ctx`) to ensure persistence even if the calling context has expired during the LLM call.
+
+### Skill Patching (internal/skillpatch)
+
+The `internal/skillpatch` package provides direct skill file patching after introspection. When introspection produces a `ProposedUpdate` and `Category`, the relevant SKILL.md file is patched immediately — no proposed-changes.md or human approval gate. The dream cycle later validates whether the patch reduced errors in that category.
+
+```go
+import "github.com/MichielDean/LLMem/internal/skillpatch"
+
+sp, err := skillpatch.NewSkillPatcher(skillpatch.SkillPatchConfig{
+    SkillDir: "",  // empty → paths.GetSkillDir() (~/.config/llmem/skills/)
+})
+
+// Patch a skill file with a procedural update from introspection
+err = sp.Patch(ctx, "NULL_SAFETY", "Always guard nil pointers in Go", "Missing null checks")
+
+// Find the skill file for a category (returns "" if not found)
+path, err := sp.FindSkillFile(ctx, "ERROR_HANDLING")
+
+// Validate whether a patch was effective (pure function, no I/O)
+validation := skillpatch.ValidatePatch("NULL_SAFETY", 10, 3)
+// validation.Effective → true (errors decreased)
+// validation.Flagged   → false
+```
+
+**Patch behavior:**
+- If the category maps to a known skill directory (all 10 error categories map to `introspection`), the existing SKILL.md is patched in-place.
+- If no SKILL.md exists, a new one is created with YAML frontmatter.
+- Patches are additive — new `## Patch: CATEGORY (YYYY-MM-DD)` sections are appended, never overwriting existing content.
+- Duplicate patches (same `proposedUpdate` text) are skipped (idempotent).
+- Category names are validated against `^[A-Za-z0-9_]+$` to prevent path traversal.
+- YAML frontmatter values are sanitized (newlines replaced) to prevent injection.
+
+**Dream validation:** When a `SkillPatcher` is provided in `DreamerConfig`, the REM phase calls `ValidatePatch` for each category with behavioral insights, comparing error counts before and after the patch was applied. Effective patches (errors decreased) are noted; ineffective patches (errors stayed the same or increased) are flagged for review via `{flagged_for_review: true}` metadata on the insight memory.
