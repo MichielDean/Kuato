@@ -62,7 +62,7 @@ session:
 
 > **Note:** The following fields exist in the Python config but are **not wired** in the Go implementation: `min_score`, `min_recall_count`, `min_unique_queries`, `boost_on_promote`, `merge_model`, `calibration_enabled`, `calibration_lookback_days`, `inbox_capacity`, `correction_detection` (top-level), `copilot` (top-level), and `proposed_changes_path`. Setting these in `config.yaml` has no effect when using the Go CLI.
 
-> **Note:** The Go config resolves `db_path` for OpenCode as `~/.local/share/opencode/opencode.db` using `filepath.Join` with proper path handling.
+> **Note:** The Go config resolves `db_path` for OpenCode as `~/.local/share/opencode/opencode.db` using `filepath.Join` with proper path handling. The database is opened in read-only mode (`mode=ro`) using a `file:` URI prefix to ensure the `modernc.org/sqlite` driver enforces the read-only constraint. Without the `file:` prefix, query parameters like `mode=ro` are silently ignored and the driver opens in read-write mode.
 
 ## Session Adapter Configuration
 
@@ -79,6 +79,8 @@ LLMem uses a session adapter to read conversation transcripts for memory extract
 - `llmem context` (session.created) — works with all adapters, including `none`. Injects relevant memories without needing session transcripts.
 - `llmem hook idle` (session.idle) — requires transcript access. Returns `no_transcript` when no adapter is configured or no share file exists.
 - `llmem context --compacting` (session.compacting) — works with all adapters. Reads from MemoryStore, not the session DB.
+
+**OpenCode adapter specifics:** The adapter reads from the OpenCode SQLite database in read-only mode. When a session has `time_compacting` set (indicating context compaction), `ReadTranscript` returns only messages after the compaction time (recent context), not the full history. The `Close()` method on the adapter is idempotent and should be called when done (typically via `defer`).
 
 **Copilot adapter and transcripts:** Copilot CLI does not persist conversation transcripts to a database. The adapter reads session metadata from `workspace.yaml` files in `~/.copilot/session-state/`. Full transcripts are only available when the user runs Copilot with `--share`, which writes a markdown file. Without `--share`, `on_idle` and `on_ending` return `no_transcript` gracefully.
 
