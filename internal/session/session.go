@@ -635,7 +635,7 @@ func (c *SessionHookCoordinator) OnEnding(ctx context.Context, sessionID string)
 
 // OnEndingWithIntrospect handles the session.ending event with automatic introspection.
 // It reads the session transcript and generates a self_assessment memory via
-// introspect.IntrospectAuto. Returns (resultType, memoryID, error).
+// introspect.IntrospectFailure. Returns (resultType, memoryID, error).
 // When adapter is nil or transcript is empty, returns (ResultNoTranscript, "", nil).
 // On success, returns (ResultSuccess, memoryID, nil).
 // If introspection fails but transcript was read, logs a warning and returns
@@ -659,7 +659,20 @@ func (c *SessionHookCoordinator) OnEndingWithIntrospect(ctx context.Context, ses
 		return ResultNoTranscript, "", nil
 	}
 
-	memoryID, err := introspect.IntrospectAuto(ctx, c.store, transcript, c.model, c.baseURL)
+	model := c.model
+	if model == "" {
+		model = "glm-5.1:cloud"
+	}
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "http://localhost:11434"
+	}
+
+	result, err := introspect.IntrospectFailure(ctx, c.store, introspect.IntrospectFailureParams{
+		WhatHappened: transcript,
+		Model:        model,
+		BaseURL:      baseURL,
+	})
 	if err != nil {
 		// Introspection failed, but the session hook should not crash the ending event.
 		// Log a warning and return success with empty memoryID.
@@ -668,7 +681,7 @@ func (c *SessionHookCoordinator) OnEndingWithIntrospect(ctx context.Context, ses
 	}
 
 	logSessionEvent("ending_with_introspect", validID)
-	return ResultSuccess, memoryID, nil
+	return ResultSuccess, result.MemoryID, nil
 }
 
 // extractMemories extracts memories from a transcript, handles dedup via SupersedeBySource,

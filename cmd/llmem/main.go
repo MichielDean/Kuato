@@ -798,76 +798,19 @@ func dreamCmd() *cobra.Command {
 
 func introspectCmd() *cobra.Command {
 	var (
-		whatHappened string
-		categoryVal  string
-		contextVal   string
-		caughtByVal  string
-		proposedFix  string
-		noLLM        bool
-		timeoutVal   string
-		autoVal      bool
-		textVal      string
-		sessionVal   string
-		modelVal     string
-		baseURLVal   string
+		noLLM      bool
+		timeoutVal string
 	)
 	cmd := &cobra.Command{
-		Use:   "introspect",
-		Short: "Analyze a failure and store self_assessment memory",
+		Use:   "introspect [description]",
+		Short: "Analyze a failure and store a self_assessment memory",
+		Long: "Analyze a failure and store a self_assessment memory.\n" +
+			"The description is a free-form summary of what went wrong.\n" +
+			"The LLM infers category, context, and proposed fix from your description.\n" +
+			"When the LLM is unavailable, the description is stored directly.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if autoVal {
-				// Auto introspection mode
-				if textVal == "" && sessionVal == "" {
-					return fmt.Errorf("llmem: introspect: --auto requires --text or --session")
-				}
-
-				var text string
-				// --text takes precedence when both are provided — it is
-				// explicit input that does not depend on an adapter.
-				if textVal != "" {
-					text = textVal
-				} else if sessionVal != "" {
-					adapter, err := openAdapter()
-					if err != nil {
-						return err
-					}
-					if adapter == nil {
-						return fmt.Errorf("llmem: introspect: --session requires OpenCode adapter (configure opencode.db_path)")
-					}
-					defer adapter.Close()
-
-					if _, err := paths.ValidateSessionID(sessionVal); err != nil {
-						return fmt.Errorf("llmem: introspect: %w", err)
-					}
-
-					transcript, err := adapter.ReadTranscript(sessionVal)
-					if err != nil {
-						return fmt.Errorf("llmem: introspect: read session transcript: %w", err)
-					}
-					if transcript == "" {
-						return fmt.Errorf("llmem: introspect: no transcript found for session %s", sessionVal)
-					}
-					text = transcript
-				}
-
-				ms, err := openStore()
-				if err != nil {
-					return err
-				}
-				defer ms.Close()
-
-				id, err := introspect.IntrospectAuto(context.Background(), ms, text, modelVal, baseURLVal)
-				if err != nil {
-					return err
-				}
-				fmt.Printf("Stored auto self_assessment: %s\n", id)
-				return nil
-			}
-
-			// Manual introspection mode (existing behavior)
-			if whatHappened == "" {
-				return fmt.Errorf("llmem: introspect: --what-happened is required")
-			}
+			whatHappened := args[0]
 
 			var timeout time.Duration
 			if timeoutVal != "" {
@@ -877,7 +820,6 @@ func introspectCmd() *cobra.Command {
 				}
 				timeout = parsed
 			} else {
-				// Use config default as fallback
 				cfg, cfgErr := loadConfig()
 				if cfgErr != nil {
 					slog.Debug("llmem: introspect: could not load config for timeout default, using 5m", "error", cfgErr)
@@ -894,14 +836,8 @@ func introspectCmd() *cobra.Command {
 
 			result, err := introspect.IntrospectFailure(context.Background(), ms, introspect.IntrospectFailureParams{
 				WhatHappened: whatHappened,
-				Category:     categoryVal,
-				Context:      contextVal,
-				CaughtBy:     caughtByVal,
-				ProposedFix:  proposedFix,
 				NoLLM:        noLLM,
 				Timeout:      timeout,
-				Model:        modelVal,
-				BaseURL:      baseURLVal,
 			})
 			if err != nil {
 				return err
@@ -916,7 +852,6 @@ func introspectCmd() *cobra.Command {
 
 			if result.LLMStatus == introspect.Skipped {
 				fmt.Fprintln(os.Stderr, "WARNING: LLM enrichment skipped — stored raw fields (Ollama unavailable)")
-				// Use os.Exit for non-zero exit code since cobra only supports exit code 1 via returning error
 				ms.Close()
 				os.Exit(2)
 			}
@@ -924,18 +859,8 @@ func introspectCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&whatHappened, "what-happened", "", "What went wrong")
-	cmd.Flags().StringVar(&categoryVal, "category", "", "Error category")
-	cmd.Flags().StringVar(&contextVal, "context", "", "Context where it happened")
-	cmd.Flags().StringVar(&caughtByVal, "caught-by", "", "How it was caught")
-	cmd.Flags().StringVar(&proposedFix, "proposed-fix", "", "Proposed fix")
 	cmd.Flags().BoolVar(&noLLM, "no-llm", false, "Skip LLM enrichment, store raw fields only (exit code 0)")
 	cmd.Flags().StringVar(&timeoutVal, "timeout", "", "LLM call timeout (e.g. \"120s\", \"2m\"). Must be >= 10s.")
-	cmd.Flags().BoolVar(&autoVal, "auto", false, "Automatic introspection from text or session transcript")
-	cmd.Flags().StringVar(&textVal, "text", "", "Text to introspect (use with --auto)")
-	cmd.Flags().StringVar(&sessionVal, "session", "", "Session ID to read transcript from (use with --auto)")
-	cmd.Flags().StringVar(&modelVal, "model", "", "LLM model for introspection (default: glm-5.1:cloud)")
-	cmd.Flags().StringVar(&baseURLVal, "base-url", "", "Ollama base URL for introspection (default: http://localhost:11434)")
 	return cmd
 }
 
