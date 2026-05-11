@@ -40,6 +40,12 @@ const idleDebounceSeconds = 30
 // Entries older than idleDebounceSeconds * idleEvictionFactor are evicted.
 const idleEvictionFactor = 10
 
+// defaultIntrospectModel is the LLM model used for automatic session introspection.
+const defaultIntrospectModel = "glm-5.1:cloud"
+
+// defaultIntrospectBaseURL is the Ollama base URL used for automatic session introspection.
+const defaultIntrospectBaseURL = "http://localhost:11434"
+
 // Compacting key memory types and minimum confidence.
 var compactingKeyTypes = []string{"decision", "preference", "procedure", "project_state"}
 
@@ -635,7 +641,7 @@ func (c *SessionHookCoordinator) OnEnding(ctx context.Context, sessionID string)
 
 // OnEndingWithIntrospect handles the session.ending event with automatic introspection.
 // It reads the session transcript and generates a self_assessment memory via
-// introspect.IntrospectFailure. Returns (resultType, memoryID, error).
+// introspect.IntrospectAuto. Returns (resultType, memoryID, error).
 // When adapter is nil or transcript is empty, returns (ResultNoTranscript, "", nil).
 // On success, returns (ResultSuccess, memoryID, nil).
 // If introspection fails but transcript was read, logs a warning and returns
@@ -661,18 +667,14 @@ func (c *SessionHookCoordinator) OnEndingWithIntrospect(ctx context.Context, ses
 
 	model := c.model
 	if model == "" {
-		model = "glm-5.1:cloud"
+		model = defaultIntrospectModel
 	}
 	baseURL := c.baseURL
 	if baseURL == "" {
-		baseURL = "http://localhost:11434"
+		baseURL = defaultIntrospectBaseURL
 	}
 
-	result, err := introspect.IntrospectFailure(ctx, c.store, introspect.IntrospectFailureParams{
-		WhatHappened: transcript,
-		Model:        model,
-		BaseURL:      baseURL,
-	})
+	memoryID, err := introspect.IntrospectAuto(ctx, c.store, transcript, model, baseURL)
 	if err != nil {
 		// Introspection failed, but the session hook should not crash the ending event.
 		// Log a warning and return success with empty memoryID.
@@ -681,7 +683,7 @@ func (c *SessionHookCoordinator) OnEndingWithIntrospect(ctx context.Context, ses
 	}
 
 	logSessionEvent("ending_with_introspect", validID)
-	return ResultSuccess, result.MemoryID, nil
+	return ResultSuccess, memoryID, nil
 }
 
 // extractMemories extracts memories from a transcript, handles dedup via SupersedeBySource,

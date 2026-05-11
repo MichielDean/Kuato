@@ -792,6 +792,11 @@ func introspectCmd() *cobra.Command {
 	var (
 		noLLM      bool
 		timeoutVal string
+		auto       bool
+		textVal    string
+		sessionVal string
+		modelVal   string
+		baseURLVal string
 	)
 	cmd := &cobra.Command{
 		Use:   "introspect [description]",
@@ -799,9 +804,50 @@ func introspectCmd() *cobra.Command {
 		Long: "Analyze a failure and store a self_assessment memory.\n" +
 			"The description is a free-form summary of what went wrong.\n" +
 			"The LLM infers category, context, and proposed fix from your description.\n" +
-			"When the LLM is unavailable, the description is stored directly.",
-		Args: cobra.ExactArgs(1),
+			"When the LLM is unavailable, the description is stored directly.\n\n" +
+			"Use --auto --text for programmatic introspection from session hooks.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Auto mode: use IntrospectAuto with --text or --session
+			if auto {
+				description := textVal
+				if description == "" && sessionVal != "" {
+					// Read from session transcript if --session is provided
+					adapter, adapterErr := openAdapter()
+					if adapterErr != nil {
+						return fmt.Errorf("llmem: introspect: create adapter: %w", adapterErr)
+					}
+					if adapter != nil {
+						defer adapter.Close()
+						transcript, readErr := adapter.ReadTranscript(sessionVal)
+						if readErr != nil {
+							return fmt.Errorf("llmem: introspect: read transcript: %w", readErr)
+						}
+						description = transcript
+					}
+				}
+				if description == "" {
+					return fmt.Errorf("llmem: introspect: --text is required with --auto")
+				}
+
+				ms, err := openStore()
+				if err != nil {
+					return err
+				}
+				defer ms.Close()
+
+				id, err := introspect.IntrospectAuto(context.Background(), ms, description, modelVal, baseURLVal)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("Stored self_assessment: %s\n", id)
+				return nil
+			}
+
+			// Standard mode: positional description argument
+			if len(args) == 0 {
+				return fmt.Errorf("llmem: introspect: description argument is required (or use --auto --text)")
+			}
 			whatHappened := args[0]
 
 			var timeout time.Duration
@@ -858,6 +904,11 @@ func introspectCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&noLLM, "no-llm", false, "Skip LLM enrichment, store raw fields only (exit code 0)")
 	cmd.Flags().StringVar(&timeoutVal, "timeout", "", "LLM call timeout (e.g. \"120s\", \"2m\"). Must be >= 10s.")
+	cmd.Flags().BoolVar(&auto, "auto", false, "Automatic introspection mode (use with --text)")
+	cmd.Flags().StringVar(&textVal, "text", "", "Text description for auto introspection")
+	cmd.Flags().StringVar(&sessionVal, "session", "", "Session ID to read transcript from for auto introspection")
+	cmd.Flags().StringVar(&modelVal, "model", "", "LLM model name (default: glm-5.1:cloud)")
+	cmd.Flags().StringVar(&baseURLVal, "base-url", "", "Ollama base URL (default: http://localhost:11434)")
 	return cmd
 }
 
