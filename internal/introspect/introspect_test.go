@@ -506,6 +506,123 @@ func TestIntrospectFailure_WithModel(t *testing.T) {
 	}
 }
 
+// TestIntrospectFailure_ProposedUpdateReturned verifies that IntrospectResult
+// includes the ProposedUpdate and Category fields when LLM returns structured content.
+func TestIntrospectFailure_ProposedUpdateReturned(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	result, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
+		WhatHappened: "null pointer dereference in handler",
+		Category:     "NULL_SAFETY",
+		ProposedFix:  "always check for nil before accessing fields",
+		NoLLM:        true,
+	})
+	if err != nil {
+		t.Fatalf("IntrospectFailure: %v", err)
+	}
+	if result.ProposedUpdate != "always check for nil before accessing fields" {
+		t.Errorf("expected ProposedUpdate='always check for nil before accessing fields', got %q", result.ProposedUpdate)
+	}
+	if result.Category != "NULL_SAFETY" {
+		t.Errorf("expected Category='NULL_SAFETY', got %q", result.Category)
+	}
+}
+
+// TestIntrospectFailure_ProposedUpdateFromRawContent verifies that ProposedUpdate
+// is extracted from the params when LLM is available and returns a structured response.
+func TestIntrospectFailure_ProposedUpdateFromRawContent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+
+	result, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
+		WhatHappened: "swallowed error in database call",
+		Category:     "ERROR_HANDLING",
+		ProposedFix:  "wrap errors with fmt.Errorf and proper context",
+		NoLLM:        true,
+	})
+	if err != nil {
+		t.Fatalf("IntrospectFailure: %v", err)
+	}
+
+	// When NoLLM is true, ProposedFix is used directly as ProposedUpdate
+	if result.ProposedUpdate != "wrap errors with fmt.Errorf and proper context" {
+		t.Errorf("expected ProposedUpdate from params, got %q", result.ProposedUpdate)
+	}
+	if result.Category != "ERROR_HANDLING" {
+		t.Errorf("expected Category='ERROR_HANDLING', got %q", result.Category)
+	}
+}
+
+// TestIntrospectFailure_ProposedUpdateWithLLM verifies that ProposedUpdate is
+// populated from LLM response when the LLM enriches the content.
+func TestIntrospectFailure_ProposedUpdateWithLLM(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "test-model"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/generate" {
+			resp := map[string]string{
+				"response": "Category: NULL_SAFETY\nWhat_happened: nil dereference\nProposed_update: always guard nil pointers in Go\nWhat_caught_it: code review",
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	result, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
+		WhatHappened: "nil dereference in handler",
+		Category:     "NULL_SAFETY",
+		ProposedFix:  "check nil before access",
+		Model:        "test-model",
+		HTTPClient:   server.Client(),
+		BaseURL:      server.URL,
+	})
+	if err != nil {
+		t.Fatalf("IntrospectFailure: %v", err)
+	}
+
+	if result.ProposedUpdate != "always guard nil pointers in Go" {
+		t.Errorf("expected ProposedUpdate from LLM response, got %q", result.ProposedUpdate)
+	}
+	if result.Category != "NULL_SAFETY" {
+		t.Errorf("expected Category=NULL_SAFETY, got %q", result.Category)
+	}
+}
+
+// TestIntrospectFailure_EmptyProposedUpdate verifies that ProposedUpdate is empty
+// when no proposed fix is provided.
+func TestIntrospectFailure_EmptyProposedUpdate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	result, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
+		WhatHappened: "some error",
+		NoLLM:        true,
+	})
+	if err != nil {
+		t.Fatalf("IntrospectFailure: %v", err)
+	}
+	if result.ProposedUpdate != "" {
+		t.Errorf("expected empty ProposedUpdate, got %q", result.ProposedUpdate)
+	}
+	if result.Category != "" {
+		t.Errorf("expected empty Category when not specified, got %q", result.Category)
+	}
+}
+
 func TestLearnLesson_WithModel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/tags" {

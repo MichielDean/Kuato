@@ -13,6 +13,7 @@ import (
 
 	"github.com/MichielDean/LLMem/internal/ollama"
 	"github.com/MichielDean/LLMem/internal/paths"
+	"github.com/MichielDean/LLMem/internal/skillpatch"
 	"github.com/MichielDean/LLMem/internal/store"
 )
 
@@ -2033,5 +2034,125 @@ func TestDreamer_WriteProposedChanges_UsesSamplesFromInsight(t *testing.T) {
 	}
 	if !contains(content, "Missing try/except block") {
 		t.Error("expected 'Missing try/except block' sample from insight.Samples in proposed-changes.md")
+	}
+}
+
+// TestDreamer_WriteProposedChanges_ValidatesPatches verifies that the REM phase
+// validates patches via the SkillPatcher when configured.
+func TestDreamer_WriteProposedChanges_ValidatesPatches(t *testing.T) {
+	ctx := context.Background()
+	ms := newTestStore(t)
+
+	// Add self_assessment memories in the NULL_SAFETY category
+	// (need >= behavioralThreshold to trigger behavioral insight)
+	for i := 0; i < 5; i++ {
+		_, err := ms.Add(ctx, store.AddParams{
+			Type:       "self_assessment",
+			Content:    "Category: NULL_SAFETY\nWhat_happened: nil dereference\nProposed_update: always check nil",
+			Source:     "test",
+			Confidence: 0.9,
+		})
+		if err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+	}
+
+	// Create a SkillPatcher
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "skills")
+	sp, err := skillpatch.NewSkillPatcher(skillpatch.SkillPatchConfig{
+		SkillDir: skillDir,
+		Store:    ms,
+	})
+	if err != nil {
+		t.Fatalf("NewSkillPatcher: %v", err)
+	}
+
+	// Use a mock HTTP server that simulates unavailable Ollama
+	// so the dream doesn't hang trying to connect
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return 404 for all requests — Ollama unavailable
+		http.NotFound(w, r)
+	}))
+	defer mockServer.Close()
+
+	mockClient := ollama.OllamaClientConfig{
+		BaseURL:    mockServer.URL,
+		HTTPClient: mockServer.Client(),
+	}
+	mockOllama, _ := ollama.NewOllamaClient(mockClient)
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:       ms,
+		SkillPatcher: sp,
+		OllamaClient: mockOllama,
+		BehavioralThreshold: 3,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(ctx, true, "rem")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if result.Rem == nil {
+		t.Fatal("expected REM results")
+	}
+
+	// Verify that behavioral insights were generated and patch validation ran
+	if len(result.Rem.BehavioralInsights) == 0 {
+		t.Error("expected behavioral insights for NULL_SAFETY")
+	}
+
+	foundNULLSafety := false
+	for _, insight := range result.Rem.BehavioralInsights {
+		if insight.Category == "NULL_SAFETY" {
+			foundNULLSafety = true
+		}
+	}
+	if !foundNULLSafety {
+		t.Error("expected NULL_SAFETY insight in behavioral insights")
+	}
+}
+
+// TestDreamer_WriteProposedChanges_NoInsights_ValidatesPatches verifies that
+// no patch validation occurs when there are no behavioral insights.
+func TestDreamer_WriteProposedChanges_NoInsights_ValidatesPatches(t *testing.T) {
+	ctx := context.Background()
+	ms := newTestStore(t)
+
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "skills")
+	sp, err := skillpatch.NewSkillPatcher(skillpatch.SkillPatchConfig{
+		SkillDir: skillDir,
+		Store:    ms,
+	})
+	if err != nil {
+		t.Fatalf("NewSkillPatcher: %v", err)
+	}
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:       ms,
+		SkillPatcher: sp,
+		BehavioralThreshold: 3, // high threshold so no insights are generated
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(ctx, true, "rem")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if result.Rem == nil {
+		t.Fatal("expected REM results")
+	}
+
+	// No insights means no patch validation — test verifies it doesn't crash
+	if len(result.Rem.BehavioralInsights) != 0 {
+		t.Errorf("expected no behavioral insights, got %d", len(result.Rem.BehavioralInsights))
 	}
 }

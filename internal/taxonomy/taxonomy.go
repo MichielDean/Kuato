@@ -136,6 +136,18 @@ func findColonSpace(s string) int {
 	return -1
 }
 
+// ParseSelfAssessmentField extracts a named field value from structured self_assessment content.
+// Uses ParseSelfAssessment internally. Returns empty string if field not found, never returns an error.
+// This is needed by both introspect (to populate IntrospectResult.ProposedUpdate) and
+// skillpatch (to extract proposed_update from stored memories).
+func ParseSelfAssessmentField(content, field string) string {
+	parsed := ParseSelfAssessment(content)
+	if val, ok := parsed[field]; ok {
+		return val
+	}
+	return ""
+}
+
 // trimSpace trims leading and trailing whitespace.
 func trimSpace(s string) string {
 	// Fast path for common cases

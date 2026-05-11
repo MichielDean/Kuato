@@ -738,6 +738,13 @@ func dreamCmd() *cobra.Command {
 			dreamerCfg := cfg.DreamerConfig()
 			dreamerCfg.Store = ms
 
+			// Wire SkillPatcher for direct skill patching after dream
+			sp, spErr := cfg.NewSkillPatcher(ms)
+			if spErr != nil {
+				slog.Warn("llmem: dream: could not create skill patcher, skipping patch validation", "error", spErr)
+			}
+			dreamerCfg.SkillPatcher = sp
+
 			d, err := dream.NewDreamer(dreamerCfg)
 			if err != nil {
 				return err
@@ -829,6 +836,11 @@ func introspectCmd() *cobra.Command {
 			}
 
 			fmt.Printf("Stored self_assessment: %s\n", result.MemoryID)
+
+			// Patch skill file if ProposedUpdate and Category are available
+			if result.ProposedUpdate != "" && result.Category != "" {
+				patchSkillAfterIntrospect(ms, result.Category, result.ProposedUpdate)
+			}
 
 			if noLLM {
 				fmt.Fprintln(os.Stderr, "WARNING: LLM enrichment disabled (--no-llm flag)")
@@ -1276,4 +1288,43 @@ func defaultIfEmpty(val, defaultVal string) string {
 		return defaultVal
 	}
 	return val
+}
+
+// patchSkillAfterIntrospect attempts to patch the relevant skill file after
+// introspection produces a self-assessment with a proposed update.
+// Patching failure is degraded behavior, not a fatal error — the memory was still stored.
+func patchSkillAfterIntrospect(ms *store.MemoryStore, category, proposedUpdate string) {
+	cfg, cfgErr := loadConfig()
+	if cfgErr != nil {
+		slog.Warn("llmem: introspect: could not load config for skill patching", "error", cfgErr)
+		return
+	}
+
+	// Category "REVIEW_PASSED" needs no patch
+	if category == "REVIEW_PASSED" {
+		slog.Debug("llmem: introspect: REVIEW_PASSED needs no skill patch")
+		return
+	}
+
+	sp, spErr := cfg.NewSkillPatcher(ms)
+	if spErr != nil {
+		slog.Warn("llmem: introspect: could not create skill patcher", "error", spErr)
+		return
+	}
+	if sp == nil {
+		slog.Debug("llmem: introspect: skill patcher not available, skipping patch")
+		return
+	}
+
+	// Get the category description from taxonomy for context
+	categoryDescription := category
+	if desc, ok := taxonomy.ErrorTaxonomy[category]; ok {
+		categoryDescription = desc
+	}
+
+	if err := sp.Patch(context.Background(), category, proposedUpdate, categoryDescription); err != nil {
+		slog.Warn("llmem: introspect: skill patching failed (memory was still stored)", "category", category, "error", err)
+	} else {
+		slog.Info("llmem: introspect: patched skill file", "category", category)
+	}
 }

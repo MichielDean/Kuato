@@ -49,10 +49,15 @@ const (
 // MemoryID is always non-empty on success (never empty string).
 // Content is the stored memory content.
 // LLMStatus indicates whether LLM enrichment was used.
+// ProposedUpdate contains the proposed procedural update extracted from the
+// self-assessment content. Empty when no proposed update is available.
+// Category contains the error taxonomy category. May be empty when no category is specified.
 type IntrospectResult struct {
-	MemoryID   string
-	Content    string
-	LLMStatus  LLMEnrichment
+	MemoryID      string
+	Content       string
+	LLMStatus     LLMEnrichment
+	ProposedUpdate string
+	Category       string
 }
 
 // LearnResult holds the result of a LearnLesson call.
@@ -152,7 +157,13 @@ func IntrospectFailure(ctx context.Context, ms *store.MemoryStore, params Intros
 			return IntrospectResult{}, fmtErr("store self_assessment: %w", err)
 		}
 		slog.Info("llmem: introspect: stored self_assessment (LLM disabled)", "id", id)
-		return IntrospectResult{MemoryID: id, Content: content, LLMStatus: Disabled}, nil
+		return IntrospectResult{
+			MemoryID:      id,
+			Content:       content,
+			LLMStatus:     Disabled,
+			ProposedUpdate: params.ProposedFix,
+			Category:       params.Category,
+		}, nil
 	}
 
 	var content string
@@ -176,7 +187,30 @@ func IntrospectFailure(ctx context.Context, ms *store.MemoryStore, params Intros
 	}
 
 	slog.Info("llmem: introspect: stored self_assessment", "id", id, "llm_status", llmStatus)
-	return IntrospectResult{MemoryID: id, Content: content, LLMStatus: llmStatus}, nil
+
+	// Extract ProposedUpdate and Category from the stored content.
+	// When LLM enrichment succeeded, parse from the LLM response.
+	// When LLM was skipped or failed, the raw fields are used instead.
+	proposedUpdate := ""
+	category := params.Category
+	if llmStatus == Enriched && content != "" {
+		proposedUpdate = taxonomy.ParseSelfAssessmentField(content, "Proposed_update")
+		parsedCategory := taxonomy.ParseSelfAssessmentField(content, "Category")
+		if parsedCategory != "" {
+			category = parsedCategory
+		}
+	}
+	if proposedUpdate == "" {
+		proposedUpdate = params.ProposedFix
+	}
+
+	return IntrospectResult{
+		MemoryID:      id,
+		Content:       content,
+		LLMStatus:     llmStatus,
+		ProposedUpdate: proposedUpdate,
+		Category:       category,
+	}, nil
 }
 
 // buildRawFailureContent constructs the fallback content string from provided fields

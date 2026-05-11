@@ -136,3 +136,27 @@ func TestParseSelfAssessment_Empty(t *testing.T) {
 		t.Errorf("expected empty map, got %d entries", len(result))
 	}
 }
+
+func TestParseSelfAssessmentField_Found(t *testing.T) {
+	content := "Category: ERROR_HANDLING\nWhat_happened: swallowed error\nProposed_update: always check errors"
+	val := ParseSelfAssessmentField(content, "Proposed_update")
+	if val != "always check errors" {
+		t.Errorf("expected 'always check errors', got %q", val)
+	}
+}
+
+func TestParseSelfAssessmentField_NotFound(t *testing.T) {
+	content := "Category: ERROR_HANDLING\nWhat_happened: swallowed error"
+	val := ParseSelfAssessmentField(content, "Proposed_update")
+	if val != "" {
+		t.Errorf("expected empty string for missing field, got %q", val)
+	}
+}
+
+func TestParseSelfAssessmentField_Category(t *testing.T) {
+	content := "Category: NULL_SAFETY\nWhat_happened: nil dereference"
+	val := ParseSelfAssessmentField(content, "Category")
+	if val != "NULL_SAFETY" {
+		t.Errorf("expected 'NULL_SAFETY', got %q", val)
+	}
+}

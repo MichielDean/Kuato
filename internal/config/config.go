@@ -12,6 +12,8 @@ import (
 
 	"github.com/MichielDean/LLMem/internal/dream"
 	"github.com/MichielDean/LLMem/internal/paths"
+	"github.com/MichielDean/LLMem/internal/skillpatch"
+	"github.com/MichielDean/LLMem/internal/store"
 	"github.com/MichielDean/LLMem/internal/urlvalidate"
 	"gopkg.in/yaml.v3"
 )
@@ -44,6 +46,8 @@ type DreamConfig struct {
 	// Parsed as a Go duration string (e.g. "5m", "120s"). Defaults to "5m".
 	ModelTimeout        string `yaml:"model_timeout"`
 	ProposedChangesPath string  `yaml:"proposed_changes_path"`
+	// SkillPatchDir is the root directory for skill files. Defaults to paths.GetSkillDir() if empty.
+	SkillPatchDir       string  `yaml:"skill_patch_dir"`
 }
 
 // SessionConfig holds session lifecycle settings.
@@ -58,12 +62,19 @@ type OpenCodeConfig struct {
 	ContextDir  string `yaml:"context_dir"`
 }
 
+// SkillPatchConfig holds skill patch settings.
+type SkillPatchConfig struct {
+	// Dir is the root directory for skill files. Defaults to paths.GetSkillDir() if empty.
+	Dir string `yaml:"dir"`
+}
+
 // Config holds the full LLMem configuration.
 type Config struct {
-	Memory   MemoryConfig   `yaml:"memory"`
-	Dream    DreamConfig    `yaml:"dream"`
-	OpenCode OpenCodeConfig `yaml:"opencode"`
-	Session  SessionConfig  `yaml:"session"`
+	Memory    MemoryConfig    `yaml:"memory"`
+	Dream     DreamConfig     `yaml:"dream"`
+	SkillPatch SkillPatchConfig `yaml:"skill_patch"`
+	OpenCode  OpenCodeConfig  `yaml:"opencode"`
+	Session   SessionConfig   `yaml:"session"`
 }
 
 // MemoryConfig holds memory store settings.
@@ -113,6 +124,9 @@ func DefaultConfig() Config {
 			AutoLinkThreshold:      0.85,
 			StaleProcedureDays:     30,
 			ModelTimeout:           "5m",
+		},
+		SkillPatch: SkillPatchConfig{
+			Dir: paths.GetSkillDir(),
 		},
 		OpenCode: OpenCodeConfig{
 			DBPath:      openCodeDefaultDBPath(),
@@ -257,6 +271,25 @@ func (c *Config) DreamConfigResolved() DreamConfig {
 // SessionConfigResolved returns the session configuration.
 func (c *Config) SessionConfigResolved() SessionConfig {
 	return c.Session
+}
+
+// NewSkillPatcher creates a SkillPatcher using the SkillPatch config and the given store.
+// Returns nil without error if patching should be skipped (graceful degradation for callers).
+// The caller provides the store since it's the same store used for dreaming.
+func (c *Config) NewSkillPatcher(ms *store.MemoryStore) (*skillpatch.SkillPatcher, error) {
+	if ms == nil {
+		return nil, nil
+	}
+
+	skillDir := c.SkillPatch.Dir
+	if skillDir == "" {
+		skillDir = paths.GetSkillDir()
+	}
+
+	return skillpatch.NewSkillPatcher(skillpatch.SkillPatchConfig{
+		SkillDir: skillDir,
+		Store:    ms,
+	})
 }
 
 // WriteConfigYAML writes config as YAML to the given path with 0600 permissions.
