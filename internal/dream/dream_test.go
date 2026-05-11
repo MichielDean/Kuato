@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/MichielDean/LLMem/internal/ollama"
+	"github.com/MichielDean/LLMem/internal/paths"
 	"github.com/MichielDean/LLMem/internal/store"
 )
 
@@ -1251,4 +1252,472 @@ func TestExtractBehavioralInsights_LogsSkipped_WhenOllamaUnavailable(t *testing.
 		}
 	}
 	t.Error("expected ERROR_HANDLING insight not found")
+}
+
+// TestDreamer_WriteProposedChanges_AppendsNewSections verifies that WriteProposedChanges
+// appends behavioral insight sections with category/occurrence count, Do directives,
+// Verify step, and [SKILL PATCH] with all four fields.
+func TestDreamer_WriteProposedChanges_AppendsNewSections(t *testing.T) {
+	ms := newTestStore(t)
+	dir := t.TempDir()
+	proposedChangesPath := filepath.Join(dir, "proposed-changes.md")
+
+	// Add self_assessment memories to exceed the threshold
+	for i := 0; i < 4; i++ {
+		addSelfAssessment(t, ms, "ERROR_HANDLING", "Missing error handling in HTTP call "+strings.Repeat("x", 20))
+	}
+
+	// Use a server that's not available, so we get count-based fallback
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:               ms,
+		OllamaClient:        newTestOllamaClient(t, server),
+		ProposedChangesPath: proposedChangesPath,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(context.Background(), true, "rem")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Rem == nil || len(result.Rem.BehavioralInsights) == 0 {
+		t.Fatal("expected at least one behavioral insight")
+	}
+
+	// Write proposed changes
+	err = d.WriteProposedChanges(result)
+	if err != nil {
+		t.Fatalf("WriteProposedChanges: %v", err)
+	}
+
+	data, err := os.ReadFile(proposedChangesPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	content := string(data)
+
+	// Verify timestamp header
+	if !contains(content, "# Dream Run:") {
+		t.Error("expected 'Dream Run:' timestamp header in proposed-changes.md")
+	}
+	// Verify category header
+	if !contains(content, "## ERROR_HANDLING") {
+		t.Error("expected '## ERROR_HANDLING' section in proposed-changes.md")
+	}
+	// Verify occurrence count
+	if !contains(content, "×4") {
+		t.Error("expected '×4' occurrence count in proposed-changes.md")
+	}
+	// Verify behavioral directive section
+	if !contains(content, "### Behavioral Directive") {
+		t.Error("expected '### Behavioral Directive' section in proposed-changes.md")
+	}
+	// Verify Do directive
+	if !contains(content, "**Do:**") {
+		t.Error("expected '**Do:**' in proposed-changes.md")
+	}
+	// Verify Verify step
+	if !contains(content, "**Verify:**") {
+		t.Error("expected '**Verify:**' in proposed-changes.md")
+	}
+	// Verify SKILL PATCH section
+	if !contains(content, "### [SKILL PATCH]") {
+		t.Error("expected '### [SKILL PATCH]' section in proposed-changes.md")
+	}
+	// Verify SKILL PATCH fields
+	if !contains(content, "**Detection Rule:**") {
+		t.Error("expected '**Detection Rule:**' in proposed-changes.md")
+	}
+	if !contains(content, "**Checklist:**") {
+		t.Error("expected '**Checklist:**' in proposed-changes.md")
+	}
+	if !contains(content, "**Pitfall:**") {
+		t.Error("expected '**Pitfall:**' in proposed-changes.md")
+	}
+	if !contains(content, "**Verification:**") {
+		t.Error("expected '**Verification:**' in proposed-changes.md")
+	}
+}
+
+// TestDreamer_WriteProposedChanges_PreservesExistingContent verifies that
+// existing content in proposed-changes.md is preserved when appending.
+func TestDreamer_WriteProposedChanges_PreservesExistingContent(t *testing.T) {
+	ms := newTestStore(t)
+	dir := t.TempDir()
+	proposedChangesPath := filepath.Join(dir, "proposed-changes.md")
+
+	// Write initial content
+	initialContent := "# Previous Dream Run\n\nOld content here.\n"
+	if err := os.WriteFile(proposedChangesPath, []byte(initialContent), 0600); err != nil {
+		t.Fatalf("WriteFile initial: %v", err)
+	}
+
+	// Add self_assessment memories to exceed the threshold
+	for i := 0; i < 3; i++ {
+		addSelfAssessment(t, ms, "NULL_SAFETY", "Missing null check in function "+strings.Repeat("z", 10))
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:               ms,
+		OllamaClient:        newTestOllamaClient(t, server),
+		ProposedChangesPath: proposedChangesPath,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(context.Background(), true, "rem")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	err = d.WriteProposedChanges(result)
+	if err != nil {
+		t.Fatalf("WriteProposedChanges: %v", err)
+	}
+
+	data, err := os.ReadFile(proposedChangesPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	content := string(data)
+
+	// Verify old content still present
+	if !contains(content, "Old content here.") {
+		t.Error("expected existing content to be preserved in proposed-changes.md")
+	}
+	// Verify new content appended
+	if !contains(content, "# Dream Run:") {
+		t.Error("expected new dream run timestamp header")
+	}
+}
+
+// TestDreamer_WriteProposedChanges_UsesResolvedPath verifies that WriteProposedChanges
+// validates the write path via paths.ValidateWritePath.
+func TestDreamer_WriteProposedChanges_UsesResolvedPath(t *testing.T) {
+	ms := newTestStore(t)
+	dir := t.TempDir()
+	proposedChangesPath := filepath.Join(dir, "proposed-changes.md")
+
+	// Use a mock server that returns 404 for /api/tags (unavailable)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:               ms,
+		OllamaClient:        newTestOllamaClient(t, server),
+		ProposedChangesPath: proposedChangesPath,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result := &DreamResult{
+		Rem: &RemPhaseResult{
+			BehavioralInsights: []BehavioralInsight{
+				{Category: "ERROR_HANDLING", Count: 3, ContentSnippet: "test"},
+			},
+		},
+	}
+
+	err = d.WriteProposedChanges(result)
+	if err != nil {
+		t.Fatalf("WriteProposedChanges: %v", err)
+	}
+
+	// Verify file was written at the expected path
+	if _, err := os.Stat(proposedChangesPath); err != nil {
+		t.Errorf("expected proposed changes file at %s: %v", proposedChangesPath, err)
+	}
+}
+
+// TestDreamer_WriteProposedChanges_MetadataLink verifies that procedure memories
+// created during REM have proposed_changes_link metadata.
+func TestDreamer_WriteProposedChanges_MetadataLink(t *testing.T) {
+	ms := newTestStore(t)
+	dir := t.TempDir()
+	proposedChangesPath := filepath.Join(dir, "proposed-changes.md")
+
+	// Add self_assessment memories to exceed the threshold
+	for i := 0; i < 3; i++ {
+		addSelfAssessment(t, ms, "ERROR_HANDLING", "Error handling gap "+strings.Repeat("a", 10))
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:               ms,
+		OllamaClient:        newTestOllamaClient(t, server),
+		ProposedChangesPath: proposedChangesPath,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(context.Background(), true, "rem")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	insights := result.Rem.BehavioralInsights
+	if len(insights) == 0 {
+		t.Fatal("expected at least one behavioral insight")
+	}
+
+	// Find the ERROR_HANDLING insight
+	var insightID string
+	for _, insight := range insights {
+		if insight.Category == "ERROR_HANDLING" {
+			insightID = insight.InsightID
+			break
+		}
+	}
+	if insightID == "" {
+		t.Fatal("expected ERROR_HANDLING insight with non-empty InsightID")
+	}
+
+	// Retrieve the stored procedure memory and verify proposed_changes_link metadata
+	mem, err := ms.Get(context.Background(), insightID, false)
+	if err != nil {
+		t.Fatalf("Get stored procedure: %v", err)
+	}
+
+	link, ok := mem.Metadata["proposed_changes_link"]
+	if !ok {
+		t.Error("expected proposed_changes_link key in procedure memory metadata")
+	}
+	if link != proposedChangesPath {
+		t.Errorf("expected proposed_changes_link=%q, got %q", proposedChangesPath, link)
+	}
+}
+
+// TestDreamer_WriteProposedChanges_DryRunDoesNotWrite verifies that no file
+// is written when apply=false (dry run).
+func TestDreamer_WriteProposedChanges_DryRunDoesNotWrite(t *testing.T) {
+	ms := newTestStore(t)
+	dir := t.TempDir()
+	proposedChangesPath := filepath.Join(dir, "proposed-changes.md")
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:               ms,
+		ProposedChangesPath: proposedChangesPath,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	// Run with apply=false (dry run)
+	_, err = d.Run(context.Background(), false, "")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Verify no file exists at the proposed changes path
+	if _, err := os.Stat(proposedChangesPath); !os.IsNotExist(err) {
+		t.Error("expected no proposed-changes.md file during dry run")
+	}
+}
+
+// TestDreamer_WriteProposedChanges_NoInsightsNoFile verifies that no file
+// is created when there are no behavioral insights above the threshold.
+func TestDreamer_WriteProposedChanges_NoInsightsNoFile(t *testing.T) {
+	ms := newTestStore(t)
+	dir := t.TempDir()
+	proposedChangesPath := filepath.Join(dir, "proposed-changes.md")
+
+	// Add only 1 self_assessment (below threshold of 3)
+	addSelfAssessment(t, ms, "ERROR_HANDLING", "A single error handling entry")
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:               ms,
+		ProposedChangesPath: proposedChangesPath,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(context.Background(), true, "")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// WriteProposedChanges should be a no-op when no insights
+	err = d.WriteProposedChanges(result)
+	if err != nil {
+		t.Fatalf("WriteProposedChanges: %v", err)
+	}
+
+	// Verify no file created
+	if _, err := os.Stat(proposedChangesPath); !os.IsNotExist(err) {
+		t.Error("expected no proposed-changes.md file when there are no insights")
+	}
+}
+
+// TestDreamer_WriteProposedChanges_AppendOnlyWithinRun verifies that running
+// WriteProposedChanges twice appends both runs' content.
+func TestDreamer_WriteProposedChanges_AppendOnlyWithinRun(t *testing.T) {
+	ms := newTestStore(t)
+	dir := t.TempDir()
+	proposedChangesPath := filepath.Join(dir, "proposed-changes.md")
+
+	// Use a mock server that returns 404 (unavailable), so we get fallback content
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:               ms,
+		OllamaClient:        newTestOllamaClient(t, server),
+		ProposedChangesPath: proposedChangesPath,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result := &DreamResult{
+		Rem: &RemPhaseResult{
+			BehavioralInsights: []BehavioralInsight{
+				{Category: "ERROR_HANDLING", Count: 3, ContentSnippet: "first run"},
+			},
+		},
+	}
+
+	// First write
+	err = d.WriteProposedChanges(result)
+	if err != nil {
+		t.Fatalf("WriteProposedChanges first: %v", err)
+	}
+
+	// Second write
+	result2 := &DreamResult{
+		Rem: &RemPhaseResult{
+			BehavioralInsights: []BehavioralInsight{
+				{Category: "RACE_CONDITION", Count: 5, ContentSnippet: "second run"},
+			},
+		},
+	}
+	err = d.WriteProposedChanges(result2)
+	if err != nil {
+		t.Fatalf("WriteProposedChanges second: %v", err)
+	}
+
+	data, err := os.ReadFile(proposedChangesPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	content := string(data)
+
+	// Should have two Dream Run headers
+	dreamRunCount := strings.Count(content, "# Dream Run:")
+	if dreamRunCount != 2 {
+		t.Errorf("expected 2 Dream Run headers, got %d", dreamRunCount)
+	}
+
+	// Should have both categories
+	if !contains(content, "ERROR_HANDLING") {
+		t.Error("expected ERROR_HANDLING from first run")
+	}
+	if !contains(content, "RACE_CONDITION") {
+		t.Error("expected RACE_CONDITION from second run")
+	}
+}
+
+// TestBuildSkillPatchPrompt verifies that the prompt builder includes
+// Detection Rule, Checklist, Pitfall, and Verification fields,
+// category name, and occurrence count.
+func TestBuildSkillPatchPrompt(t *testing.T) {
+	category := "ERROR_HANDLING"
+	count := 7
+	samples := []string{"Missing try/except in HTTP call", "Swallowed error in database query"}
+
+	prompt := buildSkillPatchPrompt(category, count, 30, samples)
+
+	// Verify category name
+	if !contains(prompt, "ERROR_HANDLING") {
+		t.Error("expected prompt to contain category name")
+	}
+	// Verify occurrence count
+	if !contains(prompt, "7") {
+		t.Error("expected prompt to contain occurrence count")
+	}
+	// Verify lookback days
+	if !contains(prompt, "last 30 days") {
+		t.Error("expected prompt to contain 'last 30 days'")
+	}
+	// Verify Detection Rule field
+	if !contains(prompt, "Detection Rule") {
+		t.Error("expected prompt to contain 'Detection Rule'")
+	}
+	// Verify Checklist field
+	if !contains(prompt, "Checklist") {
+		t.Error("expected prompt to contain 'Checklist'")
+	}
+	// Verify Pitfall field
+	if !contains(prompt, "Pitfall") {
+		t.Error("expected prompt to contain 'Pitfall'")
+	}
+	// Verify Verification field
+	if !contains(prompt, "Verification") {
+		t.Error("expected prompt to contain 'Verification'")
+	}
+	// Verify samples
+	for _, s := range samples {
+		if !contains(prompt, s) {
+			t.Errorf("expected prompt to contain sample %q", s)
+		}
+	}
+	// Verify taxonomy description
+	if !contains(prompt, "Missing try/except") {
+		t.Error("expected prompt to contain taxonomy description for ERROR_HANDLING")
+	}
+}
+
+// TestDreamerConfig_ProposedChangesPath_Default verifies that when
+// DreamerConfig.ProposedChangesPath is empty, the constructor defaults
+// to paths.GetProposedChangesPath().
+func TestDreamerConfig_ProposedChangesPath_Default(t *testing.T) {
+	ms := newTestStore(t)
+	d, err := NewDreamer(DreamerConfig{
+		Store: ms,
+		// ProposedChangesPath left empty — should default
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	expected := paths.GetProposedChangesPath()
+	if d.proposedChangesPath != expected {
+		t.Errorf("expected proposedChangesPath=%q, got %q", expected, d.proposedChangesPath)
+	}
+
+	// Verify explicit value is used as-is
+	dir := t.TempDir()
+	explicitPath := filepath.Join(dir, "my-proposed-changes.md")
+	d2, err := NewDreamer(DreamerConfig{
+		Store:               ms,
+		ProposedChangesPath: explicitPath,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer with explicit path: %v", err)
+	}
+	if d2.proposedChangesPath != explicitPath {
+		t.Errorf("expected proposedChangesPath=%q, got %q", explicitPath, d2.proposedChangesPath)
+	}
 }

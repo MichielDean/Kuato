@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -87,6 +88,9 @@ type DreamerConfig struct {
 	// ReportPath path for writing dream report. Defaults from paths.GetDreamReportPath().
 	ReportPath string
 
+	// ProposedChangesPath path for writing proposed-changes.md. Defaults from paths.GetProposedChangesPath().
+	ProposedChangesPath string
+
 	// OllamaClient is an optional pre-configured OllamaClient. Takes precedence over BaseURL/HTTPClient.
 	// When nil, the constructor will attempt to create one from BaseURL.
 	OllamaClient *ollama.OllamaClient
@@ -163,6 +167,7 @@ type Dreamer struct {
 	staleProcedureDays       int
 	diaryPath                string
 	reportPath               string
+	proposedChangesPath      string
 	ollama                   *ollama.OllamaClient
 	model                    string
 	modelTimeout             time.Duration
@@ -237,6 +242,10 @@ func NewDreamer(cfg DreamerConfig) (*Dreamer, error) {
 	if reportPath == "" {
 		reportPath = paths.GetDreamReportPath()
 	}
+	proposedChangesPath := cfg.ProposedChangesPath
+	if proposedChangesPath == "" {
+		proposedChangesPath = paths.GetProposedChangesPath()
+	}
 	model := cfg.Model
 	if model == "" {
 		model = defaultDreamModel
@@ -286,6 +295,7 @@ func NewDreamer(cfg DreamerConfig) (*Dreamer, error) {
 		staleProcedureDays:      staleProcedureDays,
 		diaryPath:                diaryPath,
 		reportPath:               reportPath,
+		proposedChangesPath:      proposedChangesPath,
 		ollama:                   client,
 		model:                    model,
 		modelTimeout:             modelTimeout,
@@ -318,6 +328,13 @@ func (d *Dreamer) Run(ctx context.Context, apply bool, phase string) (*DreamResu
 	if apply && result.Deep != nil {
 		if err := d.WriteDiary(result); err != nil {
 			slog.Warn("llmem: dream: failed to write diary", "error", err)
+		}
+	}
+
+	// Write proposed-changes.md if applied and REM phase has behavioral insights
+	if apply && result.Rem != nil && len(result.Rem.BehavioralInsights) > 0 {
+		if err := d.WriteProposedChanges(result); err != nil {
+			slog.Warn("llmem: dream: failed to write proposed changes", "error", err)
 		}
 	}
 
@@ -670,6 +687,18 @@ func (d *Dreamer) extractBehavioralInsights(ctx context.Context, apply bool) []B
 					slog.Debug("llmem: dream: failed to store REM insight", "error", err)
 				} else {
 					insightID = id
+					// Link the procedure memory to its proposed-changes.md entry
+					metadata, getErr := d.store.Get(ctx, id, false)
+					if getErr == nil && metadata != nil {
+						mergedMetadata := maps.Clone(metadata.Metadata)
+						if mergedMetadata == nil {
+							mergedMetadata = map[string]any{}
+						}
+						mergedMetadata["proposed_changes_link"] = d.proposedChangesPath
+						if _, updateErr := d.store.Update(ctx, store.UpdateParams{ID: id, Metadata: mergedMetadata}); updateErr != nil {
+							slog.Debug("llmem: dream: failed to update proposed_changes_link metadata", "id", id, "error", updateErr)
+						}
+					}
 				}
 			}
 			insights = append(insights, BehavioralInsight{
@@ -722,6 +751,41 @@ func joinSamples(samples []string) string {
 		return ""
 	}
 	return strings.Join(samples, "; ")
+}
+
+// buildSkillPatchPrompt builds an LLM prompt for generating a [SKILL PATCH] section
+// for the proposed-changes.md file. It does NOT call the LLM — it only constructs
+// the prompt string.
+// Specific to the proposed-changes.md format; not reusable outside the dream package.
+func buildSkillPatchPrompt(category string, count int, lookbackDays int, samples []string) string {
+	description, ok := taxonomy.ErrorTaxonomy[category]
+	if !ok {
+		description = category
+	}
+
+	var sb strings.Builder
+	sb.WriteString("You are a software engineering coach. Based on the following recurring error pattern found in self-assessments, generate a structured [SKILL PATCH] that can be added to a developer's skill file.\n\n")
+	sb.WriteString(fmt.Sprintf("Category: %s\n", category))
+	sb.WriteString(fmt.Sprintf("Definition: %s\n", description))
+	sb.WriteString(fmt.Sprintf("Occurrences in the last %d days: %d\n\n", lookbackDays, count))
+
+	if len(samples) > 0 {
+		sb.WriteString("Representative self-assessment examples:\n")
+		for i, s := range samples {
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, s))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("Generate a [SKILL PATCH] section with these exact fields:\n\n")
+	sb.WriteString("**Detection Rule:** When is this pattern likely occurring? (Be specific about the code context or situation.)\n\n")
+	sb.WriteString("**Checklist:**\n")
+	sb.WriteString("- [ ] (list 2-4 concrete checks the developer should perform)\n\n")
+	sb.WriteString("**Pitfall:** What's the most common mistake when trying to fix this category of error?\n\n")
+	sb.WriteString("**Verification:** How can the developer confirm the fix is working? (Be specific — what to check, what command to run, what metric to observe.)\n\n")
+	sb.WriteString("Keep the total response under 300 words. Be specific and practical.\n")
+
+	return sb.String()
 }
 
 // WriteDiary writes the dream diary as markdown to the configured path.
@@ -790,6 +854,226 @@ func (d *Dreamer) WriteDiary(result *DreamResult) error {
 	}
 
 	return nil
+}
+
+// WriteProposedChanges writes behavioral insight and skill patch sections to
+// d.proposedChangesPath. The file is append-only within a dream run: existing
+// content is preserved and new content is appended after a timestamp header.
+// Uses sync.Mutex for concurrency safety within the process.
+// Only writes when result.Rem has behavioral insights.
+// Specific to Dreamer; not reusable outside the dream package.
+func (d *Dreamer) WriteProposedChanges(result *DreamResult) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if result.Rem == nil || len(result.Rem.BehavioralInsights) == 0 {
+		return nil
+	}
+
+	// Validate write path
+	resolvedPath, err := paths.ValidateWritePath(d.proposedChangesPath, "proposed changes")
+	if err != nil {
+		return fmtErr("proposed changes: validate path: %w", err)
+	}
+
+	dir := filepath.Dir(resolvedPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmtErr("proposed changes: create directory: %w", err)
+	}
+
+	// Read existing content if file exists (append-only)
+	var existing []byte
+	if data, readErr := os.ReadFile(resolvedPath); readErr == nil {
+		existing = data
+	}
+
+	var sb strings.Builder
+
+	// Add a newline separator if the existing content doesn't end with one
+	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		sb.Write(existing)
+		sb.WriteByte('\n')
+	} else {
+		sb.Write(existing)
+	}
+
+	// Write dream run timestamp header
+	sb.WriteString(fmt.Sprintf("# Dream Run: %s\n\n", time.Now().UTC().Format(time.RFC3339)))
+
+	// Build content for each behavioral insight
+	// Determine if we should try to get LLM-generated SKILL PATCH content
+	useLLM := false
+	if d.ollama != nil {
+		availCtx, availCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		useLLM = d.ollama.IsAvailable(availCtx)
+		availCancel()
+	}
+
+	for _, insight := range result.Rem.BehavioralInsights {
+		// Get category samples for this insight from the DB
+		cutoff := time.Now().UTC().AddDate(0, 0, -d.behavioralLookbackDays).Format(time.RFC3339)
+		selfAssessments, _ := d.store.Search(context.Background(), store.SearchParams{
+			Type:      "self_assessment",
+			ValidOnly: true,
+			Limit:     500,
+		})
+		categorySamples := []string{}
+		for _, m := range selfAssessments {
+			if m.UpdatedAt != "" && m.UpdatedAt >= cutoff {
+				if strings.Contains(m.Content, "Category: "+insight.Category) {
+					snippet := m.Content
+					if len(snippet) > maxSampleLength {
+						snippet = snippet[:maxSampleLength]
+					}
+					if len(categorySamples) < maxBehavioralSamples {
+						categorySamples = append(categorySamples, snippet)
+					}
+				}
+			}
+		}
+
+		sb.WriteString(fmt.Sprintf("## %s (×%d)\n\n", insight.Category, insight.Count))
+		sb.WriteString(fmt.Sprintf("**Category:** %s\n", insight.Category))
+		sb.WriteString(fmt.Sprintf("**Occurrences in the last %d days:** %d\n", d.behavioralLookbackDays, insight.Count))
+
+		if len(categorySamples) > 0 {
+			sb.WriteString("**Representative examples:**\n")
+			for i, s := range categorySamples {
+				sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, s))
+			}
+		}
+		sb.WriteString("\n")
+
+		sb.WriteString("### Behavioral Directive\n\n")
+
+		// Generate Do and Verify from the LLM or use fallback
+		if useLLM {
+			prompt := buildBehavioralInsightPrompt(insight.Category, insight.Count, d.behavioralLookbackDays, categorySamples)
+			llmCtx, llmCancel := context.WithTimeout(context.Background(), defaultDreamModelTimeout)
+			response, llmErr := d.ollama.Generate(llmCtx, prompt, d.model)
+			llmCancel()
+			if llmErr != nil {
+				slog.Error("llmem: dream: proposed changes behavioral insight LLM call failed, using fallback", "category", insight.Category, "error", llmErr)
+			}
+			if response != "" {
+				sb.WriteString("**Do:**\n")
+				// Parse Do and Verify from the LLM response
+				doLines, verifyLine := parseLLMDirectiveResponse(response)
+				for _, line := range doLines {
+					sb.WriteString(fmt.Sprintf("- %s\n", line))
+				}
+				sb.WriteString(fmt.Sprintf("\n**Verify:** %s\n\n", verifyLine))
+			} else {
+				// Fallback
+				sb.WriteString(fmt.Sprintf("**Do:**\n- Review %s patterns in recent work\n- Apply taxonomy-defined checks for %s\n\n", insight.Category, insight.Category))
+				sb.WriteString(fmt.Sprintf("**Verify:** Run `llmem search %s --type self_assessment` to confirm reduction\n\n", insight.Category))
+			}
+		} else {
+			sb.WriteString(fmt.Sprintf("**Do:**\n- Review %s patterns in recent work\n- Apply taxonomy-defined checks for %s\n\n", insight.Category, insight.Category))
+			sb.WriteString(fmt.Sprintf("**Verify:** Run `llmem search %s --type self_assessment` to confirm reduction\n\n", insight.Category))
+		}
+
+		sb.WriteString("### [SKILL PATCH]\n\n")
+
+		if useLLM {
+			skillPrompt := buildSkillPatchPrompt(insight.Category, insight.Count, d.behavioralLookbackDays, categorySamples)
+			skillCtx, skillCancel := context.WithTimeout(context.Background(), defaultDreamModelTimeout)
+			skillResponse, skillErr := d.ollama.Generate(skillCtx, skillPrompt, d.model)
+			skillCancel()
+			if skillErr != nil {
+				slog.Error("llmem: dream: proposed changes skill patch LLM call failed, using fallback", "category", insight.Category, "error", skillErr)
+			}
+			if skillResponse != "" {
+				sb.WriteString(skillResponse + "\n\n")
+			} else {
+				// Simplified fallback [SKILL PATCH]
+				writeFallbackSkillPatch(&sb, insight.Category, insight.Count, d.behavioralLookbackDays)
+			}
+		} else {
+			writeFallbackSkillPatch(&sb, insight.Category, insight.Count, d.behavioralLookbackDays)
+		}
+	}
+
+	if err := os.WriteFile(resolvedPath, []byte(sb.String()), 0600); err != nil {
+		return fmtErr("proposed changes: write: %w", err)
+	}
+
+	return nil
+}
+
+// parseLLMDirectiveResponse extracts Do lines and Verify text from an LLM response.
+// Returns doLines (behavioral directives) and verifyLine (verification step).
+func parseLLMDirectiveResponse(response string) ([]string, string) {
+	var doLines []string
+	var verifyLine string
+
+	lines := strings.Split(response, "\n")
+	var inDoSection bool
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "Do") || strings.HasPrefix(trimmed, "**Do") {
+			inDoSection = true
+			continue
+		}
+		if strings.HasPrefix(trimmed, "Verify") || strings.HasPrefix(trimmed, "**Verify") {
+			inDoSection = false
+			// Extract verify content from same or next line
+			afterColon := extractAfterColon(trimmed)
+			if afterColon != "" {
+				verifyLine = afterColon
+			}
+			continue
+		}
+		if inDoSection && (strings.HasPrefix(trimmed, "-") || strings.HasPrefix(trimmed, "*") || strings.HasPrefix(trimmed, "1.") || strings.HasPrefix(trimmed, "2.") || strings.HasPrefix(trimmed, "3.") || strings.HasPrefix(trimmed, "4.") || strings.HasPrefix(trimmed, "5.")) {
+			cleaned := strings.TrimPrefix(trimmed, "- ")
+			cleaned = strings.TrimPrefix(cleaned, "* ")
+			cleaned = strings.TrimPrefix(cleaned, "1. ")
+			cleaned = strings.TrimPrefix(cleaned, "2. ")
+			cleaned = strings.TrimPrefix(cleaned, "3. ")
+			cleaned = strings.TrimPrefix(cleaned, "4. ")
+			cleaned = strings.TrimPrefix(cleaned, "5. ")
+			if cleaned != "" {
+				doLines = append(doLines, cleaned)
+			}
+		} else if !inDoSection && verifyLine == "" && trimmed != "" {
+			// If we didn't find a Verify: prefix, look for the line after "Verify"
+			// that could be the verification content
+		}
+	}
+
+	if len(doLines) == 0 {
+		doLines = []string{fmt.Sprintf("Apply %s checks from taxonomy", "category")}
+	}
+	if verifyLine == "" {
+		verifyLine = "Run llmem search to confirm reduction"
+	}
+
+	return doLines, verifyLine
+}
+
+// extractAfterColon returns the text after ": " in s, or "" if not found.
+func extractAfterColon(s string) string {
+	idx := strings.Index(s, ": ")
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(s[idx+2:])
+}
+
+// writeFallbackSkillPatch writes a simplified [SKILL PATCH] section when the
+// LLM is unavailable. Uses the category's taxonomy definition for content.
+func writeFallbackSkillPatch(sb *strings.Builder, category string, count, lookbackDays int) {
+	description, ok := taxonomy.ErrorTaxonomy[category]
+	if !ok {
+		description = category
+	}
+	sb.WriteString(fmt.Sprintf("**Detection Rule:** When working with code that may involve %s — specifically: %s\n\n", category, description))
+	sb.WriteString("**Checklist:**\n")
+	sb.WriteString(fmt.Sprintf("- [ ] Check for %s patterns before committing\n", category))
+	sb.WriteString(fmt.Sprintf("- [ ] Verify %s handling is present and correct\n", category))
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("**Pitfall:** %s errors often appear fixed but recur due to incomplete handling\n\n", category))
+	sb.WriteString(fmt.Sprintf("**Verification:** Run `llmem search %s --type self_assessment` and confirm occurrence rate drops below %d in the next %d days\n", category, count, lookbackDays))
 }
 
 // GenerateDreamReport generates an HTML dream report at the given path.
