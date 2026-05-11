@@ -1868,6 +1868,8 @@ func TestSessionHookCoordinator_OnEnding_WithAdapter_VerifiesMemoriesStored(t *t
 	}
 	if sessionOrIntrospectCount == 0 {
 		t.Error("expected at least one session or introspect memory to be stored after OnEnding with extraction")
+	}
+}
 
 func TestSessionHookCoordinator_OnEndingWithIntrospect(t *testing.T) {
 	dbPath := createTestOpenCodeDB(t)
