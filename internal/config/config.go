@@ -12,6 +12,8 @@ import (
 
 	"github.com/MichielDean/LLMem/internal/dream"
 	"github.com/MichielDean/LLMem/internal/paths"
+	"github.com/MichielDean/LLMem/internal/skillpatch"
+	"github.com/MichielDean/LLMem/internal/store"
 	"github.com/MichielDean/LLMem/internal/urlvalidate"
 	"gopkg.in/yaml.v3"
 )
@@ -20,10 +22,11 @@ import (
 // Only fields that are wired through to DreamerConfig are included.
 // Removed dead fields: MinScore, MinRecallCount, MinUniqueQueries,
 // BoostOnPromote, MergeModel, CalibrationEnabled,
-// CalibrationLookbackDays, Enabled, Schedule — these were defined in
+// CalibrationLookbackDays, Enabled, Schedule, SkillPatchDir — these were defined in
 // config but never read by any method, creating a contract violation.
 // Enabled and Schedule control systemd timer behaviour, not dream
 // algorithm parameters; they are handled by internal/systemd directly.
+// SkillPatchDir was superseded by SkillPatchConfig.Dir (Config.SkillPatch.Dir).
 type DreamConfig struct {
 	SimilarityThreshold    float64 `yaml:"similarity_threshold"`
 	DecayRate              float64 `yaml:"decay_rate"`
@@ -58,12 +61,19 @@ type OpenCodeConfig struct {
 	ContextDir  string `yaml:"context_dir"`
 }
 
+// SkillPatchConfig holds skill patch settings.
+type SkillPatchConfig struct {
+	// Dir is the root directory for skill files. Defaults to paths.GetSkillDir() if empty.
+	Dir string `yaml:"dir"`
+}
+
 // Config holds the full LLMem configuration.
 type Config struct {
-	Memory   MemoryConfig   `yaml:"memory"`
-	Dream    DreamConfig    `yaml:"dream"`
-	OpenCode OpenCodeConfig `yaml:"opencode"`
-	Session  SessionConfig  `yaml:"session"`
+	Memory    MemoryConfig    `yaml:"memory"`
+	Dream     DreamConfig     `yaml:"dream"`
+	SkillPatch SkillPatchConfig `yaml:"skill_patch"`
+	OpenCode  OpenCodeConfig  `yaml:"opencode"`
+	Session   SessionConfig   `yaml:"session"`
 }
 
 // MemoryConfig holds memory store settings.
@@ -113,6 +123,9 @@ func DefaultConfig() Config {
 			AutoLinkThreshold:      0.85,
 			StaleProcedureDays:     30,
 			ModelTimeout:           "5m",
+		},
+		SkillPatch: SkillPatchConfig{
+			Dir: paths.GetSkillDir(),
 		},
 		OpenCode: OpenCodeConfig{
 			DBPath:      openCodeDefaultDBPath(),
@@ -257,6 +270,27 @@ func (c *Config) DreamConfigResolved() DreamConfig {
 // SessionConfigResolved returns the session configuration.
 func (c *Config) SessionConfigResolved() SessionConfig {
 	return c.Session
+}
+
+// NewSkillPatcher creates a SkillPatcher using the SkillPatch config.
+// The store parameter is no longer required by SkillPatcher but is retained
+// for callers that check store availability before deciding to patch skills.
+// Returns nil without error if ms is nil (graceful degradation for callers).
+func (c *Config) NewSkillPatcher(ms *store.MemoryStore) (*skillpatch.SkillPatcher, error) {
+	if ms == nil {
+		// Graceful degradation: callers use nil check to skip patching
+		// when no store is available (e.g., dream cmd without a database).
+		return nil, nil
+	}
+
+	skillDir := c.SkillPatch.Dir
+	if skillDir == "" {
+		skillDir = paths.GetSkillDir()
+	}
+
+	return skillpatch.NewSkillPatcher(skillpatch.SkillPatchConfig{
+		SkillDir: skillDir,
+	})
 }
 
 // WriteConfigYAML writes config as YAML to the given path with 0600 permissions.

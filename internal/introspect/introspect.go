@@ -16,12 +16,14 @@ import (
 )
 
 const (
-	defaultModel         = "glm-5.1:cloud"
-	defaultBaseURL       = "http://localhost:11434"
-	introspectSource     = "introspect"
-	learnSource          = "learn"
-	introspectConfidence = 0.9
-	learnConfidence      = 0.85
+	defaultModel          = "glm-5.1:cloud"
+	defaultBaseURL        = "http://localhost:11434"
+	introspectSource      = "introspect"
+	introspectAutoSource  = "introspect-auto"
+	learnSource           = "learn"
+	introspectConfidence  = 0.9
+	introspectAutoConfidence = 0.9
+	learnConfidence       = 0.85
 
 	// callModelTimeout is the default timeout for LLM calls in IntrospectFailure and LearnLesson.
 	// CallModelTimeout in params takes precedence; this is the fallback when zero.
@@ -49,10 +51,15 @@ const (
 // MemoryID is always non-empty on success (never empty string).
 // Content is the stored memory content.
 // LLMStatus indicates whether LLM enrichment was used.
+// ProposedUpdate contains the proposed procedural update extracted from the
+// self-assessment content. Empty when no proposed update is available.
+// Category contains the error taxonomy category. May be empty when no category is specified.
 type IntrospectResult struct {
-	MemoryID   string
-	Content    string
-	LLMStatus  LLMEnrichment
+	MemoryID      string
+	Content       string
+	LLMStatus     LLMEnrichment
+	ProposedUpdate string
+	Category       string
 }
 
 // LearnResult holds the result of a LearnLesson call.
@@ -152,7 +159,13 @@ func IntrospectFailure(ctx context.Context, ms *store.MemoryStore, params Intros
 			return IntrospectResult{}, fmtErr("store self_assessment: %w", err)
 		}
 		slog.Info("llmem: introspect: stored self_assessment (LLM disabled)", "id", id)
-		return IntrospectResult{MemoryID: id, Content: content, LLMStatus: Disabled}, nil
+		return IntrospectResult{
+			MemoryID:      id,
+			Content:       content,
+			LLMStatus:     Disabled,
+			ProposedUpdate: params.ProposedFix,
+			Category:       params.Category,
+		}, nil
 	}
 
 	var content string
@@ -176,7 +189,30 @@ func IntrospectFailure(ctx context.Context, ms *store.MemoryStore, params Intros
 	}
 
 	slog.Info("llmem: introspect: stored self_assessment", "id", id, "llm_status", llmStatus)
-	return IntrospectResult{MemoryID: id, Content: content, LLMStatus: llmStatus}, nil
+
+	// Extract ProposedUpdate and Category from the stored content.
+	// When LLM enrichment succeeded, parse from the LLM response.
+	// When LLM was skipped or failed, the raw fields are used instead.
+	proposedUpdate := ""
+	category := params.Category
+	if llmStatus == Enriched && content != "" {
+		proposedUpdate = taxonomy.ParseSelfAssessmentField(content, "Proposed_update")
+		parsedCategory := taxonomy.ParseSelfAssessmentField(content, "Category")
+		if parsedCategory != "" {
+			category = parsedCategory
+		}
+	}
+	if proposedUpdate == "" {
+		proposedUpdate = params.ProposedFix
+	}
+
+	return IntrospectResult{
+		MemoryID:      id,
+		Content:       content,
+		LLMStatus:     llmStatus,
+		ProposedUpdate: proposedUpdate,
+		Category:       category,
+	}, nil
 }
 
 // buildRawFailureContent constructs the fallback content string from provided fields
@@ -252,6 +288,92 @@ func LearnLesson(ctx context.Context, ms *store.MemoryStore, params LearnLessonP
 
 	slog.Info("llmem: learn: stored procedure", "id", id, "llm_status", llmStatus)
 	return LearnResult{MemoryID: id, Content: content, LLMStatus: llmStatus}, nil
+}
+
+// IntrospectAutoResult holds the result of an IntrospectAuto call.
+// MemoryID is always non-empty on success (never empty string).
+// ProposedUpdate contains the proposed procedural update extracted from the
+// self-assessment content. Empty when no proposed update is available.
+// Category contains the error taxonomy category. May be empty when no category is specified.
+type IntrospectAutoResult struct {
+	MemoryID       string
+	ProposedUpdate string
+	Category       string
+}
+
+// IntrospectAuto performs automatic introspection on a text description and stores
+// a self_assessment memory. It is designed for programmatic use (session hooks, CLI --auto)
+// where the agent provides a text summary rather than structured fields.
+//
+// When model is non-empty and Ollama is available, the text is enriched by the LLM
+// into a structured self-assessment. When model is empty or Ollama is unavailable,
+// the text is stored directly with graceful degradation (source "introspect-auto",
+// confidence 0.9).
+//
+// Contract: NEVER returns (IntrospectAutoResult{}, nil) — either creates a memory or returns an error.
+// Even on LLM failure, a storage-only memory is created (graceful degradation).
+// Returns (IntrospectAutoResult{}, error) only if text is empty (validation error)
+// or if the store operation fails.
+func IntrospectAuto(ctx context.Context, ms *store.MemoryStore, text, model, baseURL string) (IntrospectAutoResult, error) {
+	if text == "" {
+		return IntrospectAutoResult{}, fmtErr("text is required")
+	}
+	if model == "" {
+		model = defaultModel
+	}
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
+
+	var content string
+	llmResponse, llmStatus := callModel(ctx, model, baseURL, buildAutoPrompt(text), 0, nil)
+
+	if llmStatus == Enriched && llmResponse != "" {
+		content = llmResponse
+	} else {
+		// Graceful degradation: build from the provided text
+		content = "What_happened: " + text
+	}
+
+	id, err := ms.Add(ctx, store.AddParams{
+		Type:       "self_assessment",
+		Content:    content,
+		Source:     introspectAutoSource,
+		Confidence: introspectAutoConfidence,
+	})
+	if err != nil {
+		return IntrospectAutoResult{}, fmtErr("store self_assessment: %w", err)
+	}
+
+	// Extract ProposedUpdate and Category from the stored content.
+	// When LLM enrichment succeeded, parse from the LLM response.
+	// When LLM was skipped, these fields remain empty (no structured data to parse).
+	proposedUpdate := ""
+	category := ""
+	if llmStatus == Enriched && content != "" {
+		proposedUpdate = taxonomy.ParseSelfAssessmentField(content, "Proposed_update")
+		category = taxonomy.ParseSelfAssessmentField(content, "Category")
+	}
+
+	slog.Info("llmem: introspect: stored auto self_assessment", "id", id, "llm_status", llmStatus)
+	return IntrospectAutoResult{
+		MemoryID:       id,
+		ProposedUpdate: proposedUpdate,
+		Category:       category,
+	}, nil
+}
+
+// buildAutoPrompt builds the prompt for automatic introspection from free-form text.
+func buildAutoPrompt(text string) string {
+	fieldLines := taxonomy.IntrospectFieldLines()
+	prompt := "Analyze this failure from a coding agent's session and produce a structured self-assessment.\n\n"
+	prompt += "The agent provided a free-form text summary. Infer the category, context, " +
+		"how the error was caught, and a proposed procedural fix from the description.\n\n"
+	prompt += "Format each field on its own line as \"Field: value\":\n\n"
+	prompt += fieldLines + "\n\n"
+	prompt += "Agent's text:\n  " + text
+	prompt += "\n\nProduce a structured self-assessment. Be specific about what went wrong and what should change."
+	return prompt
 }
 
 // buildRawLessonContent constructs the fallback content string from provided fields

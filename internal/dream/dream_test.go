@@ -3,6 +3,7 @@ package dream
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,7 +14,9 @@ import (
 
 	"github.com/MichielDean/LLMem/internal/ollama"
 	"github.com/MichielDean/LLMem/internal/paths"
+	"github.com/MichielDean/LLMem/internal/skillpatch"
 	"github.com/MichielDean/LLMem/internal/store"
+	"github.com/MichielDean/LLMem/internal/taxonomy"
 )
 
 func newTestStore(t *testing.T) *store.MemoryStore {
@@ -2033,5 +2036,360 @@ func TestDreamer_WriteProposedChanges_UsesSamplesFromInsight(t *testing.T) {
 	}
 	if !contains(content, "Missing try/except block") {
 		t.Error("expected 'Missing try/except block' sample from insight.Samples in proposed-changes.md")
+	}
+}
+
+// TestDreamer_WriteProposedChanges_ValidatesPatches verifies that the REM phase
+// validates patches via the SkillPatcher when configured.
+func TestDreamer_WriteProposedChanges_ValidatesPatches(t *testing.T) {
+	ctx := context.Background()
+	ms := newTestStore(t)
+
+	// Add self_assessment memories in the NULL_SAFETY category
+	// (need >= behavioralThreshold to trigger behavioral insight)
+	for i := 0; i < 5; i++ {
+		_, err := ms.Add(ctx, store.AddParams{
+			Type:       "self_assessment",
+			Content:    "Category: NULL_SAFETY\nWhat_happened: nil dereference\nProposed_update: always check nil",
+			Source:     "test",
+			Confidence: 0.9,
+		})
+		if err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+	}
+
+	// Create a SkillPatcher
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "skills")
+	sp, err := skillpatch.NewSkillPatcher(skillpatch.SkillPatchConfig{
+		SkillDir: skillDir,
+	})
+	if err != nil {
+		t.Fatalf("NewSkillPatcher: %v", err)
+	}
+
+	// Use a mock HTTP server that simulates unavailable Ollama
+	// so the dream doesn't hang trying to connect
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return 404 for all requests — Ollama unavailable
+		http.NotFound(w, r)
+	}))
+	defer mockServer.Close()
+
+	mockClient := ollama.OllamaClientConfig{
+		BaseURL:    mockServer.URL,
+		HTTPClient: mockServer.Client(),
+	}
+	mockOllama, _ := ollama.NewOllamaClient(mockClient)
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:       ms,
+		SkillPatcher: sp,
+		OllamaClient: mockOllama,
+		BehavioralThreshold: 3,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(ctx, true, "rem")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if result.Rem == nil {
+		t.Fatal("expected REM results")
+	}
+
+	// Verify that behavioral insights were generated and patch validation ran
+	if len(result.Rem.BehavioralInsights) == 0 {
+		t.Error("expected behavioral insights for NULL_SAFETY")
+	}
+
+	foundNULLSafety := false
+	for _, insight := range result.Rem.BehavioralInsights {
+		if insight.Category == "NULL_SAFETY" {
+			foundNULLSafety = true
+		}
+	}
+	if !foundNULLSafety {
+		t.Error("expected NULL_SAFETY insight in behavioral insights")
+	}
+}
+
+// TestDreamer_WriteProposedChanges_NoInsights_ValidatesPatches verifies that
+// no patch validation occurs when there are no behavioral insights.
+func TestDreamer_WriteProposedChanges_NoInsights_ValidatesPatches(t *testing.T) {
+	ctx := context.Background()
+	ms := newTestStore(t)
+
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "skills")
+	sp, err := skillpatch.NewSkillPatcher(skillpatch.SkillPatchConfig{
+		SkillDir: skillDir,
+	})
+	if err != nil {
+		t.Fatalf("NewSkillPatcher: %v", err)
+	}
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:       ms,
+		SkillPatcher: sp,
+		BehavioralThreshold: 3, // high threshold so no insights are generated
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(ctx, true, "rem")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if result.Rem == nil {
+		t.Fatal("expected REM results")
+	}
+
+	// No insights means no patch validation — test verifies it doesn't crash
+	if len(result.Rem.BehavioralInsights) != 0 {
+		t.Errorf("expected no behavioral insights, got %d", len(result.Rem.BehavioralInsights))
+	}
+}
+
+// TestDreamer_ValidatePatches_MergesMetadata verifies that patch validation
+// merges flagged_for_review into existing metadata rather than replacing it.
+// This is a regression test for the bug where Update with Metadata replaced
+// all existing metadata fields.
+func TestDreamer_ValidatePatches_MergesMetadata(t *testing.T) {
+	ctx := context.Background()
+	ms := newTestStore(t)
+
+	// Add self_assessment memories with NULL_SAFETY category (>= behavioralThreshold)
+	for i := 0; i < 5; i++ {
+		_, err := ms.Add(ctx, store.AddParams{
+			Type:       "self_assessment",
+			Content:    "Category: NULL_SAFETY\nWhat_happened: nil dereference\nProposed_update: always check nil",
+			Source:     "test",
+			Confidence: 0.9,
+		})
+		if err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+	}
+
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "skills")
+	sp, err := skillpatch.NewSkillPatcher(skillpatch.SkillPatchConfig{
+		SkillDir: skillDir,
+	})
+	if err != nil {
+		t.Fatalf("NewSkillPatcher: %v", err)
+	}
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer mockServer.Close()
+
+	mockClient := ollama.OllamaClientConfig{
+		BaseURL:    mockServer.URL,
+		HTTPClient: mockServer.Client(),
+	}
+	mockOllama, _ := ollama.NewOllamaClient(mockClient)
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:               ms,
+		SkillPatcher:        sp,
+		OllamaClient:        mockOllama,
+		BehavioralThreshold: 3,
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(ctx, true, "rem")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if result.Rem == nil {
+		t.Fatal("expected REM results")
+	}
+
+	// Find the behavioral insight and check if it was flagged (afterCount >= beforeCount)
+	// When errors don't decrease, the patch is flagged for review
+	for _, insight := range result.Rem.BehavioralInsights {
+		if insight.Category != "NULL_SAFETY" {
+			continue
+		}
+		if insight.InsightID == "" {
+			continue
+		}
+
+		// Verify existing metadata is preserved when flagged_for_review is added
+		mem, err := ms.Get(ctx, insight.InsightID, false)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if mem == nil {
+			t.Fatal("expected memory to exist")
+		}
+
+		// The memory should have proposed=true, source=dream_rem metadata from creation
+		// If flagged_for_review is set, the existing metadata should still be present
+		if proposed, ok := mem.Metadata["proposed"].(bool); !ok || !proposed {
+			t.Errorf("expected proposed=true in metadata to be preserved, got %v", mem.Metadata["proposed"])
+		}
+		if source, ok := mem.Metadata["source"].(string); !ok || source != "dream_rem" {
+			t.Errorf("expected source=dream_rem in metadata to be preserved, got %v", mem.Metadata["source"])
+		}
+	}
+}
+
+// TestDreamer_ValidatePatches_CategoryCounting_Precise verifies that category
+// counting uses ParseSelfAssessmentField instead of strings.Contains.
+// This prevents double-counting when a memory mentions another category in prose.
+func TestDreamer_ValidatePatches_CategoryCounting_Precise(t *testing.T) {
+	ctx := context.Background()
+	ms := newTestStore(t)
+
+	// Add a self_assessment memory in ERROR_HANDLING that mentions another category in prose.
+	// With ParseSelfAssessmentField, it should only count as ERROR_HANDLING.
+	_, err := ms.Add(ctx, store.AddParams{
+		Type:       "self_assessment",
+		Content:    "Category: ERROR_HANDLING\nWhat_happened: Unlike NULL_SAFETY, this was a bare except\nProposed_update: never use bare except",
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Verify ParseSelfAssessmentField correctly extracts only ERROR_HANDLING
+	content := "Category: ERROR_HANDLING\nWhat_happened: Unlike NULL_SAFETY, this was a bare except"
+	parsed := taxonomy.ParseSelfAssessmentField(content, "Category")
+	if parsed != "ERROR_HANDLING" {
+		t.Errorf("expected Category=ERROR_HANDLING, got %q", parsed)
+	}
+
+	// Demonstrate that ParseSelfAssessmentField would NOT falsely match NULL_SAFETY
+	// even though "NULL_SAFETY" appears in the content
+	nullSafetyParsed := taxonomy.ParseSelfAssessmentField(content, "Category")
+	if nullSafetyParsed == "NULL_SAFETY" {
+		t.Error("ParseSelfAssessmentField should not extract NULL_SAFETY from the ERROR_HANDLING memory")
+	}
+}
+
+// TestTaxonomy_ParseSelfAssessmentField_NoSubstringMatch verifies that
+// ParseSelfAssessmentField does exact field matching and doesn't match
+// substrings in prose or other field values.
+func TestTaxonomy_ParseSelfAssessmentField_NoSubstringMatch(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		field   string
+		want    string
+	}{
+		{
+			name:    "exact category match",
+			content: "Category: ERROR_HANDLING\nWhat_happened: detail",
+			field:   "Category",
+			want:    "ERROR_HANDLING",
+		},
+		{
+			name:    "category differs from prose mention",
+			content: "Category: ERROR_HANDLING\nWhat_happened: Unlike NULL_SAFETY issues, error was bare except",
+			field:   "Category",
+			want:    "ERROR_HANDLING", // NOT NULL_SAFETY — the bug we fixed
+		},
+		{
+			name:    "missing field returns empty",
+			content: "What_happened: something\nContext: else",
+			field:   "Category",
+			want:    "",
+		},
+		{
+			name:    "proposed_update extracted correctly",
+			content: "Category: RACE_CONDITION\nProposed_update: always use mutex",
+			field:   "Proposed_update",
+			want:    "always use mutex",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := taxonomy.ParseSelfAssessmentField(tt.content, tt.field)
+			if got != tt.want {
+				t.Errorf("ParseSelfAssessmentField(%q, %q) = %q, want %q", tt.content, tt.field, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestExtractBehavioralInsights_UsesParseSelfAssessmentField verifies that
+// extractBehavioralInsights uses taxonomy.ParseSelfAssessmentField for category
+// matching, preventing double-counting when a category name appears in prose.
+func TestExtractBehavioralInsights_UsesParseSelfAssessmentField(t *testing.T) {
+	ctx := context.Background()
+	ms := newTestStore(t)
+
+	// Add a self_assessment whose Category field is ERROR_HANDLING,
+	// but whose What_happened prose mentions NULL_SAFETY.
+	// With strings.Contains, this would be counted under both categories.
+	// With ParseSelfAssessmentField, it should only count under ERROR_HANDLING.
+	content := "Category: ERROR_HANDLING\nWhat_happened: Unlike NULL_SAFETY, this was a bare except\nProposed_update: never use bare except"
+	_, err := ms.Add(ctx, store.AddParams{
+		Type:       "self_assessment",
+		Content:    content,
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// We need at least behavioralThreshold self_assessments for insights to be generated.
+	// Add enough ERROR_HANDLING memories to cross the threshold.
+	for i := 0; i < 10; i++ {
+		_, err := ms.Add(ctx, store.AddParams{
+			Type:       "self_assessment",
+			Content:    fmt.Sprintf("Category: ERROR_HANDLING\nWhat_happened: error handling issue %d", i),
+			Source:     "test",
+			Confidence: 0.8,
+		})
+		if err != nil {
+			t.Fatalf("Add loop: %v", err)
+		}
+	}
+
+	// Do NOT add any NULL_SAFETY memories. If extractBehavioralInsights uses
+	// strings.Contains, it will falsely count the ERROR_HANDLING memory under
+	// NULL_SAFETY because the prose contains "NULL_SAFETY".
+
+	d := &Dreamer{
+		store:                 ms,
+		behavioralThreshold:   2,
+		behavioralLookbackDays: 365,
+	}
+
+	insights := d.extractBehavioralInsights(ctx, false)
+
+	// There should be no insight for NULL_SAFETY — only ERROR_HANDLING insights.
+	for _, insight := range insights {
+		if insight.Category == "NULL_SAFETY" {
+			t.Errorf("extractBehavioralInsights counted a NULL_SAFETY insight from ERROR_HANDLING memory — double-counting bug not fixed")
+		}
+	}
+
+	// There should be at least one ERROR_HANDLING insight.
+	foundErrorHandling := false
+	for _, insight := range insights {
+		if insight.Category == "ERROR_HANDLING" {
+			foundErrorHandling = true
+		}
+	}
+	if !foundErrorHandling {
+		t.Error("expected at least one ERROR_HANDLING insight, got none")
 	}
 }

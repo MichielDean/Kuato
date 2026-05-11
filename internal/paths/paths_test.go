@@ -217,6 +217,16 @@ func TestGetContextDir(t *testing.T) {
 	}
 }
 
+func TestGetSkillDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LMEM_HOME", dir)
+	path := GetSkillDir()
+	expected := filepath.Join(dir, "skills")
+	if path != expected {
+		t.Errorf("expected %q, got %q", expected, path)
+	}
+}
+
 func TestMigrateFromLobsterdog_NoOldDir(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)

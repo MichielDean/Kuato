@@ -738,6 +738,13 @@ func dreamCmd() *cobra.Command {
 			dreamerCfg := cfg.DreamerConfig()
 			dreamerCfg.Store = ms
 
+			// Wire SkillPatcher for direct skill patching after dream
+			sp, spErr := cfg.NewSkillPatcher(ms)
+			if spErr != nil {
+				slog.Warn("llmem: dream: could not create skill patcher, skipping patch validation", "error", spErr)
+			}
+			dreamerCfg.SkillPatcher = sp
+
 			d, err := dream.NewDreamer(dreamerCfg)
 			if err != nil {
 				return err
@@ -785,6 +792,11 @@ func introspectCmd() *cobra.Command {
 	var (
 		noLLM      bool
 		timeoutVal string
+		auto       bool
+		textVal    string
+		sessionVal string
+		modelVal   string
+		baseURLVal string
 	)
 	cmd := &cobra.Command{
 		Use:   "introspect [description]",
@@ -792,9 +804,56 @@ func introspectCmd() *cobra.Command {
 		Long: "Analyze a failure and store a self_assessment memory.\n" +
 			"The description is a free-form summary of what went wrong.\n" +
 			"The LLM infers category, context, and proposed fix from your description.\n" +
-			"When the LLM is unavailable, the description is stored directly.",
-		Args: cobra.ExactArgs(1),
+			"When the LLM is unavailable, the description is stored directly.\n\n" +
+			"Use --auto --text for programmatic introspection from session hooks.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Auto mode: use IntrospectAuto with --text or --session
+			if auto {
+				description := textVal
+				if description == "" && sessionVal != "" {
+					// Read from session transcript if --session is provided
+					adapter, adapterErr := openAdapter()
+					if adapterErr != nil {
+						return fmt.Errorf("llmem: introspect: create adapter: %w", adapterErr)
+					}
+					if adapter != nil {
+						defer adapter.Close()
+						transcript, readErr := adapter.ReadTranscript(sessionVal)
+						if readErr != nil {
+							return fmt.Errorf("llmem: introspect: read transcript: %w", readErr)
+						}
+						description = transcript
+					}
+				}
+				if description == "" {
+					return fmt.Errorf("llmem: introspect: --text is required with --auto")
+				}
+
+				ms, err := openStore()
+				if err != nil {
+					return err
+				}
+				defer ms.Close()
+
+				autoResult, err := introspect.IntrospectAuto(context.Background(), ms, description, modelVal, baseURLVal)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("Stored self_assessment: %s\n", autoResult.MemoryID)
+
+				// Patch skill file if ProposedUpdate and Category are available
+				if autoResult.ProposedUpdate != "" && autoResult.Category != "" {
+					patchSkillAfterIntrospect(ms, autoResult.Category, autoResult.ProposedUpdate)
+				}
+
+				return nil
+			}
+
+			// Standard mode: positional description argument
+			if len(args) == 0 {
+				return fmt.Errorf("llmem: introspect: description argument is required (or use --auto --text)")
+			}
 			whatHappened := args[0]
 
 			var timeout time.Duration
@@ -830,6 +889,11 @@ func introspectCmd() *cobra.Command {
 
 			fmt.Printf("Stored self_assessment: %s\n", result.MemoryID)
 
+			// Patch skill file if ProposedUpdate and Category are available
+			if result.ProposedUpdate != "" && result.Category != "" {
+				patchSkillAfterIntrospect(ms, result.Category, result.ProposedUpdate)
+			}
+
 			if noLLM {
 				fmt.Fprintln(os.Stderr, "WARNING: LLM enrichment disabled (--no-llm flag)")
 				return nil
@@ -846,6 +910,11 @@ func introspectCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&noLLM, "no-llm", false, "Skip LLM enrichment, store raw fields only (exit code 0)")
 	cmd.Flags().StringVar(&timeoutVal, "timeout", "", "LLM call timeout (e.g. \"120s\", \"2m\"). Must be >= 10s.")
+	cmd.Flags().BoolVar(&auto, "auto", false, "Automatic introspection mode (use with --text)")
+	cmd.Flags().StringVar(&textVal, "text", "", "Text description for auto introspection")
+	cmd.Flags().StringVar(&sessionVal, "session", "", "Session ID to read transcript from for auto introspection")
+	cmd.Flags().StringVar(&modelVal, "model", "", "LLM model name (default: glm-5.1:cloud)")
+	cmd.Flags().StringVar(&baseURLVal, "base-url", "", "Ollama base URL (default: http://localhost:11434)")
 	return cmd
 }
 
@@ -908,6 +977,11 @@ func learnCmd() *cobra.Command {
 			}
 
 			fmt.Printf("Stored self_assessment: %s\n", result.MemoryID)
+
+			// Patch skill file if ProposedUpdate and Category are available
+			if result.ProposedUpdate != "" && result.Category != "" {
+				patchSkillAfterIntrospect(ms, result.Category, result.ProposedUpdate)
+			}
 
 			if noLLM {
 				fmt.Fprintln(os.Stderr, "WARNING: LLM enrichment disabled (--no-llm flag)")
@@ -1276,4 +1350,43 @@ func defaultIfEmpty(val, defaultVal string) string {
 		return defaultVal
 	}
 	return val
+}
+
+// patchSkillAfterIntrospect attempts to patch the relevant skill file after
+// introspection produces a self-assessment with a proposed update.
+// Patching failure is degraded behavior, not a fatal error — the memory was still stored.
+func patchSkillAfterIntrospect(ms *store.MemoryStore, category, proposedUpdate string) {
+	cfg, cfgErr := loadConfig()
+	if cfgErr != nil {
+		slog.Warn("llmem: introspect: could not load config for skill patching", "error", cfgErr)
+		return
+	}
+
+	// Category "REVIEW_PASSED" needs no patch
+	if category == "REVIEW_PASSED" {
+		slog.Debug("llmem: introspect: REVIEW_PASSED needs no skill patch")
+		return
+	}
+
+	sp, spErr := cfg.NewSkillPatcher(ms)
+	if spErr != nil {
+		slog.Warn("llmem: introspect: could not create skill patcher", "error", spErr)
+		return
+	}
+	if sp == nil {
+		slog.Debug("llmem: introspect: skill patcher not available, skipping patch")
+		return
+	}
+
+	// Get the category description from taxonomy for context
+	categoryDescription := category
+	if desc, ok := taxonomy.ErrorTaxonomy[category]; ok {
+		categoryDescription = desc
+	}
+
+	if err := sp.Patch(context.Background(), category, proposedUpdate, categoryDescription); err != nil {
+		slog.Warn("llmem: introspect: skill patching failed (memory was still stored)", "category", category, "error", err)
+	} else {
+		slog.Info("llmem: introspect: patched skill file", "category", category)
+	}
 }

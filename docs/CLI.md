@@ -138,7 +138,7 @@ llmem introspect --what-happened TEXT [--category CATEGORY] [--context CONTEXT] 
   [--caught-by WHO] [--proposed-fix FIX] [--model MODEL] [--base-url URL]
 ```
 
-Analyze a failure and store a `self_assessment` memory. Uses LLM expansion via Ollama when available, with graceful degradation to storage-only mode when Ollama is unavailable.
+Analyze a failure and store a `self_assessment` memory. Uses LLM expansion via Ollama when available, with graceful degradation to storage-only mode when Ollama is unavailable. When the result includes a `ProposedUpdate` and `Category`, the relevant SKILL.md file is patched immediately (no human approval gate).
 
 - `--what-happened` (required): Description of what went wrong.
 - `--category`: Error taxonomy category (e.g., `NULL_SAFETY`, `ERROR_HANDLING`). See `taxonomy.ErrorTaxonomy` for all categories.
@@ -171,7 +171,7 @@ At least one of `--text` or `--session` is required when using `--auto`.
 llmem learn --wrong TEXT --right TEXT [--context CONTEXT]
 ```
 
-Learn a lesson from a wrong→right correction and store it as a `procedure` memory. Uses LLM expansion via Ollama when available, with graceful degradation to storage-only mode.
+Learn a lesson from a wrong→right correction and store it as a `procedure` memory. Uses LLM expansion via Ollama when available, with graceful degradation to storage-only mode. When the result includes a `ProposedUpdate` and `Category`, the relevant SKILL.md file is patched immediately (no human approval gate).
 
 - `--wrong` (required): What was wrong.
 - `--right` (required): What is correct.
@@ -189,7 +189,7 @@ Run the dream consolidation cycle, which performs automated memory maintenance i
 
 - **Light phase:** Sort and deduplicate near-duplicate memories (cosine similarity ≥ `dream.similarity_threshold`).
 - **Deep phase:** Score, promote, decay, and merge memories. Also promotes inbox items to long-term memory (items with attention_score ≥ `dream.min_score` become permanent; lower-scored items are evicted). Decays confidence on idle memories. Boosts frequently accessed memories. Performs LLM-assisted merging of similar pairs. Auto-links memories with high cosine similarity (≥ `dream.auto_link_threshold`, default 0.85).
-- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection). When Ollama is available, generates actionable behavioral insights via LLM with "Do" directives, "Verify" steps, and `[SKILL PATCH]` sections (Detection Rule, Checklist, Pitfall, Verification); falls back to count-based summaries when Ollama is unavailable. When run with `--apply`, also appends behavioral insight and skill patch sections to `proposed-changes.md` at `~/.config/llmem/proposed-changes.md` (or `LMEM_HOME/proposed-changes.md`). Each dream run's entries are separated by a timestamp header. The file is append-only — existing content is preserved.
+- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection). When Ollama is available, generates actionable behavioral insights via LLM with "Do" directives, "Verify" steps, and `[SKILL PATCH]` sections (Detection Rule, Checklist, Pitfall, Verification); falls back to count-based summaries when Ollama is unavailable. When a `SkillPatcher` is configured, the REM phase also validates previously applied skill patches by comparing error counts before and after each patch — patches where errors decreased are marked effective, patches where errors stayed the same or increased are flagged for review. When run with `--apply`, also appends behavioral insight and skill patch sections to `proposed-changes.md` at `~/.config/llmem/proposed-changes.md` (or `LMEM_HOME/proposed-changes.md`). Each dream run's entries are separated by a timestamp header. The file is append-only — existing content is preserved.
 
 Without `--apply`, the dream cycle runs as a **dry run** — output is prefixed with `[DRY RUN]` and no changes are written to the database.
 
@@ -233,7 +233,7 @@ The `idle` hook processes the session's transcript, extracts memories via the ex
 
 The `ending` hook extracts memories from the transcript (same pipeline as `idle`), then runs `IntrospectTranscript` to produce a session-end `self_assessment` memory. When the LLM is unavailable, `IntrospectTranscript` falls back to a degraded plain-text summary of the session (no LLM call attempted).
 
-The `ending` hook performs automatic introspection on the session transcript. It reads the transcript via the configured adapter, generates a `self_assessment` memory using `IntrospectAuto`, and outputs the result type and memory ID. If no adapter is configured or the transcript is empty, it returns `no_transcript`. If introspection fails but the transcript was read, it logs a warning and returns success without crashing the ending event.
+The `ending` hook performs automatic introspection on the session transcript. It reads the transcript via the configured adapter, generates a `self_assessment` memory using `IntrospectAuto`, and outputs the result type and memory ID. If no adapter is configured or the transcript is empty, it returns `no_transcript`. If introspection fails but the transcript was read, it logs a warning and returns success without crashing the ending event. When the introspection result includes a `ProposedUpdate` and `Category`, the hook patches the relevant skill file immediately (no human approval gate).
 
 ### `llmem track-review`
 

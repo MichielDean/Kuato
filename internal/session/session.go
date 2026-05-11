@@ -21,7 +21,9 @@ import (
 	"github.com/MichielDean/LLMem/internal/introspect"
 	"github.com/MichielDean/LLMem/internal/ollama"
 	"github.com/MichielDean/LLMem/internal/paths"
+	"github.com/MichielDean/LLMem/internal/skillpatch"
 	"github.com/MichielDean/LLMem/internal/store"
+	"github.com/MichielDean/LLMem/internal/taxonomy"
 )
 
 // Result constants for session hook operations.
@@ -39,6 +41,12 @@ const idleDebounceSeconds = 30
 // idleEvictionFactor controls when stale entries are pruned from lastIdle.
 // Entries older than idleDebounceSeconds * idleEvictionFactor are evicted.
 const idleEvictionFactor = 10
+
+// defaultIntrospectModel is the LLM model used for automatic session introspection.
+const defaultIntrospectModel = "glm-5.1:cloud"
+
+// defaultIntrospectBaseURL is the Ollama base URL used for automatic session introspection.
+const defaultIntrospectBaseURL = "http://localhost:11434"
 
 // Compacting key memory types and minimum confidence.
 var compactingKeyTypes = []string{"decision", "preference", "procedure", "project_state"}
@@ -407,6 +415,10 @@ type SessionHookConfig struct {
 	// IntrospectModel is the LLM model name for IntrospectTranscript.
 	// Defaults to "glm-5.1:cloud" if empty.
 	IntrospectModel string
+
+	// SkillPatcher patches skill files after introspection when ProposedUpdate
+	// and Category are available. If nil, skill patching is skipped (graceful degradation).
+	SkillPatcher *skillpatch.SkillPatcher
 }
 
 // SessionHookCoordinator orchestrates memory operations for session lifecycle events.
@@ -419,6 +431,7 @@ type SessionHookCoordinator struct {
 	embedder         *embed.EmbeddingEngine
 	ollamaClient     *ollama.OllamaClient
 	introspectModel  string
+	skillPatcher     *skillpatch.SkillPatcher
 	lastIdle         map[string]time.Time
 	mu               sync.Mutex
 	model            string
@@ -456,6 +469,7 @@ func NewSessionHookCoordinator(cfg SessionHookConfig) (*SessionHookCoordinator, 
 		embedder:         cfg.Embedding,
 		ollamaClient:     cfg.OllamaClient,
 		introspectModel:  cfg.IntrospectModel,
+		skillPatcher:     cfg.SkillPatcher,
 		lastIdle:         map[string]time.Time{},
 		model:            cfg.Model,
 		baseURL:          cfg.BaseURL,
@@ -635,11 +649,12 @@ func (c *SessionHookCoordinator) OnEnding(ctx context.Context, sessionID string)
 
 // OnEndingWithIntrospect handles the session.ending event with automatic introspection.
 // It reads the session transcript and generates a self_assessment memory via
-// introspect.IntrospectFailure. Returns (resultType, memoryID, error).
+// introspect.IntrospectAuto. Returns (resultType, memoryID, error).
 // When adapter is nil or transcript is empty, returns (ResultNoTranscript, "", nil).
 // On success, returns (ResultSuccess, memoryID, nil).
 // If introspection fails but transcript was read, logs a warning and returns
 // (ResultSuccess, "", nil) — the session hook should not fail the ending event.
+// When the result includes ProposedUpdate and Category, patches the relevant skill file.
 func (c *SessionHookCoordinator) OnEndingWithIntrospect(ctx context.Context, sessionID string) (string, string, error) {
 	validID, err := paths.ValidateSessionID(sessionID)
 	if err != nil {
@@ -661,23 +676,32 @@ func (c *SessionHookCoordinator) OnEndingWithIntrospect(ctx context.Context, ses
 
 	model := c.model
 	if model == "" {
-		model = "glm-5.1:cloud"
+		model = defaultIntrospectModel
 	}
 	baseURL := c.baseURL
 	if baseURL == "" {
-		baseURL = "http://localhost:11434"
+		baseURL = defaultIntrospectBaseURL
 	}
 
-	result, err := introspect.IntrospectFailure(ctx, c.store, introspect.IntrospectFailureParams{
-		WhatHappened: transcript,
-		Model:        model,
-		BaseURL:      baseURL,
-	})
+	result, err := introspect.IntrospectAuto(ctx, c.store, transcript, model, baseURL)
 	if err != nil {
 		// Introspection failed, but the session hook should not crash the ending event.
 		// Log a warning and return success with empty memoryID.
 		slog.Warn("llmem: session: on_ending_with_introspect: introspection failed", "error", err)
 		return ResultSuccess, "", nil
+	}
+
+	// Patch skill file if ProposedUpdate and Category are available
+	if result.ProposedUpdate != "" && result.Category != "" && c.skillPatcher != nil {
+		categoryDescription := result.Category
+		if desc, ok := taxonomy.ErrorTaxonomy[result.Category]; ok {
+			categoryDescription = desc
+		}
+		if patchErr := c.skillPatcher.Patch(ctx, result.Category, result.ProposedUpdate, categoryDescription); patchErr != nil {
+			slog.Warn("llmem: session: on_ending_with_introspect: skill patching failed (memory was still stored)", "category", result.Category, "error", patchErr)
+		} else {
+			slog.Info("llmem: session: on_ending_with_introspect: patched skill file", "category", result.Category)
+		}
 	}
 
 	logSessionEvent("ending_with_introspect", validID)

@@ -107,6 +107,12 @@ func GetProposedChangesPath() string {
 	return filepath.Join(GetHomeDir(), "proposed-changes.md")
 }
 
+// GetSkillDir returns the path to the skills directory (~/.config/llmem/skills/).
+// Checks LMEM_HOME env var override, same as GetHomeDir().
+func GetSkillDir() string {
+	return filepath.Join(GetHomeDir(), "skills")
+}
+
 // GetContextDir returns the path to the context directory (~/.config/llmem/context/).
 func GetContextDir() string {
 	return filepath.Join(GetHomeDir(), "context")

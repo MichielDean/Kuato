@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/MichielDean/LLMem/internal/ollama"
 	"github.com/MichielDean/LLMem/internal/paths"
+	"github.com/MichielDean/LLMem/internal/skillpatch"
 	"github.com/MichielDean/LLMem/internal/store"
 	"github.com/MichielDean/LLMem/internal/taxonomy"
 )
@@ -109,6 +111,11 @@ type DreamerConfig struct {
 	// ModelTimeout is the timeout for each LLM call during REM behavioral insight generation.
 	// Defaults to 5 minutes if zero.
 	ModelTimeout time.Duration
+
+	// SkillPatcher is optional. When set, the REM phase validates patches instead of
+	// (or in addition to) writing proposed-changes.md. When nil, the REM phase
+	// falls back to writing proposed-changes.md (backward compat).
+	SkillPatcher *skillpatch.SkillPatcher
 }
 
 // LightPhaseResult holds the results of the light (deduplication) phase.
@@ -168,6 +175,7 @@ type Dreamer struct {
 	diaryPath                string
 	reportPath               string
 	proposedChangesPath      string
+	skillPatcher             *skillpatch.SkillPatcher
 	ollama                   *ollama.OllamaClient
 	model                    string
 	modelTimeout             time.Duration
@@ -296,6 +304,7 @@ func NewDreamer(cfg DreamerConfig) (*Dreamer, error) {
 		diaryPath:                diaryPath,
 		reportPath:               reportPath,
 		proposedChangesPath:      proposedChangesPath,
+		skillPatcher:             cfg.SkillPatcher,
 		ollama:                   client,
 		model:                    model,
 		modelTimeout:             modelTimeout,
@@ -332,9 +341,17 @@ func (d *Dreamer) Run(ctx context.Context, apply bool, phase string) (*DreamResu
 	}
 
 	// Write proposed-changes.md if applied and REM phase has behavioral insights
+	// (backward compat — kept for dual-write during transition).
 	if apply && result.Rem != nil && len(result.Rem.BehavioralInsights) > 0 {
 		if err := d.WriteProposedChanges(ctx, result); err != nil {
 			slog.Warn("llmem: dream: failed to write proposed changes", "error", err)
+		}
+	}
+
+	// Validate patches if SkillPatcher is configured
+	if apply && result.Rem != nil && len(result.Rem.BehavioralInsights) > 0 && d.skillPatcher != nil {
+		if err := d.validatePatches(ctx, result); err != nil {
+			slog.Warn("llmem: dream: failed to validate patches", "error", err)
 		}
 	}
 
@@ -626,18 +643,24 @@ func (d *Dreamer) extractBehavioralInsights(ctx context.Context, apply bool) []B
 	for _, m := range selfAssessments {
 		if m.UpdatedAt != "" && m.UpdatedAt >= cutoff {
 			content := m.Content
-			for cat := range taxonomy.ErrorTaxonomy {
-				if strings.Contains(content, "Category: "+cat) {
-					categoryCounts[cat]++
-					samples := categorySamples[cat]
-					if len(samples) < maxBehavioralSamples {
-						snippet := content
-						if len(snippet) > maxSampleLength {
-							snippet = snippet[:maxSampleLength]
-						}
-						categorySamples[cat] = append(samples, snippet)
-					}
+			// Use taxonomy.ParseSelfAssessmentField for exact field matching
+			// to avoid double-counting when a category name appears in prose.
+			parsedCat := taxonomy.ParseSelfAssessmentField(content, "Category")
+			if parsedCat == "" {
+				continue
+			}
+			// Only count categories that are in the error taxonomy
+			if _, ok := taxonomy.ErrorTaxonomy[parsedCat]; !ok {
+				continue
+			}
+			categoryCounts[parsedCat]++
+			samples := categorySamples[parsedCat]
+			if len(samples) < maxBehavioralSamples {
+				snippet := content
+				if len(snippet) > maxSampleLength {
+					snippet = snippet[:maxSampleLength]
 				}
+				categorySamples[parsedCat] = append(samples, snippet)
 			}
 		}
 	}
@@ -965,6 +988,114 @@ func (d *Dreamer) WriteProposedChanges(ctx context.Context, result *DreamResult)
 
 	if err := os.WriteFile(resolvedPath, []byte(sb.String()), 0600); err != nil {
 		return fmtErr("proposed changes: write: %w", err)
+	}
+
+	return nil
+}
+
+// validatePatches calls SkillPatcher.ValidatePatch for each behavioral insight category.
+// It compares self_assessment memory counts before and after the most recent patch to
+// determine whether the patch was effective. Effective patches boost procedure memories;
+// ineffective patches flag them for review.
+// The patch validator is specific to the dream REM phase and will not be reused.
+func (d *Dreamer) validatePatches(ctx context.Context, result *DreamResult) error {
+	if d.skillPatcher == nil {
+		slog.Debug("llmem: dream: no SkillPatcher configured, skipping patch validation")
+		return nil
+	}
+
+	if result.Rem == nil || len(result.Rem.BehavioralInsights) == 0 {
+		return nil
+	}
+
+	cutoff := time.Now().UTC().AddDate(0, 0, -d.behavioralLookbackDays).Format(time.RFC3339)
+
+	// Count self_assessment memories per category from before the current dream run
+	selfAssessments, err := d.store.Search(ctx, store.SearchParams{
+		Type:      "self_assessment",
+		ValidOnly: true,
+		Limit:     500,
+	})
+	if err != nil {
+		slog.Error("llmem: dream: patch validation search failed", "error", err)
+		return fmtErr("patch validation: search: %w", err)
+	}
+
+	// Build before-counts per category (memories older than cutoff)
+	beforeCounts := map[string]int{}
+	for _, m := range selfAssessments {
+		if m.UpdatedAt != "" && m.UpdatedAt < cutoff {
+			cat := taxonomy.ParseSelfAssessmentField(m.Content, "Category")
+			if cat != "" {
+				beforeCounts[cat]++
+			}
+		}
+	}
+
+	// Build after-counts per category (memories at or after cutoff = current run)
+	afterCounts := map[string]int{}
+	for _, m := range selfAssessments {
+		if m.UpdatedAt != "" && m.UpdatedAt >= cutoff {
+			cat := taxonomy.ParseSelfAssessmentField(m.Content, "Category")
+			if cat != "" {
+				afterCounts[cat]++
+			}
+		}
+	}
+
+	// Validate patches for each behavioral insight category
+	for _, insight := range result.Rem.BehavioralInsights {
+		beforeCount := beforeCounts[insight.Category]
+		afterCount := afterCounts[insight.Category]
+
+		validation := skillpatch.ValidatePatch(insight.Category, beforeCount, afterCount)
+
+		if validation.Effective {
+			slog.Info("llmem: dream: patch effective", "category", insight.Category, "before", beforeCount, "after", afterCount)
+			// Boost the procedure memory created for this insight
+			if insight.InsightID != "" {
+				boostVal := float64(insight.Count) * d.boostAmount
+				if boostVal > 1.0 {
+					boostVal = 1.0
+				}
+				// Boost to at least 0.7 (confidence floor for effective patches)
+				boosted := boostVal + 0.7
+				if boosted > 1.0 {
+					boosted = 1.0
+				}
+				_, err := d.store.Update(ctx, store.UpdateParams{
+					ID:         insight.InsightID,
+					Confidence: &boosted,
+				})
+				if err != nil {
+					slog.Debug("llmem: dream: failed to boost effective procedure", "id", insight.InsightID, "error", err)
+				}
+			}
+		}
+
+		if validation.Flagged {
+			slog.Warn("llmem: dream: patch flagged for review — error rate not decreasing", "category", insight.Category, "before", beforeCount, "after", afterCount)
+			// Flag the procedure memory for review — merge into existing metadata, don't replace
+			if insight.InsightID != "" {
+				existing, err := d.store.Get(ctx, insight.InsightID, false)
+				if err != nil {
+					slog.Debug("llmem: dream: failed to fetch procedure for metadata merge", "id", insight.InsightID, "error", err)
+				} else if existing != nil {
+					merged := maps.Clone(existing.Metadata)
+					if merged == nil {
+						merged = map[string]any{}
+					}
+					merged["flagged_for_review"] = true
+					_, err := d.store.Update(ctx, store.UpdateParams{
+						ID:       insight.InsightID,
+						Metadata: merged,
+					})
+					if err != nil {
+						slog.Debug("llmem: dream: failed to flag procedure for review", "id", insight.InsightID, "error", err)
+					}
+				}
+			}
+		}
 	}
 
 	return nil
