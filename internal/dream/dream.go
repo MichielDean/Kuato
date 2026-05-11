@@ -628,7 +628,7 @@ func (d *Dreamer) extractBehavioralInsights(ctx context.Context, apply bool) []B
 		if count >= d.behavioralThreshold {
 			contentSnippet := ""
 			if useLLM {
-				prompt := buildBehavioralInsightPrompt(cat, count, categorySamples[cat])
+				prompt := buildBehavioralInsightPrompt(cat, count, d.behavioralLookbackDays, categorySamples[cat])
 				llmCtx, llmCancel := context.WithTimeout(ctx, defaultDreamModelTimeout)
 				response, llmErr := d.ollama.Generate(llmCtx, prompt, d.model)
 				llmCancel()
@@ -641,7 +641,7 @@ func (d *Dreamer) extractBehavioralInsights(ctx context.Context, apply bool) []B
 
 			// Fallback: count-based summary (preserves backward compatibility)
 			if contentSnippet == "" {
-				contentSnippet = fmt.Sprintf("Behavioral insight: %d occurrences of %s category in the last %d days. %s", count, cat, d.behavioralLookbackDays, truncateSamples(categorySamples[cat]))
+				contentSnippet = fmt.Sprintf("Behavioral insight: %d occurrences of %s category in the last %d days. %s", count, cat, d.behavioralLookbackDays, joinSamples(categorySamples[cat]))
 			}
 
 			insightID := ""
@@ -675,7 +675,7 @@ func (d *Dreamer) extractBehavioralInsights(ctx context.Context, apply bool) []B
 // buildBehavioralInsightPrompt builds an LLM prompt for generating an actionable
 // behavioral rule for the given category. It does NOT call the LLM — it only
 // constructs the prompt string.
-func buildBehavioralInsightPrompt(category string, count int, samples []string) string {
+func buildBehavioralInsightPrompt(category string, count int, lookbackDays int, samples []string) string {
 	description, ok := taxonomy.ErrorTaxonomy[category]
 	if !ok {
 		description = category
@@ -685,7 +685,7 @@ func buildBehavioralInsightPrompt(category string, count int, samples []string) 
 	sb.WriteString(fmt.Sprintf("You are a software engineering coach. Based on the following recurring pattern found in self-assessments, generate a specific, actionable behavioral rule.\n\n"))
 	sb.WriteString(fmt.Sprintf("Category: %s\n", category))
 	sb.WriteString(fmt.Sprintf("Definition: %s\n", description))
-	sb.WriteString(fmt.Sprintf("Occurrences in the last 30 days: %d\n\n", count))
+	sb.WriteString(fmt.Sprintf("Occurrences in the last %d days: %d\n\n", lookbackDays, count))
 
 	if len(samples) > 0 {
 		sb.WriteString("Representative self-assessment examples:\n")
@@ -703,8 +703,8 @@ func buildBehavioralInsightPrompt(category string, count int, samples []string) 
 	return sb.String()
 }
 
-// truncateSamples concatenates sample strings for the fallback count-based format.
-func truncateSamples(samples []string) string {
+// joinSamples concatenates sample strings for the fallback count-based format.
+func joinSamples(samples []string) string {
 	if len(samples) == 0 {
 		return ""
 	}

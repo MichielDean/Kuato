@@ -170,9 +170,9 @@ func (c *Config) OllamaURL() (string, error) {
 // DreamerConfig returns a dream.DreamerConfig populated from the config.
 // Maps DreamConfig fields to their corresponding DreamerConfig fields.
 // Store must be set by the caller before passing to dream.NewDreamer.
-// Creates an OllamaClient from the DreamConfig's OllamaURL (or Memory.OllamaURL as fallback).
-// If OllamaClient creation fails, the config will have a nil OllamaClient and
-// behavioral insights will fall back to count-based summaries.
+// If OllamaURL is configured, it is passed as BaseURL so Dreamer can attempt
+// to create an OllamaClient. If OllamaClient creation fails inside
+// dream.NewDreamer, behavioral insights fall back to count-based summaries.
 func (c *Config) DreamerConfig() dream.DreamerConfig {
 	ollamaURL := c.Dream.OllamaURL
 	if ollamaURL == "" {

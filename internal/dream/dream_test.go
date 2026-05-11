@@ -1028,7 +1028,7 @@ func TestBuildBehavioralInsightPrompt(t *testing.T) {
 		"Unhandled promise rejection in async function",
 	}
 
-	prompt := buildBehavioralInsightPrompt(category, count, samples)
+	prompt := buildBehavioralInsightPrompt(category, count, 30, samples)
 
 	// Verify category name is in the prompt
 	if !strings.Contains(prompt, "ERROR_HANDLING") {
@@ -1038,6 +1038,11 @@ func TestBuildBehavioralInsightPrompt(t *testing.T) {
 	// Verify count is in the prompt
 	if !strings.Contains(prompt, "5") {
 		t.Error("expected prompt to contain occurrence count")
+	}
+
+	// Verify lookbackDays is in the prompt
+	if !strings.Contains(prompt, "last 30 days") {
+		t.Error("expected prompt to contain 'last 30 days'")
 	}
 
 	// Verify taxonomy description is in the prompt
@@ -1070,7 +1075,7 @@ func TestBuildBehavioralInsightPrompt(t *testing.T) {
 
 // TestBuildBehavioralInsightPrompt_EmptySamples verifies prompt generation with no samples.
 func TestBuildBehavioralInsightPrompt_EmptySamples(t *testing.T) {
-	prompt := buildBehavioralInsightPrompt("RACE_CONDITION", 3, nil)
+	prompt := buildBehavioralInsightPrompt("RACE_CONDITION", 3, 14, nil)
 
 	if !strings.Contains(prompt, "RACE_CONDITION") {
 		t.Error("expected prompt to contain category name")
@@ -1081,8 +1086,60 @@ func TestBuildBehavioralInsightPrompt_EmptySamples(t *testing.T) {
 	// Should not crash with nil samples
 }
 
+// TestBuildBehavioralInsightPrompt_CustomLookback verifies that a non-default
+// lookbackDays value appears in the prompt instead of the hardcoded "30".
+func TestBuildBehavioralInsightPrompt_CustomLookback(t *testing.T) {
+	prompt := buildBehavioralInsightPrompt("ERROR_HANDLING", 7, 14, []string{"sample text"})
+
+	if !strings.Contains(prompt, "last 14 days") {
+		t.Error("expected prompt to contain 'last 14 days' for custom lookback")
+	}
+	// Make sure the old hardcoded "30 days" does not appear when lookbackDays is 14
+	if strings.Contains(prompt, "last 30 days") {
+		t.Error("prompt should not contain hardcoded 'last 30 days' when lookbackDays is 14")
+	}
+}
+
+// TestJoinSamples verifies that joinSamples concatenates strings with "; ".
+func TestJoinSamples(t *testing.T) {
+	tests := []struct {
+		name     string
+		samples  []string
+		expected string
+	}{
+		{
+			name:     "multiple samples",
+			samples:  []string{"alpha", "beta", "gamma"},
+			expected: "alpha; beta; gamma",
+		},
+		{
+			name:     "single sample",
+			samples:  []string{"only"},
+			expected: "only",
+		},
+		{
+			name:     "nil samples returns empty",
+			samples:  nil,
+			expected: "",
+		},
+		{
+			name:     "empty slice returns empty",
+			samples:  []string{},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := joinSamples(tt.samples)
+			if result != tt.expected {
+				t.Errorf("joinSamples(%v) = %q, want %q", tt.samples, result, tt.expected)
+			}
+		})
+	}
+}
+
 // TestDreamer_RemPhase_BehavioralInsight_LLMErrorFallback verifies that when
-// the LLM call fails (error response), the method falls back to count-based format.
 func TestDreamer_RemPhase_BehavioralInsight_LLMErrorFallback(t *testing.T) {
 	ms := newTestStore(t)
 
