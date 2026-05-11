@@ -5,11 +5,9 @@ package session
 import (
 	"context"
 	"database/sql"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +19,7 @@ import (
 	"github.com/MichielDean/LLMem/internal/embed"
 	"github.com/MichielDean/LLMem/internal/extract"
 	"github.com/MichielDean/LLMem/internal/introspect"
+	"github.com/MichielDean/LLMem/internal/ollama"
 	"github.com/MichielDean/LLMem/internal/paths"
 	"github.com/MichielDean/LLMem/internal/store"
 )
@@ -399,6 +398,14 @@ type SessionHookConfig struct {
 
 	// Embedding generates embedding vectors. If nil, memories are stored without embeddings.
 	Embedding *embed.EmbeddingEngine
+
+	// OllamaClient is used for introspection in OnEnding. If nil, OnEnding skips
+	// IntrospectTranscript and falls back to a simple session_end event memory.
+	OllamaClient *ollama.OllamaClient
+
+	// IntrospectModel is the LLM model name for IntrospectTranscript.
+	// Defaults to "glm-5.1:cloud" if empty.
+	IntrospectModel string
 }
 
 // SessionHookCoordinator orchestrates memory operations for session lifecycle events.
@@ -409,6 +416,8 @@ type SessionHookCoordinator struct {
 	debounceSeconds  int
 	extractor        *extract.ExtractionEngine
 	embedder         *embed.EmbeddingEngine
+	ollamaClient     *ollama.OllamaClient
+	introspectModel  string
 	lastIdle         map[string]time.Time
 	mu               sync.Mutex
 	model            string
@@ -444,6 +453,8 @@ func NewSessionHookCoordinator(cfg SessionHookConfig) (*SessionHookCoordinator, 
 		debounceSeconds:  debounceSeconds,
 		extractor:        cfg.ExtractionEngine,
 		embedder:         cfg.Embedding,
+		ollamaClient:     cfg.OllamaClient,
+		introspectModel:  cfg.IntrospectModel,
 		lastIdle:         map[string]time.Time{},
 		model:            cfg.Model,
 		baseURL:          cfg.BaseURL,
@@ -592,8 +603,8 @@ func (c *SessionHookCoordinator) OnEnding(ctx context.Context, sessionID string)
 	}
 
 	// Run introspection on the full session transcript
-	if transcript != "" {
-		introspectID, err := introspect.IntrospectTranscript(ctx, c.store, transcript, validID, "", "")
+	if transcript != "" && c.ollamaClient != nil {
+		introspectID, err := introspect.IntrospectTranscript(ctx, c.store, transcript, validID, c.ollamaClient, c.introspectModel)
 		if err != nil {
 			slog.Warn("llmem: session: on_ending: introspect_transcript failed, storing degraded event", "error", err, "session_id", validID)
 			// Fall back to storing a simple session-end event.
@@ -712,7 +723,7 @@ func (c *SessionHookCoordinator) extractMemories(ctx context.Context, transcript
 			if embedErr != nil {
 				slog.Debug("llmem: session: embedding failed, storing without embedding", "error", embedErr, "session_id", validID)
 			} else if len(embedding) > 0 {
-				addParams.Embedding = vecToBytes(embedding)
+				addParams.Embedding = store.VecToBytes(embedding)
 			}
 		}
 
@@ -733,16 +744,6 @@ func (c *SessionHookCoordinator) extractMemories(ctx context.Context, transcript
 
 	slog.Debug("llmem: session: extracted and stored memories", "count", storedCount, "session_id", validID)
 	return storedCount
-}
-
-// vecToBytes encodes a []float32 into packed little-endian bytes for embedding storage.
-// This matches the format used by the embed package (binary.LittleEndian + math.Float32bits).
-func vecToBytes(vec []float32) []byte {
-	buf := make([]byte, len(vec)*4)
-	for i, v := range vec {
-		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
-	}
-	return buf
 }
 
 // logSessionEvent logs a session event at debug level.

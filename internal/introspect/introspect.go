@@ -405,14 +405,44 @@ func callModel(ctx context.Context, model, baseURL, prompt string, timeout time.
 	return response, Enriched
 }
 
+// callModelWithClient calls the Ollama model using a pre-configured OllamaClient.
+// Returns empty string on failure (never panics).
+// If ollamaClient is nil, returns "" immediately (graceful no-op, no network call).
+// Uses a bounded timeout so callers never block indefinitely.
+func callModelWithClient(ctx context.Context, ollamaClient *ollama.OllamaClient, model, prompt string) string {
+	if ollamaClient == nil {
+		slog.Debug("llmem: introspect: no OllamaClient provided, using storage-only fallback")
+		return ""
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, callModelTimeout)
+	defer cancel()
+
+	if !ollamaClient.IsAvailable(timeoutCtx) {
+		slog.Debug("llmem: introspect: Ollama not available, using storage-only fallback")
+		return ""
+	}
+
+	response, err := ollamaClient.Generate(timeoutCtx, prompt, model)
+	if err != nil {
+		slog.Error("llmem: introspect: model call failed", "error", err)
+		return ""
+	}
+
+	return response
+}
+
 // IntrospectTranscript analyzes a session transcript and stores a self_assessment memory.
 // On LLM availability, it uses the model to produce a structured self-assessment from the
 // transcript content. On LLM failure, it falls back to a plain-text summary of the session.
 //
+// The ollamaClient parameter provides the configured Ollama connection. If nil,
+// IntrospectTranscript falls back to degraded storage immediately (no LLM call attempted).
+//
 // Contract: NEVER returns ("", nil) — either creates a memory or returns an error.
 // Even on LLM failure, a degraded memory is created.
 // Returns ("", error) only if the transcript is empty (validation error).
-func IntrospectTranscript(ctx context.Context, ms *store.MemoryStore, transcript string, sessionID string, model, baseURL string) (string, error) {
+func IntrospectTranscript(ctx context.Context, ms *store.MemoryStore, transcript string, sessionID string, ollamaClient *ollama.OllamaClient, model string) (string, error) {
 	if transcript == "" {
 		return "", fmtErr("transcript is required for introspection")
 	}
@@ -422,7 +452,7 @@ func IntrospectTranscript(ctx context.Context, ms *store.MemoryStore, transcript
 
 	var content string
 	prompt := buildTranscriptPrompt(transcript, sessionID)
-	llmResponse, _ := callModel(ctx, model, baseURL, prompt, callModelTimeout, nil)
+	llmResponse := callModelWithClient(ctx, ollamaClient, model, prompt)
 
 	if llmResponse != "" {
 		content = llmResponse

@@ -16,6 +16,7 @@ import (
 	"github.com/MichielDean/LLMem/internal/embed"
 	"github.com/MichielDean/LLMem/internal/extract"
 	"github.com/MichielDean/LLMem/internal/introspect"
+	"github.com/MichielDean/LLMem/internal/ollama"
 	"github.com/MichielDean/LLMem/internal/paths"
 	"github.com/MichielDean/LLMem/internal/session"
 	"github.com/MichielDean/LLMem/internal/store"
@@ -145,6 +146,18 @@ func openEmbeddingEngine() *embed.EmbeddingEngine {
 		return nil
 	}
 	return engine
+}
+
+// openOllamaClient creates an OllamaClient for session hook introspection.
+// Returns nil on failure — the coordinator gracefully handles a nil client
+// by skipping introspection in OnEnding.
+func openOllamaClient() *ollama.OllamaClient {
+	client, err := ollama.NewOllamaClient(ollama.OllamaClientConfig{})
+	if err != nil {
+		slog.Debug("llmem: failed to create Ollama client, skipping introspection", "error", err)
+		return nil
+	}
+	return client
 }
 
 func addCmd() *cobra.Command {
@@ -1110,6 +1123,7 @@ func contextCmd() *cobra.Command {
 				Adapter:          adapter,
 				ExtractionEngine: openExtractionEngine(),
 				Embedding:        openEmbeddingEngine(),
+				OllamaClient:     openOllamaClient(),
 			})
 			if err != nil {
 				return err
@@ -1178,6 +1192,7 @@ func hookCmd() *cobra.Command {
 				Adapter:          adapter,
 				ExtractionEngine: openExtractionEngine(),
 				Embedding:        openEmbeddingEngine(),
+				OllamaClient:     openOllamaClient(),
 			})
 			if err != nil {
 				return err

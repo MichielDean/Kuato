@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/MichielDean/LLMem/internal/store"
 )
 
 func TestEmbeddingEngine_Embed_Success(t *testing.T) {
@@ -316,8 +318,8 @@ func TestEmbeddingEngine_CheckAvailable_Unreachable(t *testing.T) {
 
 func TestEmbeddingEngine_VecToBytes_RoundTrip(t *testing.T) {
 	original := []float32{1.0, -2.5, 3.14, 0.0, -0.001}
-	encoded := vecToBytes(original)
-	decoded := bytesToVec(encoded)
+	encoded := store.VecToBytes(original)
+	decoded := store.BytesToVec(encoded)
 
 	if len(decoded) != len(original) {
 		t.Fatalf("expected %d elements, got %d", len(original), len(decoded))

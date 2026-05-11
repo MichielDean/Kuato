@@ -703,7 +703,7 @@ func (ms *MemoryStore) SearchByEmbedding(ctx context.Context, queryVec []float32
 }
 
 func (ms *MemoryStore) searchByEmbeddingVec(ctx context.Context, queryVec []float32, validOnly bool, limit int, threshold float64) ([]*ScoredMemory, error) {
-	queryBytes := vecToBytes(queryVec)
+	queryBytes := VecToBytes(queryVec)
 
 	multipliers := []int{3, 10, 50, 0}
 	var scored []*ScoredMemory
@@ -866,7 +866,7 @@ func (ms *MemoryStore) searchByEmbeddingBrute(ctx context.Context, queryVec []fl
 		if err := rows.Scan(&id, &embBytes); err != nil {
 			return nil, fmtErr("search_by_embedding: brute scan: %w", err)
 		}
-		vec := bytesToVec(embBytes)
+		vec := BytesToVec(embBytes)
 		if len(vec) != len(queryVec) {
 			continue
 		}
@@ -1251,7 +1251,7 @@ func (ms *MemoryStore) ConsolidateDuplicates(ctx context.Context, threshold floa
 		if err := rows.Scan(&id, &content, &embBytes); err != nil {
 			return nil, fmtErr("consolidate_duplicates: scan: %w", err)
 		}
-		vec := bytesToVec(embBytes)
+		vec := BytesToVec(embBytes)
 		entries = append(entries, entry{id: id, content: content, emb: vec})
 	}
 	if rows.Err() != nil {
