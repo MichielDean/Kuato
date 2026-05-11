@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -59,6 +60,34 @@ func fmtErr(format string, args ...any) error {
 	return fmt.Errorf("llmem: skillpatch: "+format, args...)
 }
 
+// validCategoryRe matches category names that are safe to use as directory names.
+// Only alphanumeric characters and underscores are allowed — no path separators,
+// dots, or whitespace that could enable traversal or injection.
+var validCategoryRe = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+// sanitizeCategory validates that a category name is safe for use as a directory
+// name. It rejects categories containing path separators, dots, whitespace, or
+// other characters that could enable path traversal.
+func sanitizeCategory(category string) error {
+	if category == "" {
+		return fmtErr("invalid category: empty")
+	}
+	if !validCategoryRe.MatchString(category) {
+		return fmtErr("invalid category %q: must contain only alphanumeric characters and underscores", category)
+	}
+	return nil
+}
+
+// sanitizeYAMLValue replaces newlines and carriage returns in a string to prevent
+// YAML frontmatter injection. Newlines in YAML values can break the frontmatter
+// structure and inject arbitrary YAML keys.
+func sanitizeYAMLValue(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "  ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return s
+}
+
 // NewSkillPatcher creates and initializes a SkillPatcher.
 // All config fields default to sensible values if zero.
 // The constructor leaves the SkillPatcher in a fully usable state.
@@ -82,6 +111,9 @@ func NewSkillPatcher(cfg SkillPatchConfig) (*SkillPatcher, error) {
 func (sp *SkillPatcher) Patch(ctx context.Context, category, proposedUpdate, categoryDescription string) error {
 	if category == "" {
 		return fmtErr("category is required")
+	}
+	if err := sanitizeCategory(category); err != nil {
+		return err
 	}
 	if proposedUpdate == "" {
 		// No-op: nothing to patch
@@ -203,14 +235,32 @@ func ValidatePatch(category string, beforeCount, afterCount int) PatchValidation
 
 // createSkillFile creates a new SKILL.md file in the appropriate category directory
 // with proper YAML frontmatter.
+// The category must already pass sanitizeCategory validation before reaching this method.
 func (sp *SkillPatcher) createSkillFile(category, categoryDescription string) (string, error) {
 	skillDirName, ok := categorySkillMap[category]
 	if !ok {
-		// No mapping: create in a lowercase category directory
+		// No mapping: use sanitized lowercase category as directory name.
+		// sanitizeCategory has already validated no path traversal characters.
 		skillDirName = strings.ToLower(category)
 	}
 
 	dirPath := filepath.Join(sp.skillDir, skillDirName)
+
+	// Security: verify the resolved path stays within skillDir (defense in depth
+	// against path traversal, even though sanitizeCategory already rejects
+	// separator characters).
+	absDirPath, err := filepath.Abs(dirPath)
+	if err != nil {
+		return "", fmtErr("resolve skill directory path %s: %w", dirPath, err)
+	}
+	absSkillDir, err := filepath.Abs(sp.skillDir)
+	if err != nil {
+		return "", fmtErr("resolve skill dir root %s: %w", sp.skillDir, err)
+	}
+	if !strings.HasPrefix(absDirPath, absSkillDir+string(filepath.Separator)) && absDirPath != absSkillDir {
+		return "", fmtErr("invalid category %q: resolved path escapes skill directory", category)
+	}
+
 	if err := os.MkdirAll(dirPath, 0700); err != nil {
 		return "", fmtErr("create skill directory %s: %w", dirPath, err)
 	}
@@ -220,18 +270,23 @@ func (sp *SkillPatcher) createSkillFile(category, categoryDescription string) (s
 		description = category
 	}
 
+	// Sanitize values before inserting into YAML frontmatter to prevent injection
+	sanitizedCategory := sanitizeYAMLValue(strings.ToLower(category))
+	sanitizedDescription := sanitizeYAMLValue(description)
+	sanitizedHeading := sanitizeYAMLValue(category)
+
 	// Build frontmatter
 	var sb strings.Builder
 	sb.WriteString("---\n")
 	sb.WriteString("name: ")
-	sb.WriteString(strings.ToLower(category))
+	sb.WriteString(sanitizedCategory)
 	sb.WriteString("\n")
 	sb.WriteString("description: >\n  ")
-	sb.WriteString(description)
+	sb.WriteString(sanitizedDescription)
 	sb.WriteString("\nlicense: MIT\n")
 	sb.WriteString("---\n\n")
 	sb.WriteString("# ")
-	sb.WriteString(category)
+	sb.WriteString(sanitizedHeading)
 	sb.WriteString("\n\n")
 
 	filePath := filepath.Join(dirPath, "SKILL.md")

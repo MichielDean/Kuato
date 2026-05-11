@@ -437,3 +437,131 @@ func TestHasYAMLFrontmatter(t *testing.T) {
 		t.Error("expected no frontmatter detection for plain markdown")
 	}
 }
+
+func TestSkillPatcher_PathTraversal_Rejected(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "skills")
+
+	sp, err := NewSkillPatcher(SkillPatchConfig{
+		SkillDir: skillDir,
+	})
+	if err != nil {
+		t.Fatalf("NewSkillPatcher: %v", err)
+	}
+
+	// Attempt path traversal via category not in categorySkillMap
+	// Categories with path separators or dots should be rejected
+	traversalCategories := []string{
+		"../../etc",
+		"../config",
+		"foo/bar",
+		"foo\\bar",
+		".hidden",
+		"attacker..evil",
+	}
+	for _, tc := range traversalCategories {
+		t.Run(tc, func(t *testing.T) {
+			err := sp.Patch(ctx, tc, "malicious update", "malicious description")
+			if err == nil {
+				t.Errorf("expected error for path-traversal category %q, got nil", tc)
+			}
+			if err != nil && !strings.Contains(err.Error(), "invalid category") {
+				t.Errorf("expected 'invalid category' error for %q, got: %v", tc, err)
+			}
+		})
+	}
+}
+
+func TestSkillPatcher_YAMLInjection_Prevented(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "skills")
+	introDir := filepath.Join(skillDir, "introspection")
+	if err := os.MkdirAll(introDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	existingContent := "---\nname: introspection\ndescription: >\n  Test\nlicense: MIT\n---\n\n# Introspection\n"
+	skillFile := filepath.Join(introDir, "SKILL.md")
+	if err := os.WriteFile(skillFile, []byte(existingContent), 0600); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	sp, err := NewSkillPatcher(SkillPatchConfig{
+		SkillDir: skillDir,
+	})
+	if err != nil {
+		t.Fatalf("NewSkillPatcher: %v", err)
+	}
+
+	// Injected newlines in description should be sanitized
+	maliciousDesc := "Safe description\nmalicious: injected"
+	err = sp.Patch(ctx, "ERROR_HANDLING", "Check error returns", maliciousDesc)
+	if err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+
+	data, err := os.ReadFile(skillFile)
+	if err != nil {
+		t.Fatalf("read skill: %v", err)
+	}
+	content := string(data)
+
+	// The YAML frontmatter should not contain unescaped newlines in the description
+	// Newlines should be replaced with spaces
+	if strings.Contains(content, "malicious: injected") {
+		t.Error("YAML injection: newline in description was not sanitized")
+	}
+}
+
+func TestSanitizeCategory(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantErr bool
+	}{
+		{"NULL_SAFETY", false},
+		{"ERROR_HANDLING", false},
+		{"simple", false},
+		{"../../etc", true},
+		{"../config", true},
+		{"foo/bar", true},
+		{".hidden", true},
+		{"a..b", true},
+		{"", true},
+		{"valid_name123", false},
+		{"has space", true},
+		{"has\nnewline", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			err := sanitizeCategory(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("sanitizeCategory(%q) = %v, want error=%v", tt.input, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestSanitizeYAMLValue(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain text", "hello world", "hello world"},
+		{"newline replaced", "line1\nline2", "line1 line2"},
+		{"carriage return replaced", "line1\rline2", "line1 line2"},
+		{"crlf replaced", "line1\r\nline2", "line1  line2"},
+		{"tab preserved", "tab\there", "tab\there"},
+		{"empty string", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeYAMLValue(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeYAMLValue(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
