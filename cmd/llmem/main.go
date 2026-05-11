@@ -94,7 +94,10 @@ func openStore() (*store.MemoryStore, error) {
 // openAdapter creates an OpenCodeAdapter from configuration.
 // If the OpenCode DB path is empty or the DB cannot be opened, returns nil
 // (the coordinator gracefully handles a nil adapter by returning no_transcript).
-func openAdapter() (*session.OpenCodeAdapter, error) {
+// Returns session.SessionAdapter (not *OpenCodeAdapter) to avoid nil-interface panic:
+// a nil *OpenCodeAdapter assigned to SessionAdapter creates a non-nil interface with
+// nil underlying value, which bypasses nil checks and panics on method calls.
+func openAdapter() (session.SessionAdapter, error) {
 	appCfg, err := loadConfig()
 	if err != nil {
 		// Log but don't fail — adapter is optional

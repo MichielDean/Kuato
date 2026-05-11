@@ -846,3 +846,74 @@ func TestOpenCodeAdapter_ListSessions_FallbackToPath(t *testing.T) {
 		t.Errorf("expected WorkDir='/alt/work' (fallback to path), got %q", sessions[0].WorkDir)
 	}
 }
+
+// TestOpenCodeAdapter_NilInterfaceSafety verifies that a nil *OpenCodeAdapter
+// assigned to SessionAdapter does not create a non-nil interface with a nil
+// underlying value (the classic Go nil-interface panic). When the adapter is
+// nil, OnIdle and OnEnding should return ResultNoTranscript, not panic.
+func TestOpenCodeAdapter_NilInterfaceSafety(t *testing.T) {
+	ms := newTestStore(t)
+
+	// Construct coordinator with nil adapter — this must result in no_transcript,
+	// not a panic. The bug was: assigning (*OpenCodeAdapter)(nil) to SessionAdapter
+	// creates a non-nil interface, bypassing the nil check in OnIdle/OnEnding.
+	var nilAdapter SessionAdapter = nil
+
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:   ms,
+		Adapter: nilAdapter,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	// OnIdle must not panic — it should return no_transcript
+	result, err := coord.OnIdle(context.Background(), "test-session")
+	if err != nil {
+		t.Fatalf("OnIdle with nil adapter: %v", err)
+	}
+	if result != ResultNoTranscript {
+		t.Errorf("expected %q, got %q", ResultNoTranscript, result)
+	}
+
+	// OnEnding must not panic — it should return no_transcript
+	result, err = coord.OnEnding(context.Background(), "test-session")
+	if err != nil {
+		t.Fatalf("OnEnding with nil adapter: %v", err)
+	}
+	if result != ResultNoTranscript {
+		t.Errorf("expected %q, got %q", ResultNoTranscript, result)
+	}
+}
+
+// TestOpenCodeAdapter_EmptyDBPath_IsNilInterface verifies that an adapter
+// created with an empty DB path, when used as a SessionAdapter, properly
+// evaluates to nil (not a non-nil interface with nil underlying value).
+func TestOpenCodeAdapter_EmptyDBPath_IsNilInterface(t *testing.T) {
+	adapter, err := NewOpenCodeAdapter("")
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter with empty path: %v", err)
+	}
+
+	// The adapter with empty path should work as a SessionAdapter that
+	// returns empty/nil results, not panic.
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:   ms,
+		Adapter: adapter,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	// OnIdle with the empty-path adapter should not panic — it returns no_transcript
+	// because ReadTranscript returns empty string for empty dbPath
+	result, err := coord.OnIdle(context.Background(), "test-session")
+	if err != nil {
+		t.Fatalf("OnIdle with empty-path adapter: %v", err)
+	}
+	// Empty DB path adapter returns empty transcript, which maps to no_transcript
+	if result != ResultNoTranscript {
+		t.Errorf("expected %q, got %q", ResultNoTranscript, result)
+	}
+}

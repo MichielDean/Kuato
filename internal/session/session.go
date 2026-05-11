@@ -40,12 +40,14 @@ const idleEvictionFactor = 10
 var compactingKeyTypes = []string{"decision", "preference", "procedure", "project_state"}
 
 // SessionAdapter is the interface for reading session content.
-// Implementations provide session transcript reading and listing capabilities.
+// Implementations provide session transcript reading, listing, and cleanup capabilities.
 type SessionAdapter interface {
 	// ReadTranscript reads the full transcript for a session.
 	ReadTranscript(sessionID string) (string, error)
 	// ListSessions returns available session information.
 	ListSessions() ([]SessionInfo, error)
+	// Close releases any resources held by the adapter. Safe to call multiple times.
+	Close() error
 }
 
 // SessionInfo holds metadata about a session.
