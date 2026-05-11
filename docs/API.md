@@ -1159,6 +1159,7 @@ cfg, err := config.LoadConfig(paths.GetConfigPath())
 // Access config sections
 dbPath := cfg.DBPath()           // resolved database path
 ollamaURL, err := cfg.OllamaURL() // validated Ollama URL
+callModelTimeout := cfg.CallModelTimeoutDuration() // parsed call_model_timeout (default 5m)
 dreamerCfg := cfg.DreamerConfig() // DreamerConfig for dream.NewDreamer()
 dreamCfg := cfg.DreamConfigResolved()
 sessionCfg := cfg.SessionConfigResolved()
@@ -1178,13 +1179,14 @@ type Config struct {
 }
 
 type MemoryConfig struct {
-    DBPath        string
-    OllamaURL     string
-    EmbedModel    string
-    ExtractModel  string
-    ContextBudget int
-    AutoExtract   bool
-    MaxFileSize   int64
+    DBPath             string
+    OllamaURL          string
+    EmbedModel         string
+    ExtractModel       string
+    ContextBudget      int
+    AutoExtract        bool
+    MaxFileSize        int64
+    CallModelTimeout   string   // Go duration string (e.g. "5m", "120s") for introspect/learn LLM calls
 }
 
 type DreamConfig struct {
@@ -1203,6 +1205,7 @@ type DreamConfig struct {
     StaleProcedureDays       int
     OllamaURL               string
     Model                    string
+    ModelTimeout             string   // Go duration string for REM behavioral insight LLM calls
 }
 
 type SessionConfig struct {
@@ -1256,22 +1259,56 @@ The `internal/introspect` package provides failure analysis and lesson learning 
 ```go
 import "github.com/MichielDean/LLMem/internal/introspect"
 
-id, err := introspect.IntrospectFailure(ctx, ms, introspect.IntrospectFailureParams{
+result, err := introspect.IntrospectFailure(ctx, ms, introspect.IntrospectFailureParams{
     WhatHappened: "null pointer dereference",
     Category:     "NULL_SAFETY",
     Context:      "handler.go:42",
     CaughtBy:     "self-review",
     ProposedFix:  "add nil check",
 })
+// result.MemoryID  → stored memory ID (always non-empty on success)
+// result.Content   → stored memory content
+// result.LLMStatus → Enriched, Skipped, or Disabled
 
-id, err := introspect.LearnLesson(ctx, ms, introspect.LearnLessonParams{
+result, err := introspect.LearnLesson(ctx, ms, introspect.LearnLessonParams{
     WhatWasWrong:  "used global state",
     WhatIsCorrect: "inject dependency via constructor",
     Context:       "service.go:15",
+    NoLLM:         true,  // skip LLM entirely → LLMStatus = Disabled
 })
 ```
 
-Both functions use LLM expansion via Ollama when available. When Ollama is unavailable, they gracefully degrade to storage-only mode (storing the raw parameters without LLM expansion).
+Both functions use LLM expansion via Ollama when available. When Ollama is unavailable, they gracefully degrade to storage-only mode (storing the raw parameters without LLM expansion, with `LLMStatus = Skipped`). When `NoLLM` is true, LLM is bypassed entirely (`LLMStatus = Disabled`).
+
+#### LLMEnrichment Status
+
+The `LLMEnrichment` type indicates whether LLM enrichment was applied:
+
+| Value | Constant | Meaning |
+|-------|----------|---------|
+| `"enriched"` | `Enriched` | LLM successfully generated structured content |
+| `"skipped"` | `Skipped` | LLM was unavailable or timed out; raw fields stored |
+| `"disabled"` | `Disabled` | Caller explicitly set `NoLLM=true` |
+
+#### Result Types
+
+```go
+type IntrospectResult struct {
+    MemoryID   string         // Always non-empty on success
+    Content    string         // Stored memory content
+    LLMStatus  LLMEnrichment  // Enriched, Skipped, or Disabled
+}
+
+type LearnResult struct {
+    MemoryID   string         // Always non-empty on success
+    Content    string         // Stored memory content
+    LLMStatus  LLMEnrichment  // Enriched, Skipped, or Disabled
+}
+```
+
+#### Timeout Configuration
+
+Both `IntrospectFailureParams` and `LearnLessonParams` accept a `Timeout` field (Go `time.Duration`). When zero, defaults to 5 minutes. Values below 10 seconds are rejected with an error. The CLI `--timeout` flag and the `call_model_timeout` config setting both feed into this field.
 
 ### Ollama Client (internal/ollama)
 
