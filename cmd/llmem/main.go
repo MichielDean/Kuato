@@ -91,6 +91,35 @@ func openStore() (*store.MemoryStore, error) {
 	return ms, nil
 }
 
+// openAdapter creates an OpenCodeAdapter from configuration.
+// If the OpenCode DB path is empty or the DB cannot be opened, returns nil
+// (the coordinator gracefully handles a nil adapter by returning no_transcript).
+// Returns session.SessionAdapter (not *OpenCodeAdapter) to avoid nil-interface panic:
+// a nil *OpenCodeAdapter assigned to SessionAdapter creates a non-nil interface with
+// nil underlying value, which bypasses nil checks and panics on method calls.
+func openAdapter() (session.SessionAdapter, error) {
+	appCfg, err := loadConfig()
+	if err != nil {
+		// Log but don't fail — adapter is optional
+		slog.Warn("llmem: failed to load config for adapter, skipping", "error", err)
+		return nil, nil
+	}
+
+	dbPath := appCfg.OpenCode.DBPath
+	if dbPath == "" {
+		slog.Debug("llmem: no OpenCode DB path configured, skipping adapter")
+		return nil, nil
+	}
+
+	adapter, err := session.NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		// Log but don't fail — the adapter is optional and the DB may not exist yet
+		slog.Warn("llmem: failed to open OpenCode adapter, skipping", "db_path", dbPath, "error", err)
+		return nil, nil
+	}
+	return adapter, nil
+}
+
 func addCmd() *cobra.Command {
 	var (
 		typeVal      string
@@ -905,8 +934,17 @@ func contextCmd() *cobra.Command {
 			}
 			defer ms.Close()
 
+			adapter, err := openAdapter()
+			if err != nil {
+				return err
+			}
+			if adapter != nil {
+				defer adapter.Close()
+			}
+
 			coord, err := session.NewSessionHookCoordinator(session.SessionHookConfig{
-				Store: ms,
+				Store:   ms,
+				Adapter: adapter,
 			})
 			if err != nil {
 				return err
@@ -962,8 +1000,17 @@ func hookCmd() *cobra.Command {
 			}
 			defer ms.Close()
 
+			adapter, err := openAdapter()
+			if err != nil {
+				return err
+			}
+			if adapter != nil {
+				defer adapter.Close()
+			}
+
 			coord, err := session.NewSessionHookCoordinator(session.SessionHookConfig{
-				Store: ms,
+				Store:   ms,
+				Adapter: adapter,
 			})
 			if err != nil {
 				return err
