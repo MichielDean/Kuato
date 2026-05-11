@@ -58,6 +58,7 @@ func main() {
 		trackReviewCmd(),
 		contextCmd(),
 		hookCmd(),
+		backfillEmbeddingsCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -83,6 +84,7 @@ func loadConfig() (*config.Config, error) {
 }
 
 // openStore creates a MemoryStore and returns it with a cleanup function.
+// Vec is disabled — use openStoreWithVec for operations that need embeddings.
 func openStore() (*store.MemoryStore, error) {
 	cfg := store.StoreConfig{
 		DBPath:     resolveDBPath(),
@@ -91,6 +93,19 @@ func openStore() (*store.MemoryStore, error) {
 	ms, err := store.NewMemoryStore(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("llmem: failed to initialize store: %w", err)
+	}
+	return ms, nil
+}
+
+// openStoreWithVec creates a MemoryStore with vec0 enabled for embedding operations.
+func openStoreWithVec() (*store.MemoryStore, error) {
+	cfg := store.StoreConfig{
+		DBPath:     resolveDBPath(),
+		DisableVec: false,
+	}
+	ms, err := store.NewMemoryStore(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("llmem: failed to initialize store with vec: %w", err)
 	}
 	return ms, nil
 }
@@ -292,6 +307,15 @@ func searchCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			ids := make([]string, len(results))
+			for i, m := range results {
+				ids[i] = m.ID
+			}
+			if len(ids) > 0 {
+				if _, err := ms.TouchBatch(context.Background(), ids); err != nil {
+					slog.Debug("llmem: search: failed to touch results", "error", err)
+				}
+			}
 			for _, m := range results {
 				if jsonOutput {
 					data, _ := json.MarshalIndent(m, "", "  ")
@@ -335,6 +359,15 @@ func listCmd() *cobra.Command {
 			})
 			if err != nil {
 				return err
+			}
+			ids := make([]string, len(results))
+			for i, m := range results {
+				ids[i] = m.ID
+			}
+			if len(ids) > 0 {
+				if _, err := ms.TouchBatch(context.Background(), ids); err != nil {
+					slog.Debug("llmem: list: failed to touch results", "error", err)
+				}
 			}
 			for _, m := range results {
 				if jsonOutput {
@@ -1231,6 +1264,93 @@ func hookCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&hookType, "type", "", "Hook type: created, idle, compacting, ending")
 	cmd.Flags().StringVar(&sessionIDVal, "session-id", "", "Session ID")
+	return cmd
+}
+
+func backfillEmbeddingsCmd() *cobra.Command {
+	var (
+		batchSize int
+		dryRunVal bool
+	)
+	cmd := &cobra.Command{
+		Use:   "backfill-embeddings",
+		Short: "Generate embeddings for memories that lack them",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ms, err := openStoreWithVec()
+			if err != nil {
+				return err
+			}
+			defer ms.Close()
+
+			embeddingEngine, err := embed.NewEmbeddingEngine(embed.EmbeddingConfig{})
+			if err != nil {
+				return fmt.Errorf("llmem: backfill-embeddings: failed to create embedding engine: %w", err)
+			}
+
+			availCtx, availCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			available := embeddingEngine.CheckAvailable(availCtx)
+			availCancel()
+			if !available {
+				return fmt.Errorf("llmem: backfill-embeddings: Ollama embedding model not available (is Ollama running with nomic-embed-text?)")
+			}
+
+			memories, err := ms.Search(context.Background(), store.SearchParams{
+				ValidOnly: true,
+				Limit:     10000,
+			})
+			if err != nil {
+				return err
+			}
+
+			var missing []*store.Memory
+			for _, m := range memories {
+				if len(m.Embedding) == 0 {
+					missing = append(missing, m)
+				}
+			}
+
+			if len(missing) == 0 {
+				fmt.Println("All memories have embeddings. Nothing to backfill.")
+				return nil
+			}
+
+			if dryRunVal {
+				fmt.Printf("Would backfill %d memories with embeddings (dry run)\n", len(missing))
+				return nil
+			}
+
+			backfilled := 0
+			failed := 0
+			for i, m := range missing {
+				vec, embedErr := embeddingEngine.Embed(context.Background(), m.Content)
+				if embedErr != nil {
+					slog.Warn("llmem: backfill-embeddings: failed to embed", "id", m.ID, "error", embedErr)
+					failed++
+					continue
+				}
+				embBytes := store.VecToBytes(vec)
+				_, updateErr := ms.Update(context.Background(), store.UpdateParams{
+					ID:        m.ID,
+					Embedding: embBytes,
+				})
+				if updateErr != nil {
+					slog.Warn("llmem: backfill-embeddings: failed to update", "id", m.ID, "error", updateErr)
+					failed++
+					continue
+				}
+				backfilled++
+
+				if batchSize > 0 && (i+1)%batchSize == 0 {
+					fmt.Printf("Progress: %d/%d backfilled, %d failed\n", backfilled, len(missing), failed)
+				}
+			}
+
+			fmt.Printf("Backfilled %d memories with embeddings (%d failed)\n", backfilled, failed)
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&batchSize, "batch-size", 50, "Print progress every N memories")
+	cmd.Flags().BoolVar(&dryRunVal, "dry-run", false, "Count memories without embeddings without backfilling")
 	return cmd
 }
 
