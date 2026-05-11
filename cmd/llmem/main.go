@@ -13,6 +13,8 @@ import (
 
 	"github.com/MichielDean/LLMem/internal/config"
 	"github.com/MichielDean/LLMem/internal/dream"
+	"github.com/MichielDean/LLMem/internal/embed"
+	"github.com/MichielDean/LLMem/internal/extract"
 	"github.com/MichielDean/LLMem/internal/introspect"
 	"github.com/MichielDean/LLMem/internal/paths"
 	"github.com/MichielDean/LLMem/internal/session"
@@ -119,6 +121,30 @@ func openAdapter() (session.SessionAdapter, error) {
 		return nil, nil
 	}
 	return adapter, nil
+}
+
+// openExtractionEngine creates an ExtractionEngine for session hooks.
+// Returns nil on failure — the coordinator gracefully handles a nil engine
+// by skipping extraction (graceful degradation).
+func openExtractionEngine() *extract.ExtractionEngine {
+	engine, err := extract.NewExtractionEngine(extract.ExtractionConfig{})
+	if err != nil {
+		slog.Debug("llmem: failed to create extraction engine, skipping", "error", err)
+		return nil
+	}
+	return engine
+}
+
+// openEmbeddingEngine creates an EmbeddingEngine for session hooks.
+// Returns nil on failure — the coordinator gracefully handles a nil engine
+// by storing memories without embeddings.
+func openEmbeddingEngine() *embed.EmbeddingEngine {
+	engine, err := embed.NewEmbeddingEngine(embed.EmbeddingConfig{})
+	if err != nil {
+		slog.Debug("llmem: failed to create embedding engine, skipping", "error", err)
+		return nil
+	}
+	return engine
 }
 
 func addCmd() *cobra.Command {
@@ -1080,8 +1106,10 @@ func contextCmd() *cobra.Command {
 			}
 
 			coord, err := session.NewSessionHookCoordinator(session.SessionHookConfig{
-				Store:   ms,
-				Adapter: adapter,
+				Store:            ms,
+				Adapter:          adapter,
+				ExtractionEngine: openExtractionEngine(),
+				Embedding:        openEmbeddingEngine(),
 			})
 			if err != nil {
 				return err
@@ -1146,8 +1174,10 @@ func hookCmd() *cobra.Command {
 			}
 
 			coord, err := session.NewSessionHookCoordinator(session.SessionHookConfig{
-				Store:   ms,
-				Adapter: adapter,
+				Store:            ms,
+				Adapter:          adapter,
+				ExtractionEngine: openExtractionEngine(),
+				Embedding:        openEmbeddingEngine(),
 			})
 			if err != nil {
 				return err

@@ -405,6 +405,77 @@ func callModel(ctx context.Context, model, baseURL, prompt string, timeout time.
 	return response, Enriched
 }
 
+// IntrospectTranscript analyzes a session transcript and stores a self_assessment memory.
+// On LLM availability, it uses the model to produce a structured self-assessment from the
+// transcript content. On LLM failure, it falls back to a plain-text summary of the session.
+//
+// Contract: NEVER returns ("", nil) — either creates a memory or returns an error.
+// Even on LLM failure, a degraded memory is created.
+// Returns ("", error) only if the transcript is empty (validation error).
+func IntrospectTranscript(ctx context.Context, ms *store.MemoryStore, transcript string, sessionID string, model, baseURL string) (string, error) {
+	if transcript == "" {
+		return "", fmtErr("transcript is required for introspection")
+	}
+	if model == "" {
+		model = defaultModel
+	}
+
+	var content string
+	prompt := buildTranscriptPrompt(transcript, sessionID)
+	llmResponse, _ := callModel(ctx, model, baseURL, prompt, callModelTimeout, nil)
+
+	if llmResponse != "" {
+		content = llmResponse
+	} else {
+		// Graceful degradation: build from provided fields
+		var lines []string
+		lines = append(lines, "Session_id: "+sessionID)
+		lines = append(lines, "Summary: session completed")
+		// Truncate transcript for storage if very long
+		transcriptExcerpt := transcript
+		if len(transcriptExcerpt) > 500 {
+			transcriptExcerpt = transcriptExcerpt[:500] + "..."
+		}
+		lines = append(lines, "Transcript_excerpt: "+transcriptExcerpt)
+		content = strings.Join(lines, "\n")
+	}
+
+	id, err := ms.Add(context.Background(), store.AddParams{
+		Type:       "self_assessment",
+		Content:    content,
+		Source:     introspectSource,
+		Confidence: 0.8,
+	})
+	if err != nil {
+		return "", fmtErr("store self_assessment: %w", err)
+	}
+
+	slog.Info("llmem: introspect: stored transcript self_assessment", "id", id, "session_id", sessionID)
+	return id, nil
+}
+
+// buildTranscriptPrompt builds the prompt for transcript introspection.
+func buildTranscriptPrompt(transcript, sessionID string) string {
+	prompt := "Analyze the following session transcript and produce a structured self-assessment.\n\n"
+	prompt += "The session has ended. Identify key decisions, preferences, project state updates, " +
+		"and any lessons learned during this session.\n\n"
+	prompt += "Format each insight as a separate point:\n" +
+		"- What was decided and why\n" +
+		"- What preferences were expressed\n" +
+		"- What project state changed\n" +
+		"- What patterns or recurring issues appeared\n\n"
+	prompt += "Session ID: " + sessionID + "\n\n"
+
+	// Truncate very long transcripts to avoid overwhelming the model
+	transcriptExcerpt := transcript
+	if len(transcriptExcerpt) > 3000 {
+		transcriptExcerpt = transcriptExcerpt[:3000] + "\n...(truncated)"
+	}
+	prompt += "Transcript:\n" + transcriptExcerpt
+	prompt += "\n\nProduce a structured self-assessment of this session."
+	return prompt
+}
+
 // orDefault returns val if non-empty, otherwise returns defaultVal.
 func orDefault(val, defaultVal string) string {
 	if val != "" {

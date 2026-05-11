@@ -708,3 +708,72 @@ func TestIntrospectAuto_WithModel(t *testing.T) {
 		t.Errorf("expected source introspect-auto, got %q", mem.Source)
 	}
 }
+
+func TestIntrospectTranscript_WithFields(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	id, err := IntrospectTranscript(ctx, ms, "User asked about Go testing conventions\nAssistant explained table-driven tests", "session-abc", "", "http://localhost:59999")
+	if err != nil {
+		t.Fatalf("IntrospectTranscript: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty memory ID")
+	}
+
+	mem, err := ms.Get(context.Background(), id, false)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if mem == nil {
+		t.Fatal("expected memory to be stored")
+	}
+	if mem.Type != "self_assessment" {
+		t.Errorf("expected type self_assessment, got %q", mem.Type)
+	}
+	if mem.Source != "introspect" {
+		t.Errorf("expected source introspect, got %q", mem.Source)
+	}
+	if mem.Confidence != 0.8 {
+		t.Errorf("expected confidence 0.8, got %f", mem.Confidence)
+	}
+	if mem.Content == "" {
+		t.Error("expected non-empty content")
+	}
+}
+
+func TestIntrospectTranscript_EmptyTranscript(t *testing.T) {
+	ctx := context.Background()
+	ms := newTestStore(t)
+	_, err := IntrospectTranscript(ctx, ms, "", "session-abc", "", "")
+	if err == nil {
+		t.Error("expected error for empty transcript")
+	}
+}
+
+func TestIntrospectTranscript_GracefulDegradation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	// Use a URL that won't have Ollama running — triggers graceful degradation
+	id, err := IntrospectTranscript(ctx, ms, "Some session transcript content here", "session-degrad", "", "http://localhost:59999")
+	if err != nil {
+		t.Fatalf("IntrospectTranscript: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty memory ID even when Ollama is unavailable")
+	}
+
+	mem, _ := ms.Get(context.Background(), id, false)
+	if mem == nil {
+		t.Fatal("expected memory to be stored")
+	}
+	if mem.Content == "" {
+		t.Error("expected non-empty content even without LLM")
+	}
+	if !strings.Contains(mem.Content, "session-degrad") {
+		t.Errorf("expected degraded content to contain session ID, got %q", mem.Content)
+	}
+}
