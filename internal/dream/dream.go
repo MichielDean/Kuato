@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1018,10 +1019,9 @@ func (d *Dreamer) validatePatches(ctx context.Context, result *DreamResult) erro
 	beforeCounts := map[string]int{}
 	for _, m := range selfAssessments {
 		if m.UpdatedAt != "" && m.UpdatedAt < cutoff {
-			for cat := range taxonomy.ErrorTaxonomy {
-				if strings.Contains(m.Content, "Category: "+cat) {
-					beforeCounts[cat]++
-				}
+			cat := taxonomy.ParseSelfAssessmentField(m.Content, "Category")
+			if cat != "" {
+				beforeCounts[cat]++
 			}
 		}
 	}
@@ -1030,10 +1030,9 @@ func (d *Dreamer) validatePatches(ctx context.Context, result *DreamResult) erro
 	afterCounts := map[string]int{}
 	for _, m := range selfAssessments {
 		if m.UpdatedAt != "" && m.UpdatedAt >= cutoff {
-			for cat := range taxonomy.ErrorTaxonomy {
-				if strings.Contains(m.Content, "Category: "+cat) {
-					afterCounts[cat]++
-				}
+			cat := taxonomy.ParseSelfAssessmentField(m.Content, "Category")
+			if cat != "" {
+				afterCounts[cat]++
 			}
 		}
 	}
@@ -1074,15 +1073,24 @@ func (d *Dreamer) validatePatches(ctx context.Context, result *DreamResult) erro
 
 		if validation.Flagged {
 			slog.Warn("llmem: dream: patch flagged for review — error rate not decreasing", "category", insight.Category, "before", beforeCount, "after", afterCount)
-			// Flag the procedure memory for review
+			// Flag the procedure memory for review — merge into existing metadata, don't replace
 			if insight.InsightID != "" {
-				metadata := map[string]any{"flagged_for_review": true}
-				_, err := d.store.Update(ctx, store.UpdateParams{
-					ID:       insight.InsightID,
-					Metadata: metadata,
-				})
+				existing, err := d.store.Get(ctx, insight.InsightID, false)
 				if err != nil {
-					slog.Debug("llmem: dream: failed to flag procedure for review", "id", insight.InsightID, "error", err)
+					slog.Debug("llmem: dream: failed to fetch procedure for metadata merge", "id", insight.InsightID, "error", err)
+				} else if existing != nil {
+					merged := maps.Clone(existing.Metadata)
+					if merged == nil {
+						merged = map[string]any{}
+					}
+					merged["flagged_for_review"] = true
+					_, err := d.store.Update(ctx, store.UpdateParams{
+						ID:       insight.InsightID,
+						Metadata: merged,
+					})
+					if err != nil {
+						slog.Debug("llmem: dream: failed to flag procedure for review", "id", insight.InsightID, "error", err)
+					}
 				}
 			}
 		}

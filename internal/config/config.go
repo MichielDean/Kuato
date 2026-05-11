@@ -22,10 +22,11 @@ import (
 // Only fields that are wired through to DreamerConfig are included.
 // Removed dead fields: MinScore, MinRecallCount, MinUniqueQueries,
 // BoostOnPromote, MergeModel, CalibrationEnabled,
-// CalibrationLookbackDays, Enabled, Schedule — these were defined in
+// CalibrationLookbackDays, Enabled, Schedule, SkillPatchDir — these were defined in
 // config but never read by any method, creating a contract violation.
 // Enabled and Schedule control systemd timer behaviour, not dream
 // algorithm parameters; they are handled by internal/systemd directly.
+// SkillPatchDir was superseded by SkillPatchConfig.Dir (Config.SkillPatch.Dir).
 type DreamConfig struct {
 	SimilarityThreshold    float64 `yaml:"similarity_threshold"`
 	DecayRate              float64 `yaml:"decay_rate"`
@@ -46,8 +47,6 @@ type DreamConfig struct {
 	// Parsed as a Go duration string (e.g. "5m", "120s"). Defaults to "5m".
 	ModelTimeout        string `yaml:"model_timeout"`
 	ProposedChangesPath string  `yaml:"proposed_changes_path"`
-	// SkillPatchDir is the root directory for skill files. Defaults to paths.GetSkillDir() if empty.
-	SkillPatchDir       string  `yaml:"skill_patch_dir"`
 }
 
 // SessionConfig holds session lifecycle settings.
