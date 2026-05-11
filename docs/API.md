@@ -906,7 +906,7 @@ _, err := ms.Add(ctx, store.AddParams{Type: "unknown_type", Content: "test"})
 
 Embeddings are stored and accepted as packed `[]byte` in little-endian `float32` format. For a 768-dimensional embedding, this is `768 × 4 = 3072` bytes.
 
-Use the exported `vecToBytes` and `bytesToVec` helpers if you need conversion:
+Use the exported `VecToBytes` and `BytesToVec` helpers if you need conversion:
 
 ```go
 // Convert float32 slice to []byte for storage
@@ -1251,7 +1251,7 @@ available := engine.CheckAvailable(ctx)
 
 ### Introspection (internal/introspect)
 
-The `internal/introspect` package provides failure analysis and lesson learning (see [Dream Cycle & Extraction](DREAM.md#go) for usage).
+The `internal/introspect` package provides failure analysis, lesson learning, and session transcript introspection (see [Dream Cycle & Extraction](DREAM.md#go) for usage).
 
 ```go
 import "github.com/MichielDean/LLMem/internal/introspect"
@@ -1269,9 +1269,17 @@ id, err := introspect.LearnLesson(ctx, ms, introspect.LearnLessonParams{
     WhatIsCorrect: "inject dependency via constructor",
     Context:       "service.go:15",
 })
+
+// IntrospectTranscript — analyze a session transcript at session end
+id, err := introspect.IntrospectTranscript(ctx, ms, transcript, "session-id", ollamaClient, "glm-5.1:cloud")
+// When ollamaClient is nil, falls back to degraded storage (plain-text summary, no LLM call)
 ```
 
-Both functions use LLM expansion via Ollama when available. When Ollama is unavailable, they gracefully degrade to storage-only mode (storing the raw parameters without LLM expansion).
+All three functions use LLM expansion via Ollama when available. When Ollama is unavailable, they gracefully degrade to storage-only mode (storing the raw parameters without LLM expansion).
+
+**IntrospectTranscript** differs from `IntrospectFailure` and `LearnLesson` in two ways:
+1. It accepts a pre-configured `*ollama.OllamaClient` instead of a model/baseURL pair, reusing the session's configured Ollama connection.
+2. It uses `context.Background()` for the final store operation (not the caller's `ctx`), ensuring the session-end self-assessment is persisted even if the calling context has expired during the LLM call. This is intentional — `IntrospectFailure` and `LearnLesson` pass through `ctx` because they run mid-session when the context is still alive.
 
 #### IntrospectAuto
 
@@ -1433,23 +1441,35 @@ if adapter != nil {
 }
 
 coord, err := session.NewSessionHookCoordinator(session.SessionHookConfig{
-    Store:   ms,
-    Adapter: adapter,  // nil → no_transcript on idle/ending
+    Store:            ms,
+    Adapter:          adapter,           // nil → no_transcript on idle/ending
+    ExtractionEngine: extractionEngine,  // nil → skip extraction
+    Embedding:        embeddingEngine,   // nil → store without embeddings
+    OllamaClient:     ollamaClient,      // nil → degraded introspection in OnEnding
 })
 ```
 
 When `config.yaml` has `opencode.db_path` set and the database exists, the adapter is wired into the coordinator. When the path is empty or the DB is unreachable, a nil adapter is used — `OnIdle` and `OnEnding` return `"no_transcript"` gracefully.
 
+The CLI also provides `openExtractionEngine()`, `openEmbeddingEngine()`, and `openOllamaClient()` helper functions that return nil on failure. The coordinator gracefully degrades when any of these are nil:
+- `ExtractionEngine` nil → extraction skipped, memories not extracted from transcript
+- `Embedding` nil → memories stored without embedding vectors
+- `OllamaClient` nil → `IntrospectTranscript` produces degraded self-assessment (plain-text summary, no LLM call)
+
 #### SessionHookConfig
 
 ```go
 type SessionHookConfig struct {
-    Store           *store.MemoryStore  // Required for all hook operations
-    Adapter         SessionAdapter      // Provides session content. nil → no_transcript
-    DebounceSeconds int                 // Min interval between idle events. Default: 30
-    ContextDir      string              // Directory for context files. Default: paths.GetContextDir()
-    Model           string              // LLM model for introspection. Default: "glm-5.1:cloud"
-    BaseURL         string              // Ollama base URL for introspection. Default: "http://localhost:11434"
+    Store            *store.MemoryStore          // Required for all hook operations
+    Adapter          SessionAdapter              // Provides session content. nil → no_transcript
+    DebounceSeconds  int                        // Min interval between idle events. Default: 30
+    ContextDir       string                     // Directory for context files. Default: paths.GetContextDir()
+    Model            string                     // LLM model for introspection. Default: "glm-5.1:cloud"
+    BaseURL          string                     // Ollama base URL for introspection. Default: "http://localhost:11434"
+    ExtractionEngine *extract.ExtractionEngine  // Extracts memories from transcript. nil → skip extraction
+    Embedding        *embed.EmbeddingEngine     // Generates embedding vectors. nil → store without embeddings
+    OllamaClient     *ollama.OllamaClient       // Used for introspection in OnEnding. nil → degraded fallback
+    IntrospectModel  string                     // LLM model name for IntrospectTranscript. Default: "glm-5.1:cloud"
 }
 ```
 
@@ -1457,8 +1477,12 @@ type SessionHookConfig struct {
 
 ```go
 coord, err := session.NewSessionHookCoordinator(session.SessionHookConfig{
-    Store:   ms,
-    Adapter: adapter,
+    Store:            ms,
+    Adapter:          adapter,
+    ExtractionEngine: extractionEngine,  // nil → skip extraction
+    Embedding:        embeddingEngine,    // nil → store without embeddings
+    OllamaClient:     ollamaClient,       // nil → degraded introspection in OnEnding
+    IntrospectModel:  "glm-5.1:cloud",    // optional, defaults to "glm-5.1:cloud"
 })
 
 result, err := coord.OnCreated(ctx, "session-id")       // "success" | "already_processed"
@@ -1474,7 +1498,15 @@ resultType, memoryID, err := coord.OnEndingWithIntrospect(ctx, "session-id")
 //         ("error", "", err) on validation error
 ```
 
-All methods validate session IDs via `paths.ValidateSessionID` to prevent path traversal. OnIdle includes a 30-second debounce mechanism.
+All methods validate session IDs via `paths.ValidateSessionID` to prevent path traversal.
+
+**OnIdle** includes a 30-second debounce mechanism. When a transcript is available and `ExtractionEngine` is non-nil, OnIdle:
+1. Calls `SupersedeBySource` to invalidate prior memories from the same session (re-extraction as conversation grows)
+2. Extracts memories via the extraction engine
+3. Generates embedding vectors for each memory (if `Embedding` is non-nil)
+4. Stores memories and logs the extraction
+
+**OnEnding** extracts memories the same way as OnIdle, then runs `IntrospectTranscript` to produce a session-end self-assessment. When `OllamaClient` is nil, `IntrospectTranscript` falls back to a degraded plain-text summary (no LLM call attempted) — the nil-OllamaClient guard must NOT be used, or the degradation path is bypassed.
 
 ### Systemd Unit Generation (internal/systemd)
 
