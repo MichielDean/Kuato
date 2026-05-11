@@ -788,6 +788,7 @@ func introspectCmd() *cobra.Command {
 			if result.LLMStatus == introspect.Skipped {
 				fmt.Fprintln(os.Stderr, "WARNING: LLM enrichment skipped — stored raw fields (Ollama unavailable)")
 				// Use os.Exit for non-zero exit code since cobra only supports exit code 1 via returning error
+				ms.Close()
 				os.Exit(2)
 			}
 
@@ -864,6 +865,7 @@ func learnCmd() *cobra.Command {
 
 			if result.LLMStatus == introspect.Skipped {
 				fmt.Fprintln(os.Stderr, "WARNING: LLM expansion skipped — stored raw fields (Ollama unavailable)")
+				ms.Close()
 				os.Exit(2)
 			}
 
