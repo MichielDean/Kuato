@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MichielDean/LLMem/internal/ollama"
 	"github.com/MichielDean/LLMem/internal/paths"
 	"github.com/MichielDean/LLMem/internal/store"
 	"github.com/MichielDean/LLMem/internal/taxonomy"
@@ -32,6 +34,11 @@ const (
 	defaultBehavioralThreshold    = 3
 	defaultBehavioralLookbackDays = 30
 	defaultStaleProcedureDays     = 30
+	defaultDreamBaseURL           = "http://localhost:11434"
+	defaultDreamModel             = "glm-5.1:cloud"
+	defaultDreamModelTimeout      = 30 * time.Second
+	maxBehavioralSamples          = 5
+	maxSampleLength               = 300
 )
 
 // DreamerConfig contains the configuration for creating a Dreamer.
@@ -79,6 +86,22 @@ type DreamerConfig struct {
 
 	// ReportPath path for writing dream report. Defaults from paths.GetDreamReportPath().
 	ReportPath string
+
+	// OllamaClient is an optional pre-configured OllamaClient. Takes precedence over BaseURL/HTTPClient.
+	// When nil, the constructor will attempt to create one from BaseURL.
+	OllamaClient *ollama.OllamaClient
+
+	// BaseURL is the Ollama API base URL. Defaults to "http://localhost:11434".
+	// Only used when OllamaClient is nil.
+	BaseURL string
+
+	// HTTPClient is an optional pre-configured HTTP client (for testing with httptest.NewServer).
+	// Only used when OllamaClient is nil.
+	HTTPClient *http.Client
+
+	// Model is the name of the Ollama model to use for behavioral insight generation.
+	// Defaults to "glm-5.1:cloud".
+	Model string
 }
 
 // LightPhaseResult holds the results of the light (deduplication) phase.
@@ -136,6 +159,8 @@ type Dreamer struct {
 	staleProcedureDays       int
 	diaryPath                string
 	reportPath               string
+	ollama                   *ollama.OllamaClient
+	model                    string
 	mu                       sync.Mutex
 }
 
@@ -147,6 +172,9 @@ func fmtErr(format string, args ...any) error {
 // NewDreamer creates and initializes a Dreamer.
 // All config fields default to sensible values if zero.
 // The constructor leaves the dreamer in a fully usable state.
+// If cfg.OllamaClient is nil, the constructor attempts to create one from cfg.BaseURL
+// (defaulting to "http://localhost:11434"). If that also fails, ollama is nil and
+// behavioral insights fall back to count-based summaries without erroring.
 func NewDreamer(cfg DreamerConfig) (*Dreamer, error) {
 	if cfg.Store == nil {
 		return nil, fmtErr("store is required")
@@ -204,6 +232,35 @@ func NewDreamer(cfg DreamerConfig) (*Dreamer, error) {
 	if reportPath == "" {
 		reportPath = paths.GetDreamReportPath()
 	}
+	model := cfg.Model
+	if model == "" {
+		model = defaultDreamModel
+	}
+
+	// Wire OllamaClient following ExtractionEngine pattern.
+	// If cfg.OllamaClient is provided, use it directly.
+	// Otherwise, create one from cfg.BaseURL (with validation) and cfg.HTTPClient.
+	var client *ollama.OllamaClient
+	if cfg.OllamaClient != nil {
+		client = cfg.OllamaClient
+	} else {
+		baseURL := cfg.BaseURL
+		if baseURL == "" {
+			baseURL = defaultDreamBaseURL
+		}
+		ollamaCfg := ollama.OllamaClientConfig{
+			BaseURL:    baseURL,
+			HTTPClient: cfg.HTTPClient,
+		}
+		// Best-effort: if we cannot create the client, dream still functions
+		// without LLM-generated insights (graceful degradation).
+		created, err := ollama.NewOllamaClient(ollamaCfg)
+		if err != nil {
+			slog.Debug("llmem: dream: could not create Ollama client, behavioral insights will use count-based fallback", "error", err)
+		} else {
+			client = created
+		}
+	}
 
 	return &Dreamer{
 		store:                    cfg.Store,
@@ -217,9 +274,11 @@ func NewDreamer(cfg DreamerConfig) (*Dreamer, error) {
 		autoLinkThreshold:        autoLinkThreshold,
 		behavioralThreshold:     behavioralThreshold,
 		behavioralLookbackDays:   behavioralLookbackDays,
-		staleProcedureDays:       staleProcedureDays,
+		staleProcedureDays:      staleProcedureDays,
 		diaryPath:                diaryPath,
 		reportPath:               reportPath,
+		ollama:                   client,
+		model:                    model,
 	}, nil
 }
 
@@ -519,6 +578,8 @@ func (d *Dreamer) extractThemes(ctx context.Context) []string {
 }
 
 // extractBehavioralInsights detects recurring self_assessment patterns.
+// When Ollama is available, generates actionable procedural content via LLM.
+// Falls back to count-based summaries when Ollama is unavailable.
 func (d *Dreamer) extractBehavioralInsights(ctx context.Context, apply bool) []BehavioralInsight {
 	cutoff := time.Now().UTC().AddDate(0, 0, -d.behavioralLookbackDays).Format(time.RFC3339)
 
@@ -532,35 +593,62 @@ func (d *Dreamer) extractBehavioralInsights(ctx context.Context, apply bool) []B
 		return []BehavioralInsight{}
 	}
 
-	// Filter recent self_assessments by category
+	// Filter recent self_assessments by category and collect up to maxBehavioralSamples per category
 	categoryCounts := map[string]int{}
-	categorySamples := map[string]string{}
+	categorySamples := map[string][]string{}
 	for _, m := range selfAssessments {
 		if m.UpdatedAt != "" && m.UpdatedAt >= cutoff {
 			content := m.Content
 			for cat := range taxonomy.ErrorTaxonomy {
 				if strings.Contains(content, "Category: "+cat) {
 					categoryCounts[cat]++
-					if categorySamples[cat] == "" {
+					samples := categorySamples[cat]
+					if len(samples) < maxBehavioralSamples {
 						snippet := content
-						if len(snippet) > 200 {
-							snippet = snippet[:200]
+						if len(snippet) > maxSampleLength {
+							snippet = snippet[:maxSampleLength]
 						}
-						categorySamples[cat] = snippet
+						categorySamples[cat] = append(samples, snippet)
 					}
 				}
 			}
 		}
 	}
 
+	// Determine if Ollama is available for LLM-generated insights
+	useLLM := false
+	if d.ollama != nil {
+		availCtx, availCancel := context.WithTimeout(ctx, 5*time.Second)
+		useLLM = d.ollama.IsAvailable(availCtx)
+		availCancel()
+	}
+
 	var insights []BehavioralInsight
 	for cat, count := range categoryCounts {
 		if count >= d.behavioralThreshold {
+			contentSnippet := ""
+			if useLLM {
+				prompt := buildBehavioralInsightPrompt(cat, count, d.behavioralLookbackDays, categorySamples[cat])
+				llmCtx, llmCancel := context.WithTimeout(ctx, defaultDreamModelTimeout)
+				response, llmErr := d.ollama.Generate(llmCtx, prompt, d.model)
+				llmCancel()
+				if llmErr != nil {
+					slog.Error("llmem: dream: REM behavioral insight LLM call failed, using fallback", "category", cat, "error", llmErr)
+				} else if response != "" {
+					contentSnippet = response
+				}
+			}
+
+			// Fallback: count-based summary (preserves backward compatibility)
+			if contentSnippet == "" {
+				contentSnippet = fmt.Sprintf("Behavioral insight: %d occurrences of %s category in the last %d days. %s", count, cat, d.behavioralLookbackDays, joinSamples(categorySamples[cat]))
+			}
+
 			insightID := ""
 			if apply {
 				id, err := d.store.Add(ctx, store.AddParams{
 					Type:       "procedure",
-					Content:    fmt.Sprintf("Behavioral insight: %d occurrences of %s category in the last %d days. %s", count, cat, d.behavioralLookbackDays, categorySamples[cat]),
+					Content:    contentSnippet,
 					Source:     "dream_rem",
 					Confidence: 0.7,
 					Metadata:   map[string]any{"proposed": true, "source": "dream_rem", "category": cat, "occurrences": count},
@@ -575,13 +663,52 @@ func (d *Dreamer) extractBehavioralInsights(ctx context.Context, apply bool) []B
 				Category:       cat,
 				Count:          count,
 				InsightID:      insightID,
-				ContentSnippet: categorySamples[cat],
+				ContentSnippet: contentSnippet,
 			})
 		}
 	}
 
 	sort.Slice(insights, func(i, j int) bool { return insights[i].Category < insights[j].Category })
 	return insights
+}
+
+// buildBehavioralInsightPrompt builds an LLM prompt for generating an actionable
+// behavioral rule for the given category. It does NOT call the LLM — it only
+// constructs the prompt string.
+func buildBehavioralInsightPrompt(category string, count int, lookbackDays int, samples []string) string {
+	description, ok := taxonomy.ErrorTaxonomy[category]
+	if !ok {
+		description = category
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("You are a software engineering coach. Based on the following recurring pattern found in self-assessments, generate a specific, actionable behavioral rule.\n\n"))
+	sb.WriteString(fmt.Sprintf("Category: %s\n", category))
+	sb.WriteString(fmt.Sprintf("Definition: %s\n", description))
+	sb.WriteString(fmt.Sprintf("Occurrences in the last %d days: %d\n\n", lookbackDays, count))
+
+	if len(samples) > 0 {
+		sb.WriteString("Representative self-assessment examples:\n")
+		for i, s := range samples {
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, s))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("Generate a specific, actionable procedural rule that includes:\n")
+	sb.WriteString("1. A \"Do\" list of concrete behavioral directives (not vague advice like 'be more careful')\n")
+	sb.WriteString("2. A \"Verify\" step that can be checked later (e.g., 'run llmem introspect --category X to confirm rate drops')\n")
+	sb.WriteString("\nKeep the response under 200 words. Be specific and practical.\n")
+
+	return sb.String()
+}
+
+// joinSamples concatenates sample strings for the fallback count-based format.
+func joinSamples(samples []string) string {
+	if len(samples) == 0 {
+		return ""
+	}
+	return strings.Join(samples, "; ")
 }
 
 // WriteDiary writes the dream diary as markdown to the configured path.

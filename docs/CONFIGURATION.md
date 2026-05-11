@@ -46,6 +46,8 @@ dream:
   report_path: null            # Auto-resolved from GetDreamReportPath()
   behavioral_threshold: 3
   behavioral_lookback_days: 30
+  ollama_url: http://localhost:11434  # Ollama API URL for LLM-generated behavioral insights
+  model: glm-5.1:cloud                # Model for behavioral insight generation
   auto_link_threshold: 0.85    # Cosine similarity threshold for auto-linking related memories
   stale_procedure_days: 30     # Days after which an unaccessed procedure memory decays at 2x rate
 

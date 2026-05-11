@@ -8,7 +8,7 @@ The dream cycle performs automated memory maintenance during idle periods. It ca
 
 - **Light phase:** Sort and deduplicate near-duplicate memories (cosine similarity ≥ threshold).
 - **Deep phase:** Score, promote, decay, and merge memories. Decays confidence on idle memories. Boosts frequently accessed memories. Auto-links memories with high cosine similarity (≥ `dream.auto_link_threshold`, default 0.85) by creating `related_to` relations between them. Procedure memories older than `dream.stale_procedure_days` (default 30 days) with no recent access decay at double the normal rate — proposed-but-never-adopted procedures fade faster than confirmed ones.
-- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection). Also extracts behavioral insights (patterns exceeding `dream.behavioral_threshold` occurrences within `dream.behavioral_lookback_days` days).
+- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection). Also extracts behavioral insights (patterns exceeding `dream.behavioral_threshold` occurrences within `dream.behavioral_lookback_days` days). When Ollama is available, uses an LLM call to generate specific, actionable procedural rules with "Do" directives and "Verify" steps. Falls back to count-based summaries when Ollama is unavailable.
 
 Configuration is under the `dream:` key in `config.yaml`. See [Configuration](CONFIGURATION.md) for all dream settings.
 
@@ -43,6 +43,9 @@ dreamer, err := dream.NewDreamer(dream.DreamerConfig{
     BehavioralThreshold:   3,      // default
     BehavioralLookbackDays: 30,    // default
     StaleProcedureDays:    30,     // default — procedure memories older than this decay at 2x
+    BaseURL:               "",     // defaults to "http://localhost:11434"
+    Model:                 "",     // defaults to "glm-5.1:cloud"
+    OllamaClient:          nil,    // nil → created from BaseURL; takes precedence if provided
     DiaryPath:             "",     // defaults from paths.GetDreamDiaryPath()
     ReportPath:            "",     // defaults from paths.GetDreamReportPath()
 })
@@ -79,6 +82,10 @@ err = dreamer.GenerateDreamReport(result, "/path/to/report.html")
 | BehavioralThreshold | int | 3 | Minimum occurrences for behavioral insight |
 | BehavioralLookbackDays | int | 30 | Lookback window for behavioral insights |
 | StaleProcedureDays | int | 30 | Age threshold (days) for double-decay of procedure memories |
+| OllamaClient | *ollama.OllamaClient | nil | Pre-configured Ollama client. Takes precedence over BaseURL. When nil, the constructor creates one from BaseURL. |
+| BaseURL | string | `"http://localhost:11434"` | Ollama API base URL for behavioral insight generation. Validated for SSRF. |
+| HTTPClient | *http.Client | nil | Optional pre-configured HTTP client (for testing with httptest.NewServer). Only used when OllamaClient is nil. |
+| Model | string | `"glm-5.1:cloud"` | Ollama model name for behavioral insight generation |
 | DiaryPath | string | paths.GetDreamDiaryPath() | Path for dream diary markdown |
 | ReportPath | string | paths.GetDreamReportPath() | Path for HTML dream report |
 

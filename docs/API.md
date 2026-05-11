@@ -1194,13 +1194,15 @@ type DreamConfig struct {
     DecayFloor              float64
     ConfidenceFloor          float64
     BoostThreshold           int
-    BoostAmount              float64
+    BoostAmount             float64
     DiaryPath                string
     ReportPath               string
     BehavioralThreshold      int
     BehavioralLookbackDays   int
     AutoLinkThreshold        float64
     StaleProcedureDays       int
+    OllamaURL               string
+    Model                    string
 }
 
 type SessionConfig struct {

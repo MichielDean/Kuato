@@ -37,6 +37,8 @@ type DreamConfig struct {
 	BehavioralLookbackDays int     `yaml:"behavioral_lookback_days"`
 	AutoLinkThreshold      float64 `yaml:"auto_link_threshold"`
 	StaleProcedureDays     int     `yaml:"stale_procedure_days"`
+	OllamaURL              string  `yaml:"ollama_url"`
+	Model                  string  `yaml:"model"`
 }
 
 // SessionConfig holds session lifecycle settings.
@@ -168,13 +170,32 @@ func (c *Config) OllamaURL() (string, error) {
 // DreamerConfig returns a dream.DreamerConfig populated from the config.
 // Maps DreamConfig fields to their corresponding DreamerConfig fields.
 // Store must be set by the caller before passing to dream.NewDreamer.
+// If OllamaURL is configured, it is passed as BaseURL so Dreamer can attempt
+// to create an OllamaClient. If OllamaClient creation fails inside
+// dream.NewDreamer, behavioral insights fall back to count-based summaries.
 func (c *Config) DreamerConfig() dream.DreamerConfig {
+	ollamaURL := c.Dream.OllamaURL
+	if ollamaURL == "" {
+		ollamaURL = c.Memory.OllamaURL
+	}
+	if ollamaURL == "" {
+		ollamaURL = "http://localhost:11434"
+	}
+
+	model := c.Dream.Model
+	if model == "" {
+		model = c.Memory.ExtractModel
+	}
+	if model == "" {
+		model = "glm-5.1:cloud"
+	}
+
 	return dream.DreamerConfig{
 		SimilarityThreshold:    c.Dream.SimilarityThreshold,
 		DecayRate:              c.Dream.DecayRate,
 		DecayIntervalDays:      c.Dream.DecayIntervalDays,
 		DecayFloor:             c.Dream.DecayFloor,
-		ConfidenceFloor:        c.Dream.ConfidenceFloor,
+		ConfidenceFloor:         c.Dream.ConfidenceFloor,
 		BoostThreshold:         c.Dream.BoostThreshold,
 		BoostAmount:            c.Dream.BoostAmount,
 		AutoLinkThreshold:      c.Dream.AutoLinkThreshold,
@@ -183,6 +204,8 @@ func (c *Config) DreamerConfig() dream.DreamerConfig {
 		StaleProcedureDays:     c.Dream.StaleProcedureDays,
 		DiaryPath:              c.Dream.DiaryPath,
 		ReportPath:             c.Dream.ReportPath,
+		BaseURL:                ollamaURL,
+		Model:                  model,
 	}
 }
 
