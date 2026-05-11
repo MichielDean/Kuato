@@ -8,7 +8,7 @@ The dream cycle performs automated memory maintenance during idle periods. It ca
 
 - **Light phase:** Sort and deduplicate near-duplicate memories (cosine similarity ≥ threshold).
 - **Deep phase:** Score, promote, decay, and merge memories. Decays confidence on idle memories. Boosts frequently accessed memories. Auto-links memories with high cosine similarity (≥ `dream.auto_link_threshold`, default 0.85) by creating `related_to` relations between them. Procedure memories older than `dream.stale_procedure_days` (default 30 days) with no recent access decay at double the normal rate — proposed-but-never-adopted procedures fade faster than confirmed ones.
-- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection). Also extracts behavioral insights (patterns exceeding `dream.behavioral_threshold` occurrences within `dream.behavioral_lookback_days` days). When Ollama is available, uses an LLM call to generate specific, actionable procedural rules with "Do" directives and "Verify" steps. Falls back to count-based summaries when Ollama is unavailable.
+- **REM phase:** Extract themes from memory clusters and write a dream diary (read-only reflection). Also extracts behavioral insights (patterns exceeding `dream.behavioral_threshold` occurrences within `dream.behavioral_lookback_days` days). When Ollama is available, uses an LLM call to generate specific, actionable procedural rules with "Do" directives and "Verify" steps; also generates `[SKILL PATCH]` sections (Detection Rule, Checklist, Pitfall, Verification). Falls back to count-based summaries when Ollama is unavailable. When run with `--apply`, appends behavioral insight and skill patch sections to `proposed-changes.md`, with a timestamp header separating dream runs. Proposed procedure memories are linked to their `proposed-changes.md` entry via `proposed_changes_link` metadata.
 
 Configuration is under the `dream:` key in `config.yaml`. See [Configuration](CONFIGURATION.md) for all dream settings.
 
@@ -48,6 +48,7 @@ dreamer, err := dream.NewDreamer(dream.DreamerConfig{
     OllamaClient:          nil,    // nil → created from BaseURL; takes precedence if provided
     DiaryPath:             "",     // defaults from paths.GetDreamDiaryPath()
     ReportPath:            "",     // defaults from paths.GetDreamReportPath()
+    ProposedChangesPath:   "",     // defaults from paths.GetProposedChangesPath()
 })
 if err != nil {
     log.Fatal(err)
@@ -61,6 +62,9 @@ result, err := dreamer.Run(ctx, true, "deep")
 
 // Write dream diary (markdown with sync.Mutex for in-process concurrency)
 err = dreamer.WriteDiary(result)
+
+// Write proposed-changes.md (behavioral insights + skill patches, append-only)
+err = dreamer.WriteProposedChanges(ctx, result)
 
 // Generate HTML dream report
 err = dreamer.GenerateDreamReport(result, "/path/to/report.html")
@@ -88,6 +92,7 @@ err = dreamer.GenerateDreamReport(result, "/path/to/report.html")
 | Model | string | `"glm-5.1:cloud"` | Ollama model name for behavioral insight generation |
 | DiaryPath | string | paths.GetDreamDiaryPath() | Path for dream diary markdown |
 | ReportPath | string | paths.GetDreamReportPath() | Path for HTML dream report |
+| ProposedChangesPath | string | paths.GetProposedChangesPath() | Path for proposed-changes.md (behavioral insights and skill patches) |
 
 #### DreamResult
 
@@ -117,6 +122,7 @@ type BehavioralInsight struct {
     Count          int
     InsightID      string
     ContentSnippet string
+    Samples        []string
 }
 
 type RemPhaseResult struct {

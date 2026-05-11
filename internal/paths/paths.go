@@ -102,6 +102,11 @@ func GetDreamReportPath() string {
 	return filepath.Join(GetHomeDir(), "dream_report.html")
 }
 
+// GetProposedChangesPath returns the path to the proposed-changes file (~/.config/llmem/proposed-changes.md).
+func GetProposedChangesPath() string {
+	return filepath.Join(GetHomeDir(), "proposed-changes.md")
+}
+
 // GetContextDir returns the path to the context directory (~/.config/llmem/context/).
 func GetContextDir() string {
 	return filepath.Join(GetHomeDir(), "context")

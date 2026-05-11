@@ -45,6 +45,7 @@ dream:
   boost_amount: 0.05
   diary_path: null             # Auto-resolved from GetDreamDiaryPath()
   report_path: null            # Auto-resolved from GetDreamReportPath()
+  proposed_changes_path: null  # Auto-resolved from GetProposedChangesPath()
   behavioral_threshold: 3
   behavioral_lookback_days: 30
   ollama_url: http://localhost:11434  # Ollama API URL for LLM-generated behavioral insights
@@ -62,7 +63,7 @@ session:
   debounce_seconds: 30        # Idle debounce interval in seconds
 ```
 
-> **Note:** The following fields exist in the Python config but are **not wired** in the Go implementation: `min_score`, `min_recall_count`, `min_unique_queries`, `boost_on_promote`, `merge_model`, `calibration_enabled`, `calibration_lookback_days`, `inbox_capacity`, `correction_detection` (top-level), `copilot` (top-level), and `proposed_changes_path`. Setting these in `config.yaml` has no effect when using the Go CLI.
+> **Note:** The following fields exist in the Python config but are **not wired** in the Go implementation: `min_score`, `min_recall_count`, `min_unique_queries`, `boost_on_promote`, `merge_model`, `calibration_enabled`, `calibration_lookback_days`, `inbox_capacity`, `correction_detection` (top-level), and `copilot` (top-level). Setting these in `config.yaml` has no effect when using the Go CLI.
 
 > **Note:** The Go config resolves `db_path` for OpenCode as `~/.local/share/opencode/opencode.db` using `filepath.Join` with proper path handling. The database is opened in read-only mode (`mode=ro`) using a `file:` URI prefix to ensure the `modernc.org/sqlite` driver enforces the read-only constraint. Without the `file:` prefix, query parameters like `mode=ro` are silently ignored and the driver opens in read-write mode.
 

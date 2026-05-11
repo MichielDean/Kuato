@@ -42,7 +42,8 @@ type DreamConfig struct {
 	Model                  string  `yaml:"model"`
 	// ModelTimeout is the timeout for each LLM call during REM behavioral insight generation.
 	// Parsed as a Go duration string (e.g. "5m", "120s"). Defaults to "5m".
-	ModelTimeout string `yaml:"model_timeout"`
+	ModelTimeout        string `yaml:"model_timeout"`
+	ProposedChangesPath string  `yaml:"proposed_changes_path"`
 }
 
 // SessionConfig holds session lifecycle settings.
@@ -239,6 +240,7 @@ func (c *Config) DreamerConfig() dream.DreamerConfig {
 		StaleProcedureDays:     c.Dream.StaleProcedureDays,
 		DiaryPath:              c.Dream.DiaryPath,
 		ReportPath:             c.Dream.ReportPath,
+		ProposedChangesPath:    c.Dream.ProposedChangesPath,
 		BaseURL:                ollamaURL,
 		Model:                  model,
 		ModelTimeout:           modelTimeout,
