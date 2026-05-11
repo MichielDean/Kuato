@@ -2064,7 +2064,6 @@ func TestDreamer_WriteProposedChanges_ValidatesPatches(t *testing.T) {
 	skillDir := filepath.Join(dir, "skills")
 	sp, err := skillpatch.NewSkillPatcher(skillpatch.SkillPatchConfig{
 		SkillDir: skillDir,
-		Store:    ms,
 	})
 	if err != nil {
 		t.Fatalf("NewSkillPatcher: %v", err)
@@ -2129,7 +2128,6 @@ func TestDreamer_WriteProposedChanges_NoInsights_ValidatesPatches(t *testing.T) 
 	skillDir := filepath.Join(dir, "skills")
 	sp, err := skillpatch.NewSkillPatcher(skillpatch.SkillPatchConfig{
 		SkillDir: skillDir,
-		Store:    ms,
 	})
 	if err != nil {
 		t.Fatalf("NewSkillPatcher: %v", err)
@@ -2184,7 +2182,6 @@ func TestDreamer_ValidatePatches_MergesMetadata(t *testing.T) {
 	skillDir := filepath.Join(dir, "skills")
 	sp, err := skillpatch.NewSkillPatcher(skillpatch.SkillPatchConfig{
 		SkillDir: skillDir,
-		Store:    ms,
 	})
 	if err != nil {
 		t.Fatalf("NewSkillPatcher: %v", err)

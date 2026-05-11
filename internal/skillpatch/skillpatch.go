@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/MichielDean/LLMem/internal/paths"
-	"github.com/MichielDean/LLMem/internal/store"
 )
 
 // categorySkillMap maps error taxonomy categories to their skill directory.
@@ -44,21 +43,15 @@ type PatchValidation struct {
 // SkillPatcher patches SKILL.md files with procedural updates from introspection.
 // The SkillPatcher is specific to LLMem SKILL.md files and will not be reused outside this package.
 type SkillPatcher struct {
-	skillDir  string
-	store     *store.MemoryStore
+	skillDir string
 }
 
 // SkillPatchConfig contains configuration for creating a SkillPatcher.
 // SkillDir defaults to paths.GetSkillDir() if empty.
-// Store is required — NewSkillPatcher returns an error if nil.
 type SkillPatchConfig struct {
 	// SkillDir is the root directory containing skill files.
 	// Defaults to paths.GetSkillDir() if empty.
 	SkillDir string
-
-	// Store is required for patch validation (comparing before/after counts).
-	// Error if nil in NewSkillPatcher.
-	Store *store.MemoryStore
 }
 
 // fmtErr wraps an error with the "llmem: skillpatch:" domain prefix.
@@ -70,10 +63,6 @@ func fmtErr(format string, args ...any) error {
 // All config fields default to sensible values if zero.
 // The constructor leaves the SkillPatcher in a fully usable state.
 func NewSkillPatcher(cfg SkillPatchConfig) (*SkillPatcher, error) {
-	if cfg.Store == nil {
-		return nil, fmtErr("store is required")
-	}
-
 	skillDir := cfg.SkillDir
 	if skillDir == "" {
 		skillDir = paths.GetSkillDir()
@@ -81,7 +70,6 @@ func NewSkillPatcher(cfg SkillPatchConfig) (*SkillPatcher, error) {
 
 	return &SkillPatcher{
 		skillDir: skillDir,
-		store:    cfg.Store,
 	}, nil
 }
 

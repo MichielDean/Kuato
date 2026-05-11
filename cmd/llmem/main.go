@@ -921,6 +921,11 @@ func learnCmd() *cobra.Command {
 
 			fmt.Printf("Stored self_assessment: %s\n", result.MemoryID)
 
+			// Patch skill file if ProposedUpdate and Category are available
+			if result.ProposedUpdate != "" && result.Category != "" {
+				patchSkillAfterIntrospect(ms, result.Category, result.ProposedUpdate)
+			}
+
 			if noLLM {
 				fmt.Fprintln(os.Stderr, "WARNING: LLM enrichment disabled (--no-llm flag)")
 				return nil

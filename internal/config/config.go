@@ -272,11 +272,14 @@ func (c *Config) SessionConfigResolved() SessionConfig {
 	return c.Session
 }
 
-// NewSkillPatcher creates a SkillPatcher using the SkillPatch config and the given store.
-// Returns nil without error if patching should be skipped (graceful degradation for callers).
-// The caller provides the store since it's the same store used for dreaming.
+// NewSkillPatcher creates a SkillPatcher using the SkillPatch config.
+// The store parameter is no longer required by SkillPatcher but is retained
+// for callers that check store availability before deciding to patch skills.
+// Returns nil without error if ms is nil (graceful degradation for callers).
 func (c *Config) NewSkillPatcher(ms *store.MemoryStore) (*skillpatch.SkillPatcher, error) {
 	if ms == nil {
+		// Graceful degradation: callers use nil check to skip patching
+		// when no store is available (e.g., dream cmd without a database).
 		return nil, nil
 	}
 
@@ -287,7 +290,6 @@ func (c *Config) NewSkillPatcher(ms *store.MemoryStore) (*skillpatch.SkillPatche
 
 	return skillpatch.NewSkillPatcher(skillpatch.SkillPatchConfig{
 		SkillDir: skillDir,
-		Store:    ms,
 	})
 }
 

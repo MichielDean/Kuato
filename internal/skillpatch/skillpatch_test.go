@@ -7,28 +7,10 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/MichielDean/LLMem/internal/store"
 )
-
-func newTestStore(t *testing.T) *store.MemoryStore {
-	t.Helper()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	ms, err := store.NewMemoryStore(store.StoreConfig{
-		DBPath:     dbPath,
-		DisableVec: true,
-	})
-	if err != nil {
-		t.Fatalf("NewMemoryStore: %v", err)
-	}
-	t.Cleanup(func() { ms.Close() })
-	return ms
-}
 
 func TestSkillPatcher_PatchExistingSkill(t *testing.T) {
 	ctx := context.Background()
-	ms := newTestStore(t)
 
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "skills")
@@ -46,7 +28,6 @@ func TestSkillPatcher_PatchExistingSkill(t *testing.T) {
 
 	sp, err := NewSkillPatcher(SkillPatchConfig{
 		SkillDir: skillDir,
-		Store:    ms,
 	})
 	if err != nil {
 		t.Fatalf("NewSkillPatcher: %v", err)
@@ -76,14 +57,12 @@ func TestSkillPatcher_PatchExistingSkill(t *testing.T) {
 
 func TestSkillPatcher_CreateNewSkill(t *testing.T) {
 	ctx := context.Background()
-	ms := newTestStore(t)
 
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "skills")
 
 	sp, err := NewSkillPatcher(SkillPatchConfig{
 		SkillDir: skillDir,
-		Store:    ms,
 	})
 	if err != nil {
 		t.Fatalf("NewSkillPatcher: %v", err)
@@ -110,12 +89,10 @@ func TestSkillPatcher_CreateNewSkill(t *testing.T) {
 }
 
 func TestSkillPatcher_PatchWithEmptyCategory(t *testing.T) {
-	ms := newTestStore(t)
 	dir := t.TempDir()
 
 	sp, err := NewSkillPatcher(SkillPatchConfig{
 		SkillDir: filepath.Join(dir, "skills"),
-		Store:    ms,
 	})
 	if err != nil {
 		t.Fatalf("NewSkillPatcher: %v", err)
@@ -131,12 +108,10 @@ func TestSkillPatcher_PatchWithEmptyCategory(t *testing.T) {
 }
 
 func TestSkillPatcher_PatchWithEmptyProposedUpdate(t *testing.T) {
-	ms := newTestStore(t)
 	dir := t.TempDir()
 
 	sp, err := NewSkillPatcher(SkillPatchConfig{
 		SkillDir: filepath.Join(dir, "skills"),
-		Store:    ms,
 	})
 	if err != nil {
 		t.Fatalf("NewSkillPatcher: %v", err)
@@ -150,7 +125,6 @@ func TestSkillPatcher_PatchWithEmptyProposedUpdate(t *testing.T) {
 
 func TestSkillPatcher_IdempotentPatch(t *testing.T) {
 	ctx := context.Background()
-	ms := newTestStore(t)
 
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "skills")
@@ -167,7 +141,6 @@ func TestSkillPatcher_IdempotentPatch(t *testing.T) {
 
 	sp, err := NewSkillPatcher(SkillPatchConfig{
 		SkillDir: skillDir,
-		Store:    ms,
 	})
 	if err != nil {
 		t.Fatalf("NewSkillPatcher: %v", err)
@@ -196,14 +169,11 @@ func TestSkillPatcher_IdempotentPatch(t *testing.T) {
 }
 
 func TestSkillPatcher_InvalidSkillDir(t *testing.T) {
-	ms := newTestStore(t)
-
 	// Use a path that can't be created (will fail when trying to create a new file)
 	invalidDir := "/proc/no-skills-here"
 
 	sp, err := NewSkillPatcher(SkillPatchConfig{
 		SkillDir: invalidDir,
-		Store:    ms,
 	})
 	if err != nil {
 		// NewSkillPatcher itself should succeed — the error happens on Patch
@@ -220,7 +190,6 @@ func TestSkillPatcher_InvalidSkillDir(t *testing.T) {
 
 func TestSkillPatcher_ParsesFrontmatterCorrectly(t *testing.T) {
 	ctx := context.Background()
-	ms := newTestStore(t)
 
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "skills")
@@ -238,7 +207,6 @@ func TestSkillPatcher_ParsesFrontmatterCorrectly(t *testing.T) {
 
 	sp, err := NewSkillPatcher(SkillPatchConfig{
 		SkillDir: skillDir,
-		Store:    ms,
 	})
 	if err != nil {
 		t.Fatalf("NewSkillPatcher: %v", err)
@@ -269,7 +237,6 @@ func TestSkillPatcher_ParsesFrontmatterCorrectly(t *testing.T) {
 
 func TestSkillPatcher_MalformedFile_NoFrontmatter(t *testing.T) {
 	ctx := context.Background()
-	ms := newTestStore(t)
 
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "skills")
@@ -287,7 +254,6 @@ func TestSkillPatcher_MalformedFile_NoFrontmatter(t *testing.T) {
 
 	sp, err := NewSkillPatcher(SkillPatchConfig{
 		SkillDir: skillDir,
-		Store:    ms,
 	})
 	if err != nil {
 		t.Fatalf("NewSkillPatcher: %v", err)
@@ -313,23 +279,11 @@ func TestSkillPatcher_MalformedFile_NoFrontmatter(t *testing.T) {
 	}
 }
 
-func TestNewSkillPatcher_NilStore(t *testing.T) {
-	_, err := NewSkillPatcher(SkillPatchConfig{
-		Store: nil,
-	})
-	if err == nil {
-		t.Error("expected error for nil store")
-	}
-}
-
 func TestNewSkillPatcher_DefaultSkillDir(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LMEM_HOME", dir)
 
-	ms := newTestStore(t)
-	sp, err := NewSkillPatcher(SkillPatchConfig{
-		Store: ms,
-	})
+	sp, err := NewSkillPatcher(SkillPatchConfig{})
 	if err != nil {
 		t.Fatalf("NewSkillPatcher: %v", err)
 	}
@@ -340,7 +294,6 @@ func TestNewSkillPatcher_DefaultSkillDir(t *testing.T) {
 }
 
 func TestSkillPatcher_FindSkillFile_Existing(t *testing.T) {
-	ms := newTestStore(t)
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "skills")
 	introDir := filepath.Join(skillDir, "introspection")
@@ -354,7 +307,6 @@ func TestSkillPatcher_FindSkillFile_Existing(t *testing.T) {
 
 	sp, err := NewSkillPatcher(SkillPatchConfig{
 		SkillDir: skillDir,
-		Store:    ms,
 	})
 	if err != nil {
 		t.Fatalf("NewSkillPatcher: %v", err)
@@ -370,13 +322,11 @@ func TestSkillPatcher_FindSkillFile_Existing(t *testing.T) {
 }
 
 func TestSkillPatcher_FindSkillFile_NotFound(t *testing.T) {
-	ms := newTestStore(t)
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "skills")
 
 	sp, err := NewSkillPatcher(SkillPatchConfig{
 		SkillDir: skillDir,
-		Store:    ms,
 	})
 	if err != nil {
 		t.Fatalf("NewSkillPatcher: %v", err)
@@ -392,12 +342,10 @@ func TestSkillPatcher_FindSkillFile_NotFound(t *testing.T) {
 }
 
 func TestSkillPatcher_FindSkillFile_UnknownCategory(t *testing.T) {
-	ms := newTestStore(t)
 	dir := t.TempDir()
 
 	sp, err := NewSkillPatcher(SkillPatchConfig{
 		SkillDir: filepath.Join(dir, "skills"),
-		Store:    ms,
 	})
 	if err != nil {
 		t.Fatalf("NewSkillPatcher: %v", err)
