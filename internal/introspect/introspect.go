@@ -16,12 +16,14 @@ import (
 )
 
 const (
-	defaultModel          = "glm-5.1:cloud"
-	defaultBaseURL        = "http://localhost:11434"
-	introspectSource      = "introspect"
-	learnSource           = "learn"
-	introspectConfidence  = 0.9
-	learnConfidence       = 0.85
+	defaultModel             = "glm-5.1:cloud"
+	defaultBaseURL           = "http://localhost:11434"
+	introspectSource         = "introspect"
+	introspectAutoSource     = "introspect-auto"
+	learnSource              = "learn"
+	introspectConfidence     = 0.9
+	introspectAutoConfidence = 0.9
+	learnConfidence          = 0.85
 
 	// callModelTimeout is the default timeout for LLM calls in IntrospectFailure and LearnLesson.
 	// CallModelTimeout in params takes precedence; this is the fallback when zero.
@@ -196,6 +198,58 @@ func buildRawFailureContent(params IntrospectFailureParams) string {
 	}
 	lines = append(lines, "Recurring: unknown")
 	return strings.Join(lines, "\n")
+}
+
+// IntrospectAuto performs automatic introspection from a text string or session transcript.
+// It calls the LLM to produce a structured self_assessment, or falls back to raw fields
+// when the LLM is unavailable (graceful degradation).
+//
+// Contract: NEVER returns ("", nil) — either creates a memory or returns an error.
+func IntrospectAuto(ctx context.Context, ms *store.MemoryStore, text, model, baseURL string) (string, error) {
+	if text == "" {
+		return "", fmtErr("text is required")
+	}
+	if model == "" {
+		model = defaultModel
+	}
+
+	var content string
+	llmResponse, _ := callModel(ctx, model, baseURL, buildAutoPrompt(text), callModelTimeout, nil)
+
+	if llmResponse != "" {
+		content = llmResponse
+	} else {
+		// Graceful degradation: build from provided text directly
+		content = "What_happened: " + text + "\nRecurring: unknown"
+	}
+
+	id, err := ms.Add(ctx, store.AddParams{
+		Type:       "self_assessment",
+		Content:    content,
+		Source:     introspectAutoSource,
+		Confidence: introspectAutoConfidence,
+	})
+	if err != nil {
+		return "", fmtErr("store self_assessment: %w", err)
+	}
+
+	slog.Info("llmem: introspect: stored auto self_assessment", "id", id)
+	return id, nil
+}
+
+// buildAutoPrompt builds the prompt for automatic introspection of a session
+// transcript or arbitrary text. It instructs the LLM to analyze the text for
+// errors, failures, and learning moments, producing structured self_assessment fields.
+func buildAutoPrompt(text string) string {
+	fieldLines := taxonomy.IntrospectFieldLines()
+	prompt := "Analyze the following session transcript for errors, failures, and learning moments. " +
+		"Identify what went wrong, why it happened, whether it's a recurring pattern, " +
+		"and what procedural change would prevent it in the future.\n\n"
+	prompt += "Format each field on its own line as \"Field: value\":\n\n"
+	prompt += fieldLines + "\n\n"
+	prompt += "Session transcript:\n" + text
+	prompt += "\n\nProduce a structured self-assessment. Be specific about what went wrong and what should change."
+	return prompt
 }
 
 // LearnLesson analyzes a wrong→right correction and stores a procedure memory.

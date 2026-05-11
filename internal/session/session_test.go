@@ -938,3 +938,140 @@ func TestOpenCodeAdapter_EmptyDBPath_IsNilInterface(t *testing.T) {
 		t.Errorf("expected %q, got %q", ResultNoTranscript, result)
 	}
 }
+
+func TestSessionHookCoordinator_OnEndingWithIntrospect(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-end-auto", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-end-auto", "sess-end-auto", 1000, "assistant")
+	insertTestPart(t, dbPath, "part-end-auto", "msg-end-auto", "sess-end-auto", 1000,
+		`{"type": "text", "text": "Had an error in production code"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:   ms,
+		Adapter: adapter,
+		// Use non-existent Ollama URL to ensure graceful degradation works
+		BaseURL: "http://localhost:59999",
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	resultType, memoryID, err := coord.OnEndingWithIntrospect(context.Background(), "sess-end-auto")
+	if err != nil {
+		t.Fatalf("OnEndingWithIntrospect: %v", err)
+	}
+	if resultType != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, resultType)
+	}
+	// Memory ID should be non-empty even with graceful degradation (no Ollama)
+	if memoryID == "" {
+		t.Error("expected non-empty memory ID from auto introspection")
+	}
+
+	// Verify the memory was actually stored
+	mem, err := ms.Get(context.Background(), memoryID, false)
+	if err != nil {
+		t.Fatalf("Get memory: %v", err)
+	}
+	if mem == nil {
+		t.Fatal("expected memory to be stored")
+	}
+	if mem.Type != "self_assessment" {
+		t.Errorf("expected type self_assessment, got %q", mem.Type)
+	}
+	if mem.Source != "introspect-auto" {
+		t.Errorf("expected source introspect-auto, got %q", mem.Source)
+	}
+}
+
+func TestSessionHookCoordinator_OnEndingWithIntrospect_NoTranscript(t *testing.T) {
+	ms := newTestStore(t)
+	// No adapter — should return ResultNoTranscript
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store: ms,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	resultType, memoryID, err := coord.OnEndingWithIntrospect(context.Background(), "test-session")
+	if err != nil {
+		t.Fatalf("OnEndingWithIntrospect: %v", err)
+	}
+	if resultType != ResultNoTranscript {
+		t.Errorf("expected %q, got %q", ResultNoTranscript, resultType)
+	}
+	if memoryID != "" {
+		t.Errorf("expected empty memory ID for no transcript, got %q", memoryID)
+	}
+}
+
+func TestSessionHookCoordinator_OnEndingWithIntrospect_InvalidSessionID(t *testing.T) {
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store: ms,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	_, _, err = coord.OnEndingWithIntrospect(context.Background(), "../etc/passwd")
+	if err == nil {
+		t.Error("expected error for path-traversal session ID")
+	}
+	if err.Error() == "" {
+		t.Error("expected non-empty error message")
+	}
+}
+
+func TestSessionHookCoordinator_OnEndingWithIntrospect_IntrospectionFailure(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-end-fail", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-end-fail", "sess-end-fail", 1000, "assistant")
+	insertTestPart(t, dbPath, "part-end-fail", "msg-end-fail", "sess-end-fail", 1000,
+		`{"type": "text", "text": "Some transcript content"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	// Create a store that will fail on Add, forcing introspection failure
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:   ms,
+		Adapter: adapter,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	// Close the store to force Add failures — introspection will fail
+	// but the hook should still return ResultSuccess gracefully
+	ms.Close()
+
+	// Use a context with a timeout so the test doesn't hang on model calls
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resultType, memoryID, err := coord.OnEndingWithIntrospect(ctx, "sess-end-fail")
+	if err != nil {
+		t.Fatalf("OnEndingWithIntrospect should not return error on introspection failure: %v", err)
+	}
+	// Should still return ResultSuccess since transcript was read
+	if resultType != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, resultType)
+	}
+	// memoryID should be empty since introspection failed
+	if memoryID != "" {
+		t.Errorf("expected empty memory ID on introspection failure, got %q", memoryID)
+	}
+}

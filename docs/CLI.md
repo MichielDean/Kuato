@@ -131,9 +131,11 @@ Report the count of embeddings stored in the database. In the Go CLI, this comma
 
 ### `llmem introspect`
 
+#### Manual mode
+
 ```bash
 llmem introspect --what-happened TEXT [--category CATEGORY] [--context CONTEXT] \
-  [--caught-by WHO] [--proposed-fix FIX] [--no-llm] [--timeout DURATION]
+  [--caught-by WHO] [--proposed-fix FIX] [--model MODEL] [--base-url URL]
 ```
 
 Analyze a failure and store a `self_assessment` memory. Uses LLM expansion via Ollama when available, with graceful degradation to storage-only mode when Ollama is unavailable.
@@ -143,20 +145,30 @@ Analyze a failure and store a `self_assessment` memory. Uses LLM expansion via O
 - `--context`: Context where the failure occurred (e.g., `handler.go:42`).
 - `--caught-by`: How the finding was discovered (e.g., `self-review`, `CI`).
 - `--proposed-fix`: Proposed fix for the issue.
-- `--no-llm`: Skip LLM enrichment entirely, store raw fields only. Exit code 0.
-- `--timeout`: LLM call timeout as a Go duration string (e.g. `120s`, `2m`). Must be ≥ 10s. Defaults to the `call_model_timeout` config value (5m if unset).
+- `--model`: LLM model for introspection (default: `glm-5.1:cloud`).
+- `--base-url`: Ollama base URL for introspection (default: `http://localhost:11434`).
 
-**Exit codes:**
-- `0`: Success, LLM enrichment succeeded (or `--no-llm` was specified).
-- `1`: Error (e.g., invalid arguments, storage failure).
-- `2`: LLM enrichment was skipped because Ollama was unavailable or timed out. A `WARNING` is printed to stderr. The memory is still stored with raw fields.
+#### Automatic mode
 
-**Output:** Prints `Stored self_assessment: <id>` to stdout. When LLM enrichment is skipped or disabled, a `WARNING` is printed to stderr explaining why.
+```bash
+llmem introspect --auto --session SESSION_ID [--model MODEL] [--base-url URL]
+llmem introspect --auto --text TEXT [--model MODEL] [--base-url URL]
+```
+
+Automatically introspect a session transcript or arbitrary text and store a `self_assessment` memory. When Ollama is available, uses the LLM to expand the introspection into a richer assessment; when unavailable, stores the raw structured fields directly (graceful degradation).
+
+- `--auto`: Enable automatic introspection mode.
+- `--text`: Text to introspect. Use with `--auto`. When both `--text` and `--session` are provided, `--text` takes precedence.
+- `--session`: Session ID to read transcript from (requires the OpenCode adapter). Use with `--auto`. The session ID is validated against path traversal.
+- `--model`: LLM model for introspection (default: `glm-5.1:cloud`).
+- `--base-url`: Ollama base URL for introspection (default: `http://localhost:11434`).
+
+At least one of `--text` or `--session` is required when using `--auto`.
 
 ### `llmem learn`
 
 ```bash
-llmem learn --wrong TEXT --right TEXT [--context CONTEXT] [--no-llm] [--timeout DURATION]
+llmem learn --wrong TEXT --right TEXT [--context CONTEXT]
 ```
 
 Learn a lesson from a wrong→right correction and store it as a `procedure` memory. Uses LLM expansion via Ollama when available, with graceful degradation to storage-only mode.
@@ -164,15 +176,6 @@ Learn a lesson from a wrong→right correction and store it as a `procedure` mem
 - `--wrong` (required): What was wrong.
 - `--right` (required): What is correct.
 - `--context`: Additional context for the correction.
-- `--no-llm`: Skip LLM expansion entirely, store raw fields only. Exit code 0.
-- `--timeout`: LLM call timeout as a Go duration string (e.g. `120s`, `2m`). Must be ≥ 10s. Defaults to the `call_model_timeout` config value (5m if unset).
-
-**Exit codes:**
-- `0`: Success, LLM expansion succeeded (or `--no-llm` was specified).
-- `1`: Error (e.g., invalid arguments, storage failure).
-- `2`: LLM expansion was skipped because Ollama was unavailable or timed out. A `WARNING` is printed to stderr. The memory is still stored with raw fields.
-
-**Output:** Prints `Stored procedure: <id>` to stdout. When LLM expansion is skipped or disabled, a `WARNING` is printed to stderr explaining why.
 
 > **Note:** In the Python CLI, `llmem learn` ingests a codebase directory into the code index. In the Go CLI, `llmem learn` is for wrong→right lesson corrections.
 
@@ -216,15 +219,19 @@ Inject relevant memory context for a session. Used by session hooks to inject me
 ### `llmem hook`
 
 ```bash
-llmem hook --type TYPE --session-id ID
+llmem hook --type TYPE --session-id ID [--model MODEL] [--base-url URL]
 ```
 
 Handle session lifecycle hook events. Supports four hook types:
 
 - `--type` (required): Hook type. Choices: `created`, `idle`, `compacting`, `ending`.
 - `--session-id` (required): Session ID for the hook event. Validated against path traversal attacks.
+- `--model`: LLM model for introspection (default: `glm-5.1:cloud`). Used by the `ending` hook for automatic introspection.
+- `--base-url`: Ollama base URL for introspection (default: `http://localhost:11434`). Used by the `ending` hook for automatic introspection.
 
 The `idle` hook processes the session's transcript, extracts memories, and runs introspection automatically. It uses a debounce mechanism (via `extraction_log` table) to prevent re-extraction.
+
+The `ending` hook performs automatic introspection on the session transcript. It reads the transcript via the configured adapter, generates a `self_assessment` memory using `IntrospectAuto`, and outputs the result type and memory ID. If no adapter is configured or the transcript is empty, it returns `no_transcript`. If introspection fails but the transcript was read, it logs a warning and returns success without crashing the ending event.
 
 ### `llmem track-review`
 

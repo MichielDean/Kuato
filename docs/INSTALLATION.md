@@ -119,7 +119,7 @@ go test ./...
 | `internal/introspect` | Failure analysis (`IntrospectFailure`) and lesson learning (`LearnLesson`) |
 | `internal/ollama` | Ollama `/api/generate` and `/api/tags` client |
 | `internal/paths` | Path resolution, validation, migration from legacy `~/.lobsterdog/` |
-| `internal/session` | Session lifecycle hooks (`OnCreated`, `OnIdle`, `OnCompacting`, `OnEnding`) |
+| `internal/session` | Session lifecycle hooks (`OnCreated`, `OnIdle`, `OnCompacting`, `OnEnding`, `OnEndingWithIntrospect`) |
 | `internal/systemd` | Systemd service/timer unit generation for dream cycle |
 | `internal/taxonomy` | Error taxonomy constants for self_assessment memories |
 | `cmd/llmem` | CLI entrypoint — 17 subcommands (add, get, search, list, stats, update, invalidate, delete, export, import, init, metrics, dream, introspect, learn, track-review, context, hook) |

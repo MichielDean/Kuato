@@ -111,11 +111,14 @@ llmem introspect --category NULL_SAFETY --what-happened "missing null check befo
 # Search for recurring patterns in a category
 llmem search "NULL_SAFETY" --type self_assessment
 
-# Run full introspection on a session transcript
-llmem introspect --auto --session ~/.local/share/opencode/sessions/2026-01-15.json
+# Run automatic introspection on a session transcript
+llmem introspect --auto --session <session-id>
+
+# Run automatic introspection on arbitrary text
+llmem introspect --auto --text "Encountered null pointer error when processing user input"
 ```
 
-See `skills/llmem/SKILL.md:152-164` for the full `llmem introspect` command reference.
+See `skills/llmem/SKILL.md` for the full `llmem introspect` command reference (manual and automatic modes).
 
 ## Section 5: Outside-View Review Questions
 

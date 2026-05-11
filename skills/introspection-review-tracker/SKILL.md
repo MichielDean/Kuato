@@ -111,4 +111,4 @@ Iteration_count: <optional integer>
 - **Severity mapping**: `llmem/taxonomy.py:21-27` → `REVIEW_SEVERITY_TAXONOMY`
 - **Self-assessment fields**: `llmem/taxonomy.py:29-39` → `SELF_ASSESSMENT_FIELDS`
 - **Reviewer severity tiers**: Defined by the adversarial review skill (e.g., Blocking, Required, Strong Suggestions, Noted, Passed) — see your review skill's Severity Tiers section
-- **llmem introspect command**: `skills/llmem/SKILL.md:152-164`
+- **llmem introspect command**: `skills/llmem/SKILL.md` (manual and automatic modes)
