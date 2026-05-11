@@ -3,6 +3,7 @@ package dream
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2326,5 +2327,72 @@ func TestTaxonomy_ParseSelfAssessmentField_NoSubstringMatch(t *testing.T) {
 				t.Errorf("ParseSelfAssessmentField(%q, %q) = %q, want %q", tt.content, tt.field, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestExtractBehavioralInsights_UsesParseSelfAssessmentField verifies that
+// extractBehavioralInsights uses taxonomy.ParseSelfAssessmentField for category
+// matching, preventing double-counting when a category name appears in prose.
+func TestExtractBehavioralInsights_UsesParseSelfAssessmentField(t *testing.T) {
+	ctx := context.Background()
+	ms := newTestStore(t)
+
+	// Add a self_assessment whose Category field is ERROR_HANDLING,
+	// but whose What_happened prose mentions NULL_SAFETY.
+	// With strings.Contains, this would be counted under both categories.
+	// With ParseSelfAssessmentField, it should only count under ERROR_HANDLING.
+	content := "Category: ERROR_HANDLING\nWhat_happened: Unlike NULL_SAFETY, this was a bare except\nProposed_update: never use bare except"
+	_, err := ms.Add(ctx, store.AddParams{
+		Type:       "self_assessment",
+		Content:    content,
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// We need at least behavioralThreshold self_assessments for insights to be generated.
+	// Add enough ERROR_HANDLING memories to cross the threshold.
+	for i := 0; i < 10; i++ {
+		_, err := ms.Add(ctx, store.AddParams{
+			Type:       "self_assessment",
+			Content:    fmt.Sprintf("Category: ERROR_HANDLING\nWhat_happened: error handling issue %d", i),
+			Source:     "test",
+			Confidence: 0.8,
+		})
+		if err != nil {
+			t.Fatalf("Add loop: %v", err)
+		}
+	}
+
+	// Do NOT add any NULL_SAFETY memories. If extractBehavioralInsights uses
+	// strings.Contains, it will falsely count the ERROR_HANDLING memory under
+	// NULL_SAFETY because the prose contains "NULL_SAFETY".
+
+	d := &Dreamer{
+		store:                 ms,
+		behavioralThreshold:   2,
+		behavioralLookbackDays: 365,
+	}
+
+	insights := d.extractBehavioralInsights(ctx, false)
+
+	// There should be no insight for NULL_SAFETY — only ERROR_HANDLING insights.
+	for _, insight := range insights {
+		if insight.Category == "NULL_SAFETY" {
+			t.Errorf("extractBehavioralInsights counted a NULL_SAFETY insight from ERROR_HANDLING memory — double-counting bug not fixed")
+		}
+	}
+
+	// There should be at least one ERROR_HANDLING insight.
+	foundErrorHandling := false
+	for _, insight := range insights {
+		if insight.Category == "ERROR_HANDLING" {
+			foundErrorHandling = true
+		}
+	}
+	if !foundErrorHandling {
+		t.Error("expected at least one ERROR_HANDLING insight, got none")
 	}
 }

@@ -412,22 +412,8 @@ func TestSkillPatcher_FindSkillFile_UnknownCategory(t *testing.T) {
 	}
 }
 
-func TestSkillPatcher_ValidatePatch_Effective(t *testing.T) {
-	ms := newTestStore(t)
-	dir := t.TempDir()
-
-	sp, err := NewSkillPatcher(SkillPatchConfig{
-		SkillDir: filepath.Join(dir, "skills"),
-		Store:    ms,
-	})
-	if err != nil {
-		t.Fatalf("NewSkillPatcher: %v", err)
-	}
-
-	result, err := sp.ValidatePatch(context.Background(), "NULL_SAFETY", 10, 3)
-	if err != nil {
-		t.Fatalf("ValidatePatch: %v", err)
-	}
+func TestValidatePatch_Effective(t *testing.T) {
+	result := ValidatePatch("NULL_SAFETY", 10, 3)
 	if !result.Effective {
 		t.Error("expected Effective=true when after < before")
 	}
@@ -436,22 +422,8 @@ func TestSkillPatcher_ValidatePatch_Effective(t *testing.T) {
 	}
 }
 
-func TestSkillPatcher_ValidatePatch_Flagged(t *testing.T) {
-	ms := newTestStore(t)
-	dir := t.TempDir()
-
-	sp, err := NewSkillPatcher(SkillPatchConfig{
-		SkillDir: filepath.Join(dir, "skills"),
-		Store:    ms,
-	})
-	if err != nil {
-		t.Fatalf("NewSkillPatcher: %v", err)
-	}
-
-	result, err := sp.ValidatePatch(context.Background(), "NULL_SAFETY", 5, 8)
-	if err != nil {
-		t.Fatalf("ValidatePatch: %v", err)
-	}
+func TestValidatePatch_Flagged(t *testing.T) {
+	result := ValidatePatch("NULL_SAFETY", 5, 8)
 	if result.Effective {
 		t.Error("expected Effective=false when after >= before")
 	}
@@ -460,27 +432,23 @@ func TestSkillPatcher_ValidatePatch_Flagged(t *testing.T) {
 	}
 }
 
-func TestSkillPatcher_ValidatePatch_ZeroBeforeCount(t *testing.T) {
-	ms := newTestStore(t)
-	dir := t.TempDir()
-
-	sp, err := NewSkillPatcher(SkillPatchConfig{
-		SkillDir: filepath.Join(dir, "skills"),
-		Store:    ms,
-	})
-	if err != nil {
-		t.Fatalf("NewSkillPatcher: %v", err)
-	}
-
-	result, err := sp.ValidatePatch(context.Background(), "NULL_SAFETY", 0, 0)
-	if err != nil {
-		t.Fatalf("ValidatePatch: %v", err)
-	}
+func TestValidatePatch_ZeroBeforeCount(t *testing.T) {
+	result := ValidatePatch("NULL_SAFETY", 0, 0)
 	if result.Effective {
 		t.Error("expected Effective=false when before=0")
 	}
 	if result.Flagged {
 		t.Error("expected Flagged=false when before=0")
+	}
+}
+
+func TestValidatePatch_EqualCounts_Flagged(t *testing.T) {
+	result := ValidatePatch("ERROR_HANDLING", 5, 5)
+	if result.Effective {
+		t.Error("expected Effective=false when after == before")
+	}
+	if !result.Flagged {
+		t.Error("expected Flagged=true when after >= before")
 	}
 }
 

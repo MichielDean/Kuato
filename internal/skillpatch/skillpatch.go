@@ -157,9 +157,9 @@ func (sp *SkillPatcher) Patch(ctx context.Context, category, proposedUpdate, cat
 }
 
 // FindSkillFile locates the SKILL.md file matching the given category.
-// Searches known skill directories for a frontmatter description field
-// containing the category keyword.
-// Returns the file path or empty string if not found.
+// Performs a categorySkillMap lookup to find the skill directory name, then checks
+// whether SKILL.md exists as a regular file in that directory.
+// Returns the file path or empty string if not found (unknown category or missing file).
 // Returns error only on I/O failures, not for "not found" (empty string is a valid result).
 func (sp *SkillPatcher) FindSkillFile(ctx context.Context, category string) (string, error) {
 	skillDirName, ok := categorySkillMap[category]
@@ -190,10 +190,11 @@ func (sp *SkillPatcher) FindSkillFile(ctx context.Context, category string) (str
 
 // ValidatePatch checks whether the error rate in the given category decreased
 // after a skill patch was applied.
-// Returns a PatchValidation struct. Effective is true when AfterCount < BeforeCount.
+// This is a pure function: it compares two integer counts and returns a PatchValidation.
+// Effective is true when AfterCount < BeforeCount.
 // Flagged is true when AfterCount >= BeforeCount.
 // Never returns an error for zero-count categories — returns PatchValidation{Effective: false, Flagged: false}.
-func (sp *SkillPatcher) ValidatePatch(ctx context.Context, category string, beforeCount, afterCount int) (PatchValidation, error) {
+func ValidatePatch(category string, beforeCount, afterCount int) PatchValidation {
 	result := PatchValidation{
 		Category:    category,
 		BeforeCount: beforeCount,
@@ -204,12 +205,12 @@ func (sp *SkillPatcher) ValidatePatch(ctx context.Context, category string, befo
 		// Zero before-count means no baseline — cannot determine effectiveness
 		result.Effective = false
 		result.Flagged = false
-		return result, nil
+		return result
 	}
 
 	result.Effective = afterCount < beforeCount
 	result.Flagged = afterCount >= beforeCount
-	return result, nil
+	return result
 }
 
 // createSkillFile creates a new SKILL.md file in the appropriate category directory

@@ -643,18 +643,24 @@ func (d *Dreamer) extractBehavioralInsights(ctx context.Context, apply bool) []B
 	for _, m := range selfAssessments {
 		if m.UpdatedAt != "" && m.UpdatedAt >= cutoff {
 			content := m.Content
-			for cat := range taxonomy.ErrorTaxonomy {
-				if strings.Contains(content, "Category: "+cat) {
-					categoryCounts[cat]++
-					samples := categorySamples[cat]
-					if len(samples) < maxBehavioralSamples {
-						snippet := content
-						if len(snippet) > maxSampleLength {
-							snippet = snippet[:maxSampleLength]
-						}
-						categorySamples[cat] = append(samples, snippet)
-					}
+			// Use taxonomy.ParseSelfAssessmentField for exact field matching
+			// to avoid double-counting when a category name appears in prose.
+			parsedCat := taxonomy.ParseSelfAssessmentField(content, "Category")
+			if parsedCat == "" {
+				continue
+			}
+			// Only count categories that are in the error taxonomy
+			if _, ok := taxonomy.ErrorTaxonomy[parsedCat]; !ok {
+				continue
+			}
+			categoryCounts[parsedCat]++
+			samples := categorySamples[parsedCat]
+			if len(samples) < maxBehavioralSamples {
+				snippet := content
+				if len(snippet) > maxSampleLength {
+					snippet = snippet[:maxSampleLength]
 				}
+				categorySamples[parsedCat] = append(samples, snippet)
 			}
 		}
 	}
@@ -1042,11 +1048,7 @@ func (d *Dreamer) validatePatches(ctx context.Context, result *DreamResult) erro
 		beforeCount := beforeCounts[insight.Category]
 		afterCount := afterCounts[insight.Category]
 
-		validation, err := d.skillPatcher.ValidatePatch(ctx, insight.Category, beforeCount, afterCount)
-		if err != nil {
-			slog.Warn("llmem: dream: patch validation failed", "category", insight.Category, "error", err)
-			continue
-		}
+		validation := skillpatch.ValidatePatch(insight.Category, beforeCount, afterCount)
 
 		if validation.Effective {
 			slog.Info("llmem: dream: patch effective", "category", insight.Category, "before", beforeCount, "after", afterCount)
