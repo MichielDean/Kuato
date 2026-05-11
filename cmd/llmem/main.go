@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/MichielDean/LLMem/internal/config"
 	"github.com/MichielDean/LLMem/internal/dream"
@@ -730,6 +731,8 @@ func introspectCmd() *cobra.Command {
 		contextVal   string
 		caughtByVal  string
 		proposedFix  string
+		noLLM        bool
+		timeoutVal   string
 	)
 	cmd := &cobra.Command{
 		Use:   "introspect",
@@ -738,23 +741,56 @@ func introspectCmd() *cobra.Command {
 			if whatHappened == "" {
 				return fmt.Errorf("llmem: introspect: --what-happened is required")
 			}
+
+			var timeout time.Duration
+			if timeoutVal != "" {
+				parsed, err := time.ParseDuration(timeoutVal)
+				if err != nil {
+					return fmt.Errorf("llmem: introspect: invalid --timeout duration %q: %w", timeoutVal, err)
+				}
+				timeout = parsed
+			} else {
+				// Use config default as fallback
+				cfg, cfgErr := loadConfig()
+				if cfgErr != nil {
+					slog.Debug("llmem: introspect: could not load config for timeout default, using 5m", "error", cfgErr)
+				} else {
+					timeout = cfg.CallModelTimeoutDuration()
+				}
+			}
+
 			ms, err := openStore()
 			if err != nil {
 				return err
 			}
 			defer ms.Close()
 
-			id, err := introspect.IntrospectFailure(context.Background(), ms, introspect.IntrospectFailureParams{
+			result, err := introspect.IntrospectFailure(context.Background(), ms, introspect.IntrospectFailureParams{
 				WhatHappened: whatHappened,
 				Category:     categoryVal,
 				Context:      contextVal,
 				CaughtBy:     caughtByVal,
 				ProposedFix:  proposedFix,
+				NoLLM:        noLLM,
+				Timeout:      timeout,
 			})
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Stored self_assessment: %s\n", id)
+
+			fmt.Printf("Stored self_assessment: %s\n", result.MemoryID)
+
+			if noLLM {
+				fmt.Fprintln(os.Stderr, "WARNING: LLM enrichment disabled (--no-llm flag)")
+				return nil
+			}
+
+			if result.LLMStatus == introspect.Skipped {
+				fmt.Fprintln(os.Stderr, "WARNING: LLM enrichment skipped — stored raw fields (Ollama unavailable)")
+				// Use os.Exit for non-zero exit code since cobra only supports exit code 1 via returning error
+				os.Exit(2)
+			}
+
 			return nil
 		},
 	}
@@ -763,15 +799,19 @@ func introspectCmd() *cobra.Command {
 	cmd.Flags().StringVar(&contextVal, "context", "", "Context where it happened")
 	cmd.Flags().StringVar(&caughtByVal, "caught-by", "", "How it was caught")
 	cmd.Flags().StringVar(&proposedFix, "proposed-fix", "", "Proposed fix")
+	cmd.Flags().BoolVar(&noLLM, "no-llm", false, "Skip LLM enrichment, store raw fields only (exit code 0)")
+	cmd.Flags().StringVar(&timeoutVal, "timeout", "", "LLM call timeout (e.g. \"120s\", \"2m\"). Must be >= 10s.")
 	cmd.MarkFlagRequired("what-happened")
 	return cmd
 }
 
 func learnCmd() *cobra.Command {
 	var (
-		wrongVal  string
-		rightVal  string
-		contextVal string
+		wrongVal    string
+		rightVal    string
+		contextVal  string
+		noLLM       bool
+		timeoutVal  string
 	)
 	cmd := &cobra.Command{
 		Use:   "learn",
@@ -780,27 +820,61 @@ func learnCmd() *cobra.Command {
 			if wrongVal == "" || rightVal == "" {
 				return fmt.Errorf("llmem: learn: --wrong and --right are required")
 			}
+
+			var timeout time.Duration
+			if timeoutVal != "" {
+				parsed, err := time.ParseDuration(timeoutVal)
+				if err != nil {
+					return fmt.Errorf("llmem: learn: invalid --timeout duration %q: %w", timeoutVal, err)
+				}
+				timeout = parsed
+			} else {
+				// Use config default as fallback
+				cfg, cfgErr := loadConfig()
+				if cfgErr != nil {
+					slog.Debug("llmem: learn: could not load config for timeout default, using 5m", "error", cfgErr)
+				} else {
+					timeout = cfg.CallModelTimeoutDuration()
+				}
+			}
+
 			ms, err := openStore()
 			if err != nil {
 				return err
 			}
 			defer ms.Close()
 
-			id, err := introspect.LearnLesson(context.Background(), ms, introspect.LearnLessonParams{
+			result, err := introspect.LearnLesson(context.Background(), ms, introspect.LearnLessonParams{
 				WhatWasWrong:  wrongVal,
 				WhatIsCorrect: rightVal,
 				Context:       contextVal,
+				NoLLM:         noLLM,
+				Timeout:       timeout,
 			})
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Stored procedure: %s\n", id)
+
+			fmt.Printf("Stored procedure: %s\n", result.MemoryID)
+
+			if noLLM {
+				fmt.Fprintln(os.Stderr, "WARNING: LLM expansion disabled (--no-llm flag)")
+				return nil
+			}
+
+			if result.LLMStatus == introspect.Skipped {
+				fmt.Fprintln(os.Stderr, "WARNING: LLM expansion skipped — stored raw fields (Ollama unavailable)")
+				os.Exit(2)
+			}
+
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&wrongVal, "wrong", "", "What was wrong")
 	cmd.Flags().StringVar(&rightVal, "right", "", "What is correct")
 	cmd.Flags().StringVar(&contextVal, "context", "", "Context")
+	cmd.Flags().BoolVar(&noLLM, "no-llm", false, "Skip LLM expansion, store raw fields only (exit code 0)")
+	cmd.Flags().StringVar(&timeoutVal, "timeout", "", "LLM call timeout (e.g. \"120s\", \"2m\"). Must be >= 10s.")
 	return cmd
 }
 

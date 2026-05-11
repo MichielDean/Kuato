@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -34,7 +33,7 @@ func TestIntrospectFailure_WithFields(t *testing.T) {
 	defer cancel()
 
 	ms := newTestStore(t)
-	id, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
+	result, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
 		WhatHappened: "swallowed error on database write",
 		Category:     "ERROR_HANDLING",
 		Context:      "writing to SQLite store",
@@ -45,11 +44,11 @@ func TestIntrospectFailure_WithFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IntrospectFailure: %v", err)
 	}
-	if id == "" {
+	if result.MemoryID == "" {
 		t.Error("expected non-empty memory ID")
 	}
 
-	mem, err := ms.Get(context.Background(), id, false)
+	mem, err := ms.Get(context.Background(), result.MemoryID, false)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -62,6 +61,10 @@ func TestIntrospectFailure_WithFields(t *testing.T) {
 	if mem.Source != "introspect" {
 		t.Errorf("expected source introspect, got %q", mem.Source)
 	}
+	// When Ollama is unreachable, LLMStatus should be Skipped
+	if result.LLMStatus != Skipped {
+		t.Errorf("expected LLMStatus Skipped, got %q", result.LLMStatus)
+	}
 }
 
 func TestIntrospectFailure_UnknownCategory(t *testing.T) {
@@ -69,7 +72,7 @@ func TestIntrospectFailure_UnknownCategory(t *testing.T) {
 	defer cancel()
 
 	ms := newTestStore(t)
-	id, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
+	result, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
 		WhatHappened: "test failure",
 		Category:     "UNKNOWN_CATEGORY",
 		BaseURL:      "http://localhost:59998",
@@ -77,7 +80,7 @@ func TestIntrospectFailure_UnknownCategory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IntrospectFailure with unknown category: %v", err)
 	}
-	if id == "" {
+	if result.MemoryID == "" {
 		t.Error("expected non-empty memory ID even with unknown category")
 	}
 }
@@ -98,7 +101,7 @@ func TestIntrospectFailure_GracefulDegradation(t *testing.T) {
 	defer cancel()
 
 	ms := newTestStore(t)
-	id, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
+	result, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
 		WhatHappened: "test failure",
 		Category:     "NULL_SAFETY",
 		BaseURL:      "http://localhost:59999",
@@ -106,16 +109,142 @@ func TestIntrospectFailure_GracefulDegradation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IntrospectFailure: %v", err)
 	}
-	if id == "" {
+	if result.MemoryID == "" {
 		t.Error("expected non-empty memory ID even when Ollama is unavailable")
 	}
 
-	mem, _ := ms.Get(context.Background(), id, false)
+	mem, _ := ms.Get(context.Background(), result.MemoryID, false)
 	if mem == nil {
 		t.Fatal("expected memory to be stored")
 	}
 	if mem.Content == "" {
 		t.Error("expected non-empty content even without LLM")
+	}
+	if result.LLMStatus != Skipped {
+		t.Errorf("expected LLMStatus Skipped when Ollama unavailable, got %q", result.LLMStatus)
+	}
+}
+
+func TestIntrospectFailure_ReturnsLLMSkipped_WhenOllamaUnavailable(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	result, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
+		WhatHappened: "some failure",
+		Category:     "ERROR_HANDLING",
+		BaseURL:      "http://localhost:59998", // unreachable
+	})
+	if err != nil {
+		t.Fatalf("IntrospectFailure: %v", err)
+	}
+	if result.LLMStatus != Skipped {
+		t.Errorf("expected LLMStatus Skipped, got %q", result.LLMStatus)
+	}
+	if result.MemoryID == "" {
+		t.Error("expected non-empty MemoryID even on LLM skip")
+	}
+	if result.Content == "" {
+		t.Error("expected non-empty Content even on LLM skip")
+	}
+}
+
+func TestIntrospectFailure_ReturnsLLMEnriched_WhenOllamaAvailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "test-model"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/generate" {
+			resp := map[string]string{
+				"response": "Category: ERROR_HANDLING\nWhat_happened: test\nProposed_update: fix it",
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	result, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
+		WhatHappened: "test failure",
+		Category:     "ERROR_HANDLING",
+		BaseURL:      server.URL,
+		Model:        "test-model",
+		HTTPClient:   server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("IntrospectFailure: %v", err)
+	}
+	if result.LLMStatus != Enriched {
+		t.Errorf("expected LLMStatus Enriched, got %q", result.LLMStatus)
+	}
+	if result.MemoryID == "" {
+		t.Error("expected non-empty MemoryID")
+	}
+}
+
+func TestIntrospectFailure_NoLLMFlag(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	result, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
+		WhatHappened: "some failure",
+		Category:     "ERROR_HANDLING",
+		NoLLM:        true,
+	})
+	if err != nil {
+		t.Fatalf("IntrospectFailure: %v", err)
+	}
+	if result.LLMStatus != Disabled {
+		t.Errorf("expected LLMStatus Disabled, got %q", result.LLMStatus)
+	}
+	if result.MemoryID == "" {
+		t.Error("expected non-empty MemoryID")
+	}
+	// Content should contain the raw fields
+	if result.Content == "" {
+		t.Error("expected non-empty Content with NoLLM")
+	}
+}
+
+func TestIntrospectFailure_TimeoutValidation(t *testing.T) {
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		wantErr bool
+	}{
+		{"zero timeout defaults", 0, false},
+		{"valid timeout at 10s", 10 * time.Second, false},
+		{"valid timeout at 2m", 2 * time.Minute, false},
+		{"invalid timeout at 5s", 5 * time.Second, true},
+		{"invalid timeout at 1s", 1 * time.Second, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Use NoLLM=true to avoid any Ollama network calls (validation only)
+			_, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
+				WhatHappened: "test",
+				NoLLM:        true,
+				Timeout:      tt.timeout,
+			})
+			if tt.wantErr && err == nil {
+				t.Error("expected error for timeout below minimum")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 
@@ -124,7 +253,7 @@ func TestLearnLesson_WithFields(t *testing.T) {
 	defer cancel()
 
 	ms := newTestStore(t)
-	id, err := LearnLesson(ctx, ms, LearnLessonParams{
+	result, err := LearnLesson(ctx, ms, LearnLessonParams{
 		WhatWasWrong: "ignored error return value",
 		WhatIsCorrect: "always check error return values",
 		Context:      "database write operation",
@@ -133,11 +262,11 @@ func TestLearnLesson_WithFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LearnLesson: %v", err)
 	}
-	if id == "" {
+	if result.MemoryID == "" {
 		t.Error("expected non-empty memory ID")
 	}
 
-	mem, err := ms.Get(context.Background(), id, false)
+	mem, err := ms.Get(context.Background(), result.MemoryID, false)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -149,6 +278,9 @@ func TestLearnLesson_WithFields(t *testing.T) {
 	}
 	if mem.Source != "learn" {
 		t.Errorf("expected source learn, got %q", mem.Source)
+	}
+	if result.LLMStatus != Skipped {
+		t.Errorf("expected LLMStatus Skipped, got %q", result.LLMStatus)
 	}
 }
 
@@ -168,6 +300,166 @@ func TestLearnLesson_EmptyFields(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("expected error for empty what_is_correct")
+	}
+}
+
+func TestLearnLesson_ReturnsLLMSkipped_WhenOllamaUnavailable(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	result, err := LearnLesson(ctx, ms, LearnLessonParams{
+		WhatWasWrong:  "forgot to check nil",
+		WhatIsCorrect: "always check for nil",
+		BaseURL:       "http://localhost:59998", // unreachable
+	})
+	if err != nil {
+		t.Fatalf("LearnLesson: %v", err)
+	}
+	if result.LLMStatus != Skipped {
+		t.Errorf("expected LLMStatus Skipped, got %q", result.LLMStatus)
+	}
+	if result.MemoryID == "" {
+		t.Error("expected non-empty MemoryID even on LLM skip")
+	}
+	if result.Content == "" {
+		t.Error("expected non-empty Content even on LLM skip")
+	}
+}
+
+func TestLearnLesson_ReturnsLLMEnriched_WhenOllamaAvailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "test-model"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/generate" {
+			resp := map[string]string{
+				"response": "WRONG: forgot nil check\nRIGHT: always check nil",
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	result, err := LearnLesson(ctx, ms, LearnLessonParams{
+		WhatWasWrong:  "forgot nil check",
+		WhatIsCorrect: "always check nil",
+		BaseURL:       server.URL,
+		Model:         "test-model",
+		HTTPClient:    server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("LearnLesson: %v", err)
+	}
+	if result.LLMStatus != Enriched {
+		t.Errorf("expected LLMStatus Enriched, got %q", result.LLMStatus)
+	}
+	if result.MemoryID == "" {
+		t.Error("expected non-empty MemoryID")
+	}
+}
+
+func TestLearnLesson_NoLLMFlag(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	result, err := LearnLesson(ctx, ms, LearnLessonParams{
+		WhatWasWrong:  "forgot nil check",
+		WhatIsCorrect: "always check nil",
+		NoLLM:         true,
+	})
+	if err != nil {
+		t.Fatalf("LearnLesson: %v", err)
+	}
+	if result.LLMStatus != Disabled {
+		t.Errorf("expected LLMStatus Disabled, got %q", result.LLMStatus)
+	}
+	if result.MemoryID == "" {
+		t.Error("expected non-empty MemoryID")
+	}
+	if result.Content == "" {
+		t.Error("expected non-empty Content with NoLLM")
+	}
+}
+
+func TestLearnLesson_TimeoutValidation(t *testing.T) {
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		wantErr bool
+	}{
+		{"zero timeout defaults", 0, false},
+		{"valid timeout at 10s", 10 * time.Second, false},
+		{"invalid timeout at 5s", 5 * time.Second, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Use NoLLM=true to avoid any Ollama network calls (validation only)
+			_, err := LearnLesson(ctx, ms, LearnLessonParams{
+				WhatWasWrong:  "wrong",
+				WhatIsCorrect: "right",
+				NoLLM:         true,
+				Timeout:       tt.timeout,
+			})
+			if tt.wantErr && err == nil {
+				t.Error("expected error for timeout below minimum")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestCallModel_ConfigurableTimeout(t *testing.T) {
+	// Verify that callModel defaults to callModelTimeout (5 minutes) when timeout is 0
+	ctx := context.Background()
+	// Unreachable base URL — should return Skipped quickly (URL validation fails)
+	resp, status := callModel(ctx, "test", "http://localhost:59998", "test prompt", 0, nil)
+	if status != Skipped {
+		t.Errorf("expected Skipped for unreachable Ollama, got %q", status)
+	}
+	if resp != "" {
+		t.Errorf("expected empty response for unreachable Ollama, got %q", resp)
+	}
+
+	// Verify custom timeout works
+	resp, status = callModel(ctx, "test", "http://localhost:59998", "test prompt", 15*time.Second, nil)
+	if status != Skipped {
+		t.Errorf("expected Skipped for unreachable Ollama with custom timeout, got %q", status)
+	}
+}
+
+func TestCallModel_NoLLMFlag(t *testing.T) {
+	// This test verifies the NoLLM path bypasses callModel entirely.
+	// callModel itself doesn't take NoLLM — the caller handles it.
+	// But we verify that IntrospectFailure with NoLLM never invokes callModel
+	// by checking that the result has status Disabled.
+	ms := newTestStore(t)
+	ctx := context.Background()
+
+	result, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
+		WhatHappened: "test failure",
+		NoLLM:        true,
+	})
+	if err != nil {
+		t.Fatalf("IntrospectFailure: %v", err)
+	}
+	if result.LLMStatus != Disabled {
+		t.Errorf("expected LLMStatus Disabled with NoLLM=true, got %q", result.LLMStatus)
 	}
 }
 
@@ -193,15 +485,58 @@ func TestIntrospectFailure_WithModel(t *testing.T) {
 	defer cancel()
 
 	ms := newTestStore(t)
-	_, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
+	result, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
 		WhatHappened: "test failure",
 		Category:     "ERROR_HANDLING",
 		BaseURL:      server.URL,
 		Model:        "test-model",
+		HTTPClient:   server.Client(),
 	})
-	_ = err
+	if err != nil {
+		t.Fatalf("IntrospectFailure: %v", err)
+	}
+	// With a working mock server, LLM should be Enriched
+	if result.LLMStatus != Enriched {
+		t.Errorf("expected LLMStatus Enriched with mock server, got %q", result.LLMStatus)
+	}
+	if result.MemoryID == "" {
+		t.Error("expected non-empty MemoryID")
+	}
 }
 
 func TestLearnLesson_WithModel(t *testing.T) {
-	_ = os.Getenv("LMEM_HOME") // just ensure env is accessible
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "test-model"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/generate" {
+			resp := map[string]string{
+				"response": "WRONG: forgot nil check\nRIGHT: always check nil",
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	result, err := LearnLesson(ctx, ms, LearnLessonParams{
+		WhatWasWrong:  "forgot nil check",
+		WhatIsCorrect: "always check nil",
+		BaseURL:       server.URL,
+		Model:         "test-model",
+		HTTPClient:    server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("LearnLesson: %v", err)
+	}
+	if result.LLMStatus != Enriched {
+		t.Errorf("expected LLMStatus Enriched with mock server, got %q", result.LLMStatus)
+	}
 }

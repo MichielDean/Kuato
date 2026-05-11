@@ -36,7 +36,7 @@ const (
 	defaultStaleProcedureDays     = 30
 	defaultDreamBaseURL           = "http://localhost:11434"
 	defaultDreamModel             = "glm-5.1:cloud"
-	defaultDreamModelTimeout      = 30 * time.Second
+	defaultDreamModelTimeout      = 5 * time.Minute
 	maxBehavioralSamples          = 5
 	maxSampleLength               = 300
 )
@@ -102,6 +102,10 @@ type DreamerConfig struct {
 	// Model is the name of the Ollama model to use for behavioral insight generation.
 	// Defaults to "glm-5.1:cloud".
 	Model string
+
+	// ModelTimeout is the timeout for each LLM call during REM behavioral insight generation.
+	// Defaults to 5 minutes if zero.
+	ModelTimeout time.Duration
 }
 
 // LightPhaseResult holds the results of the light (deduplication) phase.
@@ -161,6 +165,7 @@ type Dreamer struct {
 	reportPath               string
 	ollama                   *ollama.OllamaClient
 	model                    string
+	modelTimeout             time.Duration
 	mu                       sync.Mutex
 }
 
@@ -236,6 +241,10 @@ func NewDreamer(cfg DreamerConfig) (*Dreamer, error) {
 	if model == "" {
 		model = defaultDreamModel
 	}
+	modelTimeout := cfg.ModelTimeout
+	if modelTimeout == 0 {
+		modelTimeout = defaultDreamModelTimeout
+	}
 
 	// Wire OllamaClient following ExtractionEngine pattern.
 	// If cfg.OllamaClient is provided, use it directly.
@@ -279,6 +288,7 @@ func NewDreamer(cfg DreamerConfig) (*Dreamer, error) {
 		reportPath:               reportPath,
 		ollama:                   client,
 		model:                    model,
+		modelTimeout:             modelTimeout,
 	}, nil
 }
 
@@ -622,6 +632,9 @@ func (d *Dreamer) extractBehavioralInsights(ctx context.Context, apply bool) []B
 		useLLM = d.ollama.IsAvailable(availCtx)
 		availCancel()
 	}
+	if !useLLM {
+		slog.Warn("llmem: dream: REM behavioral insight using count-based fallback", "reason", "ollama unavailable")
+	}
 
 	var insights []BehavioralInsight
 	for cat, count := range categoryCounts {
@@ -629,7 +642,7 @@ func (d *Dreamer) extractBehavioralInsights(ctx context.Context, apply bool) []B
 			contentSnippet := ""
 			if useLLM {
 				prompt := buildBehavioralInsightPrompt(cat, count, d.behavioralLookbackDays, categorySamples[cat])
-				llmCtx, llmCancel := context.WithTimeout(ctx, defaultDreamModelTimeout)
+				llmCtx, llmCancel := context.WithTimeout(ctx, d.modelTimeout)
 				response, llmErr := d.ollama.Generate(llmCtx, prompt, d.model)
 				llmCancel()
 				if llmErr != nil {

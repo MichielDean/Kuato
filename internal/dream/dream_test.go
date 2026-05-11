@@ -1199,3 +1199,56 @@ func TestDreamer_RemPhase_BehavioralInsight_LLMErrorFallback(t *testing.T) {
 		t.Error("expected ERROR_HANDLING insight in LLM error fallback")
 	}
 }
+
+// TestExtractBehavioralInsights_LogsSkipped_WhenOllamaUnavailable verifies that when
+// Ollama is unavailable, extractBehavioralInsights falls back to count-based format
+// and the nil OllamaClient path correctly sets useLLM=false.
+func TestExtractBehavioralInsights_LogsSkipped_WhenOllamaUnavailable(t *testing.T) {
+	ms := newTestStore(t)
+
+	// Add self_assessment memories with ERROR_HANDLING category (need >= 3)
+	for i := 0; i < 3; i++ {
+		addSelfAssessment(t, ms, "ERROR_HANDLING", "Missing error handler in function "+strings.Repeat("y", 10))
+	}
+
+	// Use a server that returns 404 on /api/tags so IsAvailable returns false immediately
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:        ms,
+		OllamaClient: newTestOllamaClient(t, server),
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(context.Background(), true, "rem")
+	if err != nil {
+		t.Fatalf("Run rem: %v", err)
+	}
+	if result.Rem == nil {
+		t.Fatal("expected Rem result")
+	}
+
+	insights := result.Rem.BehavioralInsights
+	if len(insights) == 0 {
+		t.Fatal("expected at least one behavioral insight even without Ollama")
+	}
+
+	// Verify the insight is count-based fallback, not LLM-generated
+	for _, insight := range insights {
+		if insight.Category == "ERROR_HANDLING" {
+			if !strings.Contains(insight.ContentSnippet, "Behavioral insight:") {
+				t.Errorf("expected count-based fallback format, got: %q", insight.ContentSnippet)
+			}
+			if !strings.Contains(insight.ContentSnippet, "ERROR_HANDLING") {
+				t.Errorf("expected ERROR_HANDLING in fallback format, got: %q", insight.ContentSnippet)
+			}
+			return
+		}
+	}
+	t.Error("expected ERROR_HANDLING insight not found")
+}
