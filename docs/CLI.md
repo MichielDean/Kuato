@@ -229,7 +229,9 @@ Handle session lifecycle hook events. Supports four hook types:
 - `--model`: LLM model for introspection (default: `glm-5.1:cloud`). Used by the `ending` hook for automatic introspection.
 - `--base-url`: Ollama base URL for introspection (default: `http://localhost:11434`). Used by the `ending` hook for automatic introspection.
 
-The `idle` hook processes the session's transcript, extracts memories, and runs introspection automatically. It uses a debounce mechanism (via `extraction_log` table) to prevent re-extraction.
+The `idle` hook processes the session's transcript, extracts memories via the extraction pipeline (chunk → dedup → LLM extract → embed → store), and generates embedding vectors for each extracted memory. It uses a debounce mechanism (via `extraction_log` table) to prevent re-extraction. When `ExtractionEngine` is not configured, extraction is skipped gracefully.
+
+The `ending` hook extracts memories from the transcript (same pipeline as `idle`), then runs `IntrospectTranscript` to produce a session-end `self_assessment` memory. When the LLM is unavailable, `IntrospectTranscript` falls back to a degraded plain-text summary of the session (no LLM call attempted).
 
 The `ending` hook performs automatic introspection on the session transcript. It reads the transcript via the configured adapter, generates a `self_assessment` memory using `IntrospectAuto`, and outputs the result type and memory ID. If no adapter is configured or the transcript is empty, it returns `no_transcript`. If introspection fails but the transcript was read, it logs a warning and returns success without crashing the ending event.
 

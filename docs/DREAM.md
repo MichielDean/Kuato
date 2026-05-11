@@ -189,7 +189,7 @@ result, err := coord.OnEnding(ctx, "session-id")
 resultType, memoryID, err := coord.OnEndingWithIntrospect(ctx, "session-id")
 ```
 
-The `internal/introspect` package provides failure analysis and lesson learning:
+The `internal/introspect` package provides failure analysis, lesson learning, and session transcript introspection:
 
 ```go
 import "github.com/MichielDean/LLMem/internal/introspect"
@@ -217,3 +217,13 @@ id, err := introspect.IntrospectAuto(ctx, ms, "Session transcript text...", "glm
 ```
 
 All three functions use LLM expansion via Ollama when available, with graceful degradation to storage-only mode when Ollama is unavailable. `IntrospectAuto` never returns `("", nil)` — either creates a memory or returns an error.
+
+```go
+// Introspect a session transcript (called by OnEnding)
+id, err := introspect.IntrospectTranscript(ctx, ms, transcript, "session-id", ollamaClient, "glm-5.1:cloud")
+// When ollamaClient is nil, falls back to degraded storage (plain-text summary, no LLM call)
+```
+
+Both `IntrospectFailure` and `LearnLesson` use LLM expansion via Ollama when available, with graceful degradation to storage-only mode when Ollama is unavailable.
+
+`IntrospectTranscript` analyzes a session transcript and stores a `self_assessment` memory. It accepts a pre-configured `*ollama.OllamaClient` (reusing the session's connection). When `ollamaClient` is nil, it produces a degraded memory with a plain-text summary. On LLM availability, the model generates a structured self-assessment from the transcript content. Note: `IntrospectTranscript` uses `context.Background()` for the final store operation (not the caller's `ctx`) to ensure persistence even if the calling context has expired during the LLM call.

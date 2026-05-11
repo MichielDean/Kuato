@@ -3,12 +3,18 @@ package session
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/MichielDean/LLMem/internal/embed"
+	"github.com/MichielDean/LLMem/internal/extract"
+	"github.com/MichielDean/LLMem/internal/ollama"
 	"github.com/MichielDean/LLMem/internal/store"
 )
 
@@ -825,6 +831,7 @@ func TestSessionHookCoordinator_OnEnding_WithAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OnEnding: %v", err)
 	}
+	// Without OllamaClient, extraction may run but IntrospectTranscript degrades gracefully
 	if result != ResultSuccess {
 		t.Errorf("expected %q, got %q", ResultSuccess, result)
 	}
@@ -936,6 +943,931 @@ func TestOpenCodeAdapter_EmptyDBPath_IsNilInterface(t *testing.T) {
 	// Empty DB path adapter returns empty transcript, which maps to no_transcript
 	if result != ResultNoTranscript {
 		t.Errorf("expected %q, got %q", ResultNoTranscript, result)
+	}
+}
+
+// newTestExtractionEngine creates an ExtractionEngine backed by a test HTTP server
+// that returns the given JSON array response from the /api/generate endpoint.
+func newTestExtractionEngine(t *testing.T, responseMemories []map[string]any) (*extract.ExtractionEngine, *httptest.Server) {
+	t.Helper()
+	responseJSON, err := json.Marshal(responseMemories)
+	if err != nil {
+		t.Fatalf("marshal test response: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/generate" {
+			resp := map[string]string{"response": string(responseJSON)}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "glm-5.1:cloud"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := ollama.NewOllamaClient(ollama.OllamaClientConfig{
+		BaseURL:    server.URL,
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewOllamaClient: %v", err)
+	}
+
+	engine, err := extract.NewExtractionEngine(extract.ExtractionConfig{
+		OllamaClient: client,
+	})
+	if err != nil {
+		t.Fatalf("NewExtractionEngine: %v", err)
+	}
+	return engine, server
+}
+
+// newFailingExtractionEngine creates an ExtractionEngine backed by a server
+// that always returns errors (simulating unavailable LLM).
+func newFailingExtractionEngine(t *testing.T) *extract.ExtractionEngine {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := ollama.NewOllamaClient(ollama.OllamaClientConfig{
+		BaseURL:    server.URL,
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewOllamaClient: %v", err)
+	}
+
+	engine, err := extract.NewExtractionEngine(extract.ExtractionConfig{
+		OllamaClient: client,
+	})
+	if err != nil {
+		t.Fatalf("NewExtractionEngine: %v", err)
+	}
+	return engine
+}
+
+// newTestEmbeddingEngine creates an EmbeddingEngine backed by a test HTTP server.
+func newTestEmbeddingEngine(t *testing.T) (*embed.EmbeddingEngine, *httptest.Server) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/embeddings" {
+			// Return a 4-dimensional embedding vector for testing
+			resp := map[string]any{
+				"embedding": []float32{0.1, 0.2, 0.3, 0.4},
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "nomic-embed-text"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	engine, err := embed.NewEmbeddingEngine(embed.EmbeddingConfig{
+		HTTPClient:   server.Client(),
+		BaseURL:      server.URL,
+		Dimensions:   4, // small for testing
+		MaxCacheSize: 100,
+	})
+	if err != nil {
+		t.Fatalf("NewEmbeddingEngine: %v", err)
+	}
+	return engine, server
+}
+
+// newIntrospectTestServer creates an httptest.Server that serves the Ollama
+// /api/tags and /api/generate endpoints for introspection tests.
+// It returns a structured self-assessment response from /api/generate.
+func newIntrospectTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "test-model"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/generate" {
+			resp := map[string]string{
+				"response": "Category: PROJECT_STATE\nWhat_happened: Session completed\nProposed_update: reviewed patterns",
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestSessionHookCoordinator_OnIdle_ExtractsMemories(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-extract", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-extract", "sess-extract", 1000, "user")
+	insertTestPart(t, dbPath, "part-extract", "msg-extract", "sess-extract", 1000,
+		`{"type": "text", "text": "The project uses Go 1.22"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	extractor, _ := newTestExtractionEngine(t, []map[string]any{
+		{"type": "fact", "content": "The project uses Go 1.22", "confidence": 0.9},
+	})
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		Adapter:          adapter,
+		ExtractionEngine: extractor,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	result, err := coord.OnIdle(context.Background(), "sess-extract")
+	if err != nil {
+		t.Fatalf("OnIdle: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+
+	// Verify memory was stored
+	memories, err := ms.ListAll(context.Background(), store.ListParams{Limit: 50})
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(memories) == 0 {
+		t.Error("expected at least one memory to be stored")
+	}
+
+	// Verify the memory content
+	found := false
+	for _, m := range memories {
+		if m.Content == "The project uses Go 1.22" {
+			found = true
+			if m.Source != "session" {
+				t.Errorf("expected source 'session', got %q", m.Source)
+			}
+			if m.Confidence != 0.9 {
+				t.Errorf("expected confidence 0.9, got %f", m.Confidence)
+			}
+			if m.Metadata["source_type"] != "session" {
+				t.Errorf("expected metadata source_type 'session', got %v", m.Metadata["source_type"])
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected to find memory with content 'The project uses Go 1.22'")
+	}
+}
+
+func TestSessionHookCoordinator_OnIdle_ExtractsMemories_UnavailableLLM(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-nollm", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-nollm", "sess-nollm", 1000, "user")
+	insertTestPart(t, dbPath, "part-nollm", "msg-nollm", "sess-nollm", 1000,
+		`{"type": "text", "text": "Some content for extraction"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	extractor := newFailingExtractionEngine(t)
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		Adapter:          adapter,
+		ExtractionEngine: extractor,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	result, err := coord.OnIdle(context.Background(), "sess-nollm")
+	if err != nil {
+		t.Fatalf("OnIdle: %v", err)
+	}
+	// Should return success even when LLM is unavailable — graceful degradation
+	if result != ResultSuccess {
+		t.Errorf("expected %q (graceful degradation), got %q", ResultSuccess, result)
+	}
+}
+
+func TestSessionHookCoordinator_OnIdle_DedupExtraction(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-dedup", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-dedup", "sess-dedup", 1000, "user")
+	insertTestPart(t, dbPath, "part-dedup", "msg-dedup", "sess-dedup", 1000,
+		`{"type": "text", "text": "Go 1.22 is the runtime version"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	extractor, _ := newTestExtractionEngine(t, []map[string]any{
+		{"type": "fact", "content": "Go 1.22 is the runtime version", "confidence": 0.85},
+	})
+
+	ms := newTestStore(t)
+
+	// First, mark this session as already extracted (IsExtracted returns true)
+	err = ms.LogExtraction(context.Background(), "session", "sess-dedup", nil, 1)
+	if err != nil {
+		t.Fatalf("LogExtraction: %v", err)
+	}
+
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		Adapter:          adapter,
+		ExtractionEngine: extractor,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	// Use a very short debounce to allow re-extraction within the test
+	coord.debounceSeconds = 0
+
+	result, err := coord.OnIdle(context.Background(), "sess-dedup")
+	if err != nil {
+		t.Fatalf("OnIdle: %v", err)
+	}
+	// OnIdle should still succeed — it uses SupersedeBySource, not IsExtracted check
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+}
+
+func TestSessionHookCoordinator_OnIdle_LogsExtraction(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-log", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-log", "sess-log", 1000, "user")
+	insertTestPart(t, dbPath, "part-log", "msg-log", "sess-log", 1000,
+		`{"type": "text", "text": "Important fact to extract"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	extractor, _ := newTestExtractionEngine(t, []map[string]any{
+		{"type": "fact", "content": "Important fact to extract", "confidence": 0.7},
+	})
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		Adapter:          adapter,
+		ExtractionEngine: extractor,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	result, err := coord.OnIdle(context.Background(), "sess-log")
+	if err != nil {
+		t.Fatalf("OnIdle: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+
+	// Verify extraction was logged
+	extracted, err := ms.IsExtracted(context.Background(), "session", "sess-log")
+	if err != nil {
+		t.Fatalf("IsExtracted: %v", err)
+	}
+	if !extracted {
+		t.Error("expected extraction to be logged via IsExtracted")
+	}
+}
+
+func TestSessionHookCoordinator_OnIdle_OverridesPriorMemories(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-supersede", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-supersede", "sess-supersede", 1000, "user")
+	insertTestPart(t, dbPath, "part-supersede", "msg-supersede", "sess-supersede", 1000,
+		`{"type": "text", "text": "Updated fact about project"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	extractor, _ := newTestExtractionEngine(t, []map[string]any{
+		{"type": "fact", "content": "Updated fact about project", "confidence": 0.9},
+	})
+
+	ms := newTestStore(t)
+
+	// Pre-add a memory that should be superseded
+	_, err = ms.Add(context.Background(), store.AddParams{
+		Type:       "fact",
+		Content:    "Old fact about project",
+		Source:     "session",
+		Confidence: 0.7,
+		Metadata:   map[string]any{"source_type": "session", "source_id": "sess-supersede"},
+	})
+	if err != nil {
+		t.Fatalf("Pre-add memory: %v", err)
+	}
+
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		Adapter:          adapter,
+		ExtractionEngine: extractor,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	result, err := coord.OnIdle(context.Background(), "sess-supersede")
+	if err != nil {
+		t.Fatalf("OnIdle: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+
+	// Verify the old memory was superseded (valid_until set)
+	memories, err := ms.ListAll(context.Background(), store.ListParams{Limit: 50})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	// Find the old memory — it should be invalidated (valid_until set)
+	foundOld := false
+	foundNew := false
+	for _, m := range memories {
+		if m.Content == "Old fact about project" {
+			foundOld = true
+			// The old memory should now be invalidated (valid_until should be set)
+			if m.ValidUntil == "" {
+				t.Error("expected old memory to be invalidated (valid_until should be set)")
+			}
+		}
+		if m.Content == "Updated fact about project" {
+			foundNew = true
+		}
+	}
+	if !foundOld {
+		t.Error("expected to find old superseded memory")
+	}
+	if !foundNew {
+		t.Error("expected to find new extracted memory")
+	}
+}
+
+func TestSessionHookCoordinator_OnEnding_ExtractsMemories(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-ending-ex", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-ending-ex", "sess-ending-ex", 1000, "assistant")
+	insertTestPart(t, dbPath, "part-ending-ex", "msg-ending-ex", "sess-ending-ex", 1000,
+		`{"type": "text", "text": "We decided to use PostgreSQL for the database"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	extractor, _ := newTestExtractionEngine(t, []map[string]any{
+		{"type": "decision", "content": "We decided to use PostgreSQL for the database", "confidence": 0.95},
+	})
+
+	// Create a mock Ollama server for introspection
+	introspectServer := newIntrospectTestServer(t)
+	ollamaClient, err := ollama.NewOllamaClient(ollama.OllamaClientConfig{
+		BaseURL:    introspectServer.URL,
+		HTTPClient: introspectServer.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewOllamaClient: %v", err)
+	}
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		Adapter:          adapter,
+		ExtractionEngine: extractor,
+		OllamaClient:     ollamaClient,
+		IntrospectModel:  "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := coord.OnEnding(ctx, "sess-ending-ex")
+	if err != nil {
+		t.Fatalf("OnEnding: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+
+	memories, err := ms.ListAll(context.Background(), store.ListParams{Limit: 50})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	found := false
+	for _, m := range memories {
+		if m.Content == "We decided to use PostgreSQL for the database" {
+			found = true
+			if m.Type != "decision" {
+				t.Errorf("expected type 'decision', got %q", m.Type)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected to find extracted decision memory")
+	}
+
+	// Verify a self_assessment was stored by IntrospectTranscript
+	saMemories, err := ms.ListAll(context.Background(), store.ListParams{Type: "self_assessment", Limit: 10})
+	if err != nil {
+		t.Fatalf("Search self_assessment: %v", err)
+	}
+	if len(saMemories) == 0 {
+		t.Error("expected at least one self_assessment memory from IntrospectTranscript")
+	}
+}
+
+func TestSessionHookCoordinator_OnEnding_StoresSessionEndEvent(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-end-evt", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-end-evt", "sess-end-evt", 1000, "user")
+	insertTestPart(t, dbPath, "part-end-evt", "msg-end-evt", "sess-end-evt", 1000,
+		`{"type": "text", "text": "Good session"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	// Use extractor that returns no memories (LLM degradation) so we focus on event storage
+	extractor := newFailingExtractionEngine(t)
+
+	// Create a mock Ollama server that fails — triggers fallback to session_end event
+	introspectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	t.Cleanup(introspectServer.Close)
+
+	ollamaClient, err := ollama.NewOllamaClient(ollama.OllamaClientConfig{
+		BaseURL:    introspectServer.URL,
+		HTTPClient: introspectServer.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewOllamaClient: %v", err)
+	}
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		Adapter:          adapter,
+		ExtractionEngine: extractor,
+		OllamaClient:     ollamaClient,
+		IntrospectModel:  "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := coord.OnEnding(ctx, "sess-end-evt")
+	if err != nil {
+		t.Fatalf("OnEnding: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+
+	// Since Ollama is unavailable, IntrospectTranscript fails and falls back to
+	// a session_end event memory
+	allMemories, err := ms.ListAll(context.Background(), store.ListParams{Limit: 50})
+	if err != nil {
+		t.Fatalf("Search all: %v", err)
+	}
+	hasSessionMemory := false
+	for _, m := range allMemories {
+		if m.Source == "introspect" || m.Source == "session_end" || m.Source == "session" {
+			hasSessionMemory = true
+			break
+		}
+	}
+	if !hasSessionMemory {
+		t.Error("expected at least one memory stored from session ending (introspect, session_end, or session)")
+	}
+}
+
+func TestSessionHookCoordinator_OnEnding_IntrospectFallback(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-intro-fb", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-intro-fb", "sess-intro-fb", 1000, "user")
+	insertTestPart(t, dbPath, "part-intro-fb", "msg-intro-fb", "sess-intro-fb", 1000,
+		`{"type": "text", "text": "Fallback transcript content"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	// Use failing extractor (LLM unavailable)
+	extractor := newFailingExtractionEngine(t)
+
+	// Create a mock Ollama server that returns failures — triggers IntrospectTranscript graceful degradation
+	introspectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	t.Cleanup(introspectServer.Close)
+
+	ollamaClient, err := ollama.NewOllamaClient(ollama.OllamaClientConfig{
+		BaseURL:    introspectServer.URL,
+		HTTPClient: introspectServer.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewOllamaClient: %v", err)
+	}
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		Adapter:          adapter,
+		ExtractionEngine: extractor,
+		OllamaClient:     ollamaClient,
+		IntrospectModel:  "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := coord.OnEnding(ctx, "sess-intro-fb")
+	if err != nil {
+		t.Fatalf("OnEnding: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q (graceful degradation), got %q", ResultSuccess, result)
+	}
+
+	// When introspect fails (no LLM), there should still be memories stored
+	// Check for self_assessment or event memory from degraded IntrospectTranscript
+	memories, err := ms.ListAll(context.Background(), store.ListParams{Type: "self_assessment", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(memories) == 0 {
+		// Check for event memories as fallback
+		eventMemories, err := ms.ListAll(context.Background(), store.ListParams{Type: "event", Limit: 10})
+		if err != nil {
+			t.Fatalf("ListAll events: %v", err)
+		}
+		if len(eventMemories) == 0 {
+			t.Error("expected at least one self_assessment or event memory from IntrospectTranscript fallback")
+		}
+	} else {
+		// Verify a self_assessment memory was stored from introspect
+		found := false
+		for _, m := range memories {
+			if m.Source == "introspect" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected self_assessment memory with source 'introspect'")
+		}
+	}
+}
+
+func TestSessionHookCoordinator_OnIdle_NilExtractionEngine(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-nil-ext", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-nil-ext", "sess-nil-ext", 1000, "user")
+	insertTestPart(t, dbPath, "part-nil-ext", "msg-nil-ext", "sess-nil-ext", 1000,
+		`{"type": "text", "text": "Content without extraction"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:   ms,
+		Adapter: adapter,
+		// ExtractionEngine is nil — extraction should be skipped gracefully
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	result, err := coord.OnIdle(context.Background(), "sess-nil-ext")
+	if err != nil {
+		t.Fatalf("OnIdle: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+
+	// No extraction memories should have been stored
+	memories, err := ms.ListAll(context.Background(), store.ListParams{Limit: 50})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// No extraction memories should have been stored from session extraction
+	var sessionMemCount int
+	for _, m := range memories {
+		if m.Source == "session" {
+			sessionMemCount++
+		}
+	}
+	if sessionMemCount != 0 {
+		t.Errorf("expected no session-sourced memories with nil extraction engine, got %d", sessionMemCount)
+	}
+}
+
+func TestSessionHookCoordinator_OnEnding_NilExtractionEngine(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-nil-end", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-nil-end", "sess-nil-end", 1000, "user")
+	insertTestPart(t, dbPath, "part-nil-end", "msg-nil-end", "sess-nil-end", 1000,
+		`{"type": "text", "text": "Ending content without extraction"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:   ms,
+		Adapter: adapter,
+		// ExtractionEngine is nil — extraction should be skipped.
+		// OllamaClient is nil — IntrospectTranscript falls back to degraded storage
+		// (produces a self_assessment memory without LLM call).
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	result, err := coord.OnEnding(context.Background(), "sess-nil-end")
+	if err != nil {
+		t.Fatalf("OnEnding: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+
+	// IntrospectTranscript is called even with nil OllamaClient — it falls back
+	// to degraded storage producing a self_assessment memory with a plain-text summary.
+	saMemories, err := ms.ListAll(context.Background(), store.ListParams{Type: "self_assessment", Limit: 10})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(saMemories) == 0 {
+		t.Error("expected at least one self_assessment memory from IntrospectTranscript degraded storage (nil OllamaClient)")
+	}
+	// Verify the degraded memory contains the session ID
+	found := false
+	for _, m := range saMemories {
+		if strings.Contains(m.Content, "sess-nil-end") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected degraded self_assessment memory to contain session ID 'sess-nil-end'")
+	}
+}
+
+// TestSessionHookCoordinator_OnEnding_NilOllamaClient_ProducesDegradedIntrospection
+// verifies the fix for issue ll-m8knf-vup88: OnEnding must call IntrospectTranscript
+// even when OllamaClient is nil. IntrospectTranscript has its own nil-client graceful
+// degradation — it produces a plain-text self_assessment memory. The bug was that
+// OnEnding guarded the call with c.ollamaClient != nil, bypassing this degradation
+// and producing zero introspection memories for sessions with valid transcripts.
+func TestSessionHookCoordinator_OnEnding_NilOllamaClient_ProducesDegradedIntrospection(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-nil-ollama", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-nil-ollama", "sess-nil-ollama", 1000, "user")
+	insertTestPart(t, dbPath, "part-nil-ollama", "msg-nil-ollama", "sess-nil-ollama", 1000,
+		`{"type": "text", "text": "The project uses Go 1.22 for robust concurrency"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	// Set up an extraction engine working normally
+	extractor, _ := newTestExtractionEngine(t, []map[string]any{
+		{"type": "fact", "content": "The project uses Go 1.22", "confidence": 0.9},
+	})
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		Adapter:          adapter,
+		ExtractionEngine: extractor,
+		// OllamaClient is nil — IntrospectTranscript must still be called
+		// and must produce a degraded self_assessment memory
+	})
+
+	result, err := coord.OnEnding(context.Background(), "sess-nil-ollama")
+	if err != nil {
+		t.Fatalf("OnEnding: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+
+	// Verify that IntrospectTranscript produced a degraded self_assessment memory
+	saMemories, err := ms.ListAll(context.Background(), store.ListParams{Type: "self_assessment", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(saMemories) == 0 {
+		t.Error("expected at least one self_assessment memory from IntrospectTranscript degraded path (nil OllamaClient)")
+	}
+
+	// Verify the degraded memory contains the session ID
+	found := false
+	for _, m := range saMemories {
+		if strings.Contains(m.Content, "sess-nil-ollama") {
+			found = true
+			if m.Source != "introspect" {
+				t.Errorf("expected source 'introspect', got %q", m.Source)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected degraded self_assessment memory to contain session ID")
+	}
+
+	// Also verify extraction memories were still stored
+	sessionMemories, err := ms.ListAll(context.Background(), store.ListParams{Type: "fact", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListAll facts: %v", err)
+	}
+	if len(sessionMemories) == 0 {
+		t.Error("expected at least one fact memory from extraction")
+	}
+}
+
+func TestSessionHookCoordinator_OnIdle_WithAdapter_VerifiesMemoriesStored(t *testing.T) {
+	// Updated version of the existing test that now verifies memories are stored
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-idle-v2", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-idle-v2", "sess-idle-v2", 1000, "user")
+	insertTestPart(t, dbPath, "part-idle-v2", "msg-idle-v2", "sess-idle-v2", 1000,
+		`{"type": "text", "text": "Idle transcript content"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	// Set up extraction engine that returns a memory
+	extractor, _ := newTestExtractionEngine(t, []map[string]any{
+		{"type": "fact", "content": "Idle transcript content", "confidence": 0.8},
+	})
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		Adapter:          adapter,
+		ExtractionEngine: extractor,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	result, err := coord.OnIdle(context.Background(), "sess-idle-v2")
+	if err != nil {
+		t.Fatalf("OnIdle: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+
+	// Verify that a memory was actually stored in the test store
+	memories, err := ms.ListAll(context.Background(), store.ListParams{Limit: 50})
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	var sessionMemCount int
+	for _, m := range memories {
+		if m.Source == "session" {
+			sessionMemCount++
+		}
+	}
+	if sessionMemCount == 0 {
+		t.Error("expected at least one session-sourced memory to be stored after OnIdle with extraction")
+	}
+}
+
+func TestSessionHookCoordinator_OnEnding_WithAdapter_VerifiesMemoriesStored(t *testing.T) {
+	// Updated version of the existing test that now verifies memories are stored
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-ending-v2", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-ending-v2", "sess-ending-v2", 1000, "assistant")
+	insertTestPart(t, dbPath, "part-ending-v2", "msg-ending-v2", "sess-ending-v2", 1000,
+		`{"type": "text", "text": "Ending transcript content"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	// Set up extraction engine that returns a memory
+	extractor, _ := newTestExtractionEngine(t, []map[string]any{
+		{"type": "fact", "content": "Ending transcript content", "confidence": 0.85},
+	})
+
+	// Set up a mock Ollama server for introspection
+	introspectServer := newIntrospectTestServer(t)
+	ollamaClient, err := ollama.NewOllamaClient(ollama.OllamaClientConfig{
+		BaseURL:    introspectServer.URL,
+		HTTPClient: introspectServer.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewOllamaClient: %v", err)
+	}
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		Adapter:          adapter,
+		ExtractionEngine: extractor,
+		OllamaClient:     ollamaClient,
+		IntrospectModel:  "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := coord.OnEnding(ctx, "sess-ending-v2")
+	if err != nil {
+		t.Fatalf("OnEnding: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+
+	// Verify that a memory was actually stored in the test store
+	memories, err := ms.ListAll(context.Background(), store.ListParams{Limit: 50})
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	var sessionOrIntrospectCount int
+	for _, m := range memories {
+		if m.Source == "session" || m.Source == "introspect" {
+			sessionOrIntrospectCount++
+		}
+	}
+	if sessionOrIntrospectCount == 0 {
+		t.Error("expected at least one session or introspect memory to be stored after OnEnding with extraction")
 	}
 }
 
@@ -1073,5 +2005,70 @@ func TestSessionHookCoordinator_OnEndingWithIntrospect_IntrospectionFailure(t *t
 	// memoryID should be empty since introspection failed
 	if memoryID != "" {
 		t.Errorf("expected empty memory ID on introspection failure, got %q", memoryID)
+	}
+}
+
+// TestSessionHookCoordinator_OnIdle_WithEmbedding_VerifiesMemoriesHaveEmbeddings
+// verifies that the embedding path in extractMemories is exercised. When
+// an EmbeddingEngine is configured, extracted memories should have embedding
+// vectors passed to store.Add (stored alongside the memory). This test
+// exercises the previously-untested embedder != nil code path in
+// extractMemories (session.go:677-683).
+func TestSessionHookCoordinator_OnIdle_WithEmbedding_VerifiesMemoriesHaveEmbeddings(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-embed", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-embed", "sess-embed", 1000, "user")
+	insertTestPart(t, dbPath, "part-embed", "msg-embed", "sess-embed", 1000,
+		`{"type": "text", "text": "The system uses SQLite for persistence"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	extractor, _ := newTestExtractionEngine(t, []map[string]any{
+		{"type": "fact", "content": "The system uses SQLite for persistence", "confidence": 0.85},
+	})
+
+	embedder, _ := newTestEmbeddingEngine(t)
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		Adapter:          adapter,
+		ExtractionEngine: extractor,
+		Embedding:        embedder,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	result, err := coord.OnIdle(context.Background(), "sess-embed")
+	if err != nil {
+		t.Fatalf("OnIdle: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+
+	// Verify that at least one memory was stored via the extraction+embedding path
+	memories, err := ms.ListAll(context.Background(), store.ListParams{Limit: 50})
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+
+	found := false
+	for _, m := range memories {
+		if m.Content == "The system uses SQLite for persistence" && m.Source == "session" {
+			found = true
+			if len(m.Embedding) == 0 {
+				t.Error("expected extracted memory to have non-zero embedding vector, but Embedding is empty")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected to find extracted memory 'The system uses SQLite for persistence' with source 'session'")
 	}
 }

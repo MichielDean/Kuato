@@ -802,8 +802,8 @@ func TestMemoryStore_ConsolidateDuplicates(t *testing.T) {
 		vec1[i] = 0.1
 		vec2[i] = 0.1
 	}
-	emb1 := vecToBytes(vec1)
-	emb2 := vecToBytes(vec2)
+	emb1 := VecToBytes(vec1)
+	emb2 := VecToBytes(vec2)
 
 	ms.Add(ctx, AddParams{Type: "fact", Content: "fact 1", Embedding: emb1})
 	ms.Add(ctx, AddParams{Type: "fact", Content: "fact 2", Embedding: emb2})
@@ -993,7 +993,7 @@ func TestMemoryStore_SearchByEmbedding_BruteForce(t *testing.T) {
 	for i := range vec {
 		vec[i] = 0.1
 	}
-	emb := vecToBytes(vec)
+	emb := VecToBytes(vec)
 
 	ms.Add(ctx, AddParams{Type: "fact", Content: "memory with embedding", Embedding: emb})
 
@@ -1133,7 +1133,7 @@ func TestMemoryStore_GetEmbeddingsWithTypes(t *testing.T) {
 	for i := range vec {
 		vec[i] = 0.1
 	}
-	emb := vecToBytes(vec)
+	emb := VecToBytes(vec)
 	ms.Add(ctx, AddParams{Type: "fact", Content: "with embedding", Embedding: emb})
 
 	results, err := ms.GetEmbeddingsWithTypes(ctx, 100)
@@ -1432,7 +1432,7 @@ func TestSearchByEmbedding_DefaultLimit(t *testing.T) {
 		ms.Add(ctx, AddParams{
 			Type:      "fact",
 			Content:   fmt.Sprintf("memory %d", i),
-			Embedding: vecToBytes(vec),
+			Embedding: VecToBytes(vec),
 		})
 	}
 
@@ -1583,7 +1583,7 @@ func TestGetEmbeddingsWithTypes_ZeroLimit_NoLimit(t *testing.T) {
 	for i := range vec {
 		vec[i] = 0.1
 	}
-	emb := vecToBytes(vec)
+	emb := VecToBytes(vec)
 	ms.Add(ctx, AddParams{Type: "fact", Content: "m1", Embedding: emb})
 	ms.Add(ctx, AddParams{Type: "fact", Content: "m2", Embedding: emb})
 	ms.Add(ctx, AddParams{Type: "fact", Content: "m3", Embedding: emb})
@@ -1606,7 +1606,7 @@ func TestGetEmbeddingsWithTypes_NegativeLimit_DefaultLimit(t *testing.T) {
 	for i := range vec {
 		vec[i] = 0.1
 	}
-	emb := vecToBytes(vec)
+	emb := VecToBytes(vec)
 	ms.Add(ctx, AddParams{Type: "fact", Content: "m1", Embedding: emb})
 
 	results, err := ms.GetEmbeddingsWithTypes(ctx, -1)

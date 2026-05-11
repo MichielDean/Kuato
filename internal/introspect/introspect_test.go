@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MichielDean/LLMem/internal/ollama"
 	"github.com/MichielDean/LLMem/internal/store"
 )
 
@@ -706,5 +707,153 @@ func TestIntrospectAuto_WithModel(t *testing.T) {
 	}
 	if mem.Source != "introspect-auto" {
 		t.Errorf("expected source introspect-auto, got %q", mem.Source)
+	}
+}
+
+func TestIntrospectTranscript_WithFields(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	// Nil OllamaClient triggers graceful degradation (no LLM call)
+	id, err := IntrospectTranscript(ctx, ms, "User asked about Go testing conventions\nAssistant explained table-driven tests", "session-abc", nil, "")
+	if err != nil {
+		t.Fatalf("IntrospectTranscript: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty memory ID")
+	}
+
+	mem, err := ms.Get(context.Background(), id, false)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if mem == nil {
+		t.Fatal("expected memory to be stored")
+	}
+	if mem.Type != "self_assessment" {
+		t.Errorf("expected type self_assessment, got %q", mem.Type)
+	}
+	if mem.Source != "introspect" {
+		t.Errorf("expected source introspect, got %q", mem.Source)
+	}
+	if mem.Confidence != 0.8 {
+		t.Errorf("expected confidence 0.8, got %f", mem.Confidence)
+	}
+	if mem.Content == "" {
+		t.Error("expected non-empty content")
+	}
+}
+
+func TestIntrospectTranscript_EmptyTranscript(t *testing.T) {
+	ctx := context.Background()
+	ms := newTestStore(t)
+	_, err := IntrospectTranscript(ctx, ms, "", "session-abc", nil, "")
+	if err == nil {
+		t.Error("expected error for empty transcript")
+	}
+}
+
+func TestIntrospectTranscript_GracefulDegradation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	// Nil OllamaClient triggers graceful degradation
+	id, err := IntrospectTranscript(ctx, ms, "Some session transcript content here", "session-degrad", nil, "")
+	if err != nil {
+		t.Fatalf("IntrospectTranscript: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty memory ID even when OllamaClient is nil")
+	}
+
+	mem, _ := ms.Get(context.Background(), id, false)
+	if mem == nil {
+		t.Fatal("expected memory to be stored")
+	}
+	if mem.Content == "" {
+		t.Error("expected non-empty content even without LLM")
+	}
+	if !strings.Contains(mem.Content, "session-degrad") {
+		t.Errorf("expected degraded content to contain session ID, got %q", mem.Content)
+	}
+}
+
+func TestIntrospectTranscript_WithOllamaClient(t *testing.T) {
+	// Create a mock Ollama server that returns a structured self-assessment
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "test-model"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/generate" {
+			resp := map[string]string{
+				"response": "Category: PROJECT_STATE\nWhat_happened: Session reviewed testing patterns\nProposed_update: adopt table-driven tests",
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client, err := ollama.NewOllamaClient(ollama.OllamaClientConfig{
+		BaseURL:    server.URL,
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewOllamaClient: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	id, err := IntrospectTranscript(ctx, ms, "We discussed testing patterns and decided on table-driven tests", "session-client", client, "test-model")
+	if err != nil {
+		t.Fatalf("IntrospectTranscript: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty memory ID")
+	}
+
+	mem, err := ms.Get(context.Background(), id, false)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if mem == nil {
+		t.Fatal("expected memory to be stored")
+	}
+	if mem.Type != "self_assessment" {
+		t.Errorf("expected type self_assessment, got %q", mem.Type)
+	}
+	if mem.Content == "" {
+		t.Error("expected non-empty content from LLM response")
+	}
+}
+
+func TestIntrospectTranscript_NilOllamaClient_DegradedContent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	// nil OllamaClient means no LLM call — graceful degradation to plain content
+	id, err := IntrospectTranscript(ctx, ms, "Brief session notes", "session-nil-client", nil, "")
+	if err != nil {
+		t.Fatalf("IntrospectTranscript: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty memory ID")
+	}
+
+	mem, _ := ms.Get(context.Background(), id, false)
+	if mem == nil {
+		t.Fatal("expected memory to be stored")
+	}
+	// Degraded content should include the session ID
+	if !strings.Contains(mem.Content, "session-nil-client") {
+		t.Errorf("expected degraded content to include session ID, got %q", mem.Content)
 	}
 }

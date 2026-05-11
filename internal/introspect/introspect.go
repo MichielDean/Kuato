@@ -405,6 +405,115 @@ func callModel(ctx context.Context, model, baseURL, prompt string, timeout time.
 	return response, Enriched
 }
 
+// callModelWithClient calls the Ollama model using a pre-configured OllamaClient.
+// Returns empty string on failure (never panics).
+// If ollamaClient is nil, returns "" immediately (graceful no-op, no network call).
+// Uses a bounded timeout so callers never block indefinitely.
+func callModelWithClient(ctx context.Context, ollamaClient *ollama.OllamaClient, model, prompt string) string {
+	if ollamaClient == nil {
+		slog.Debug("llmem: introspect: no OllamaClient provided, using storage-only fallback")
+		return ""
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, callModelTimeout)
+	defer cancel()
+
+	if !ollamaClient.IsAvailable(timeoutCtx) {
+		slog.Debug("llmem: introspect: Ollama not available, using storage-only fallback")
+		return ""
+	}
+
+	response, err := ollamaClient.Generate(timeoutCtx, prompt, model)
+	if err != nil {
+		slog.Error("llmem: introspect: model call failed", "error", err)
+		return ""
+	}
+
+	return response
+}
+
+// IntrospectTranscript analyzes a session transcript and stores a self_assessment memory.
+// On LLM availability, it uses the model to produce a structured self-assessment from the
+// transcript content. On LLM failure, it falls back to a plain-text summary of the session.
+//
+// The ollamaClient parameter provides the configured Ollama connection. If nil,
+// IntrospectTranscript falls back to degraded storage immediately (no LLM call attempted).
+//
+// Contract: NEVER returns ("", nil) — either creates a memory or returns an error.
+// Even on LLM failure, a degraded memory is created.
+// Returns ("", error) only if the transcript is empty (validation error).
+func IntrospectTranscript(ctx context.Context, ms *store.MemoryStore, transcript string, sessionID string, ollamaClient *ollama.OllamaClient, model string) (string, error) {
+	if transcript == "" {
+		return "", fmtErr("transcript is required for introspection")
+	}
+	if model == "" {
+		model = defaultModel
+	}
+
+	var content string
+	prompt := buildTranscriptPrompt(transcript, sessionID)
+	llmResponse := callModelWithClient(ctx, ollamaClient, model, prompt)
+
+	if llmResponse != "" {
+		content = llmResponse
+	} else {
+		// Graceful degradation: build from provided fields
+		var lines []string
+		lines = append(lines, "Session_id: "+sessionID)
+		lines = append(lines, "Summary: session completed")
+		// Truncate transcript for storage if very long
+		transcriptExcerpt := transcript
+		if len(transcriptExcerpt) > 500 {
+			transcriptExcerpt = transcriptExcerpt[:500] + "..."
+		}
+		lines = append(lines, "Transcript_excerpt: "+transcriptExcerpt)
+		content = strings.Join(lines, "\n")
+	}
+
+	// Use context.Background() for the store operation to avoid data loss when
+	// the caller's context has expired (e.g., session-ending timeouts). The LLM
+	// call above respects ctx, but the final store must succeed regardless of
+	// context cancellation. This is intentional: IntrospectTranscript is called
+	// at session end and must persist its finding even if the original context
+	// has timed out. This differs from IntrospectFailure and LearnLesson which
+	// pass through ctx because they are called mid-session when the context is
+	// still alive.
+	id, err := ms.Add(context.Background(), store.AddParams{
+		Type:       "self_assessment",
+		Content:    content,
+		Source:     introspectSource,
+		Confidence: 0.8,
+	})
+	if err != nil {
+		return "", fmtErr("store self_assessment: %w", err)
+	}
+
+	slog.Info("llmem: introspect: stored transcript self_assessment", "id", id, "session_id", sessionID)
+	return id, nil
+}
+
+// buildTranscriptPrompt builds the prompt for transcript introspection.
+func buildTranscriptPrompt(transcript, sessionID string) string {
+	prompt := "Analyze the following session transcript and produce a structured self-assessment.\n\n"
+	prompt += "The session has ended. Identify key decisions, preferences, project state updates, " +
+		"and any lessons learned during this session.\n\n"
+	prompt += "Format each insight as a separate point:\n" +
+		"- What was decided and why\n" +
+		"- What preferences were expressed\n" +
+		"- What project state changed\n" +
+		"- What patterns or recurring issues appeared\n\n"
+	prompt += "Session ID: " + sessionID + "\n\n"
+
+	// Truncate very long transcripts to avoid overwhelming the model
+	transcriptExcerpt := transcript
+	if len(transcriptExcerpt) > 3000 {
+		transcriptExcerpt = transcriptExcerpt[:3000] + "\n...(truncated)"
+	}
+	prompt += "Transcript:\n" + transcriptExcerpt
+	prompt += "\n\nProduce a structured self-assessment of this session."
+	return prompt
+}
+
 // orDefault returns val if non-empty, otherwise returns defaultVal.
 func orDefault(val, defaultVal string) string {
 	if val != "" {

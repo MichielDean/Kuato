@@ -16,7 +16,10 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/MichielDean/LLMem/internal/embed"
+	"github.com/MichielDean/LLMem/internal/extract"
 	"github.com/MichielDean/LLMem/internal/introspect"
+	"github.com/MichielDean/LLMem/internal/ollama"
 	"github.com/MichielDean/LLMem/internal/paths"
 	"github.com/MichielDean/LLMem/internal/store"
 )
@@ -389,6 +392,21 @@ type SessionHookConfig struct {
 
 	// BaseURL is the Ollama base URL for introspection. Defaults to "http://localhost:11434" if zero.
 	BaseURL string
+
+	// ExtractionEngine extracts memories from text. If nil, idle and ending skip extraction.
+	ExtractionEngine *extract.ExtractionEngine
+
+	// Embedding generates embedding vectors. If nil, memories are stored without embeddings.
+	Embedding *embed.EmbeddingEngine
+
+	// OllamaClient is used for introspection in OnEnding. If nil, IntrospectTranscript
+	// falls back to degraded storage immediately (no LLM call attempted) and still
+	// produces a self_assessment memory with a plain-text session summary.
+	OllamaClient *ollama.OllamaClient
+
+	// IntrospectModel is the LLM model name for IntrospectTranscript.
+	// Defaults to "glm-5.1:cloud" if empty.
+	IntrospectModel string
 }
 
 // SessionHookCoordinator orchestrates memory operations for session lifecycle events.
@@ -397,6 +415,10 @@ type SessionHookCoordinator struct {
 	adapter          SessionAdapter
 	contextDir       string
 	debounceSeconds  int
+	extractor        *extract.ExtractionEngine
+	embedder         *embed.EmbeddingEngine
+	ollamaClient     *ollama.OllamaClient
+	introspectModel  string
 	lastIdle         map[string]time.Time
 	mu               sync.Mutex
 	model            string
@@ -430,6 +452,10 @@ func NewSessionHookCoordinator(cfg SessionHookConfig) (*SessionHookCoordinator, 
 		adapter:          cfg.Adapter,
 		contextDir:       contextDir,
 		debounceSeconds:  debounceSeconds,
+		extractor:        cfg.ExtractionEngine,
+		embedder:         cfg.Embedding,
+		ollamaClient:     cfg.OllamaClient,
+		introspectModel:  cfg.IntrospectModel,
 		lastIdle:         map[string]time.Time{},
 		model:            cfg.Model,
 		baseURL:          cfg.BaseURL,
@@ -496,7 +522,12 @@ func (c *SessionHookCoordinator) OnIdle(ctx context.Context, sessionID string) (
 		return ResultNoTranscript, nil
 	}
 
-	_ = transcript // transcript content would be used for extraction
+	// Extract memories from transcript if extraction engine is available
+	if c.extractor != nil {
+		extracted := c.extractMemories(ctx, transcript, validID)
+		_ = extracted // extracted count logged by extractMemories
+	}
+
 	logSessionEvent("idle", validID)
 	return ResultSuccess, nil
 }
@@ -566,7 +597,38 @@ func (c *SessionHookCoordinator) OnEnding(ctx context.Context, sessionID string)
 		return ResultNoTranscript, nil
 	}
 
-	_ = transcript // transcript content would be used for extraction
+	// Extract memories from transcript if extraction engine is available
+	if c.extractor != nil {
+		extracted := c.extractMemories(ctx, transcript, validID)
+		_ = extracted // extracted count logged by extractMemories
+	}
+
+	// Run introspection on the full session transcript.
+	// IntrospectTranscript handles nil OllamaClient gracefully by producing
+	// degraded self_assessment content (no LLM call attempted). Do NOT guard
+	// with c.ollamaClient != nil — that bypasses the function's own nil-client
+	// degradation and results in zero introspection memories for sessions with
+	// valid transcripts but no configured Ollama connection.
+	introspectID, err := introspect.IntrospectTranscript(ctx, c.store, transcript, validID, c.ollamaClient, c.introspectModel)
+	if err != nil {
+		slog.Warn("llmem: session: on_ending: introspect_transcript failed, storing degraded event", "error", err, "session_id", validID)
+		// Fall back to storing a simple session-end event.
+		// Use context.Background() for the fallback store operation since the
+		// calling context may have expired during the LLM call.
+		_, storeErr := c.store.Add(context.Background(), store.AddParams{
+			Type:       "event",
+			Content:    fmt.Sprintf("Session ended: %s", validID),
+			Source:     "session_end",
+			Confidence: 0.7,
+			Metadata:   map[string]any{"source_type": "session", "source_id": validID},
+		})
+		if storeErr != nil {
+			slog.Debug("llmem: session: on_ending: store session_end event failed", "error", storeErr, "session_id", validID)
+		}
+	} else {
+		slog.Debug("llmem: session: on_ending: stored introspect_transcript memory", "id", introspectID, "session_id", validID)
+	}
+
 	logSessionEvent("ending", validID)
 	return ResultSuccess, nil
 }
@@ -607,6 +669,85 @@ func (c *SessionHookCoordinator) OnEndingWithIntrospect(ctx context.Context, ses
 
 	logSessionEvent("ending_with_introspect", validID)
 	return ResultSuccess, memoryID, nil
+}
+
+// extractMemories extracts memories from a transcript, handles dedup via SupersedeBySource,
+// stores each extracted memory, embeds if possible, and logs the extraction.
+// Returns the number of memories successfully stored.
+// Errors are logged and gracefully degraded — this method never returns an error.
+func (c *SessionHookCoordinator) extractMemories(ctx context.Context, transcript, validID string) int {
+	// Supersede prior memories from this session before extracting fresh ones.
+	// OnIdle intentionally re-extracts as the conversation grows, so we
+	// invalidate old memories rather than checking IsExtracted.
+	superceded, err := c.store.SupersedeBySource(ctx, "session", validID)
+	if err != nil {
+		slog.Debug("llmem: session: supersede_by_source failed", "error", err, "session_id", validID)
+	} else if superceded > 0 {
+		slog.Debug("llmem: session: superseded prior session memories", "count", superceded, "session_id", validID)
+	}
+
+	extractedMaps := c.extractor.Extract(ctx, transcript)
+	if len(extractedMaps) == 0 {
+		slog.Debug("llmem: session: extraction returned no memories", "session_id", validID)
+		// Log the extraction event even if no memories were extracted
+		if logErr := c.store.LogExtraction(ctx, "session", validID, &transcript, 0); logErr != nil {
+			slog.Debug("llmem: session: log_extraction failed", "error", logErr, "session_id", validID)
+		}
+		return 0
+	}
+
+	storedCount := 0
+	for _, m := range extractedMaps {
+		memType, _ := m["type"].(string)
+		content, _ := m["content"].(string)
+		confidence, _ := m["confidence"].(float64)
+
+		// Default values per the spec
+		if memType == "" {
+			memType = "fact"
+		}
+		if content == "" {
+			continue // skip entries without content
+		}
+		if confidence == 0 {
+			confidence = 0.8
+		}
+
+		addParams := store.AddParams{
+			Type:       memType,
+			Content:    content,
+			Source:     "session",
+			Confidence: confidence,
+			Metadata:   map[string]any{"source_type": "session", "source_id": validID},
+		}
+
+		// Generate embedding if embedder is available
+		if c.embedder != nil {
+			embedding, embedErr := c.embedder.Embed(ctx, content)
+			if embedErr != nil {
+				slog.Debug("llmem: session: embedding failed, storing without embedding", "error", embedErr, "session_id", validID)
+			} else if len(embedding) > 0 {
+				addParams.Embedding = store.VecToBytes(embedding)
+			}
+		}
+
+		id, addErr := c.store.Add(ctx, addParams)
+		if addErr != nil {
+			slog.Debug("llmem: session: store extracted memory failed", "error", addErr, "session_id", validID)
+			continue
+		}
+		storedCount++
+
+		_ = id // ID is not needed further, but the store returned it
+	}
+
+	// Log the extraction event
+	if logErr := c.store.LogExtraction(ctx, "session", validID, &transcript, storedCount); logErr != nil {
+		slog.Debug("llmem: session: log_extraction failed", "error", logErr, "session_id", validID)
+	}
+
+	slog.Debug("llmem: session: extracted and stored memories", "count", storedCount, "session_id", validID)
+	return storedCount
 }
 
 // logSessionEvent logs a session event at debug level.

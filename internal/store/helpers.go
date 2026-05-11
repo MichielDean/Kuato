@@ -67,9 +67,9 @@ func escapeLike(query string) string {
 	return s
 }
 
-// bytesToVec decodes a packed float32 byte slice into a []float32.
+// BytesToVec decodes a packed float32 byte slice into a []float32.
 // Matches Python's struct.unpack(f"{dim}f", data).
-func bytesToVec(data []byte) []float32 {
+func BytesToVec(data []byte) []float32 {
 	if len(data) == 0 {
 		return nil
 	}
@@ -81,9 +81,9 @@ func bytesToVec(data []byte) []float32 {
 	return result
 }
 
-// vecToBytes encodes a []float32 into packed little-endian bytes.
+// VecToBytes encodes a []float32 into packed little-endian bytes.
 // Matches Python's struct.pack(f"{dim}f", *vec).
-func vecToBytes(vec []float32) []byte {
+func VecToBytes(vec []float32) []byte {
 	buf := make([]byte, len(vec)*4)
 	for i, v := range vec {
 		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))

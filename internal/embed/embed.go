@@ -6,11 +6,9 @@ package embed
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -261,28 +259,4 @@ func (e *EmbeddingEngine) CheckAvailable(ctx context.Context) bool {
 func (e *EmbeddingEngine) Close() error {
 	e.httpClient.CloseIdleConnections()
 	return nil
-}
-
-// vecToBytes encodes a []float32 into packed little-endian bytes.
-// Matches Python's struct.pack(f"{dim}f", *vec).
-func vecToBytes(vec []float32) []byte {
-	buf := make([]byte, len(vec)*4)
-	for i, v := range vec {
-		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
-	}
-	return buf
-}
-
-// bytesToVec decodes a packed float32 byte slice into a []float32.
-// Matches Python's struct.unpack(f"{dim}f", data).
-func bytesToVec(data []byte) []float32 {
-	if len(data) == 0 {
-		return nil
-	}
-	dim := len(data) / 4
-	result := make([]float32, dim)
-	for i := 0; i < dim; i++ {
-		result[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[i*4:]))
-	}
-	return result
 }
