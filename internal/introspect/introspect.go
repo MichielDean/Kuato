@@ -470,6 +470,14 @@ func IntrospectTranscript(ctx context.Context, ms *store.MemoryStore, transcript
 		content = strings.Join(lines, "\n")
 	}
 
+	// Use context.Background() for the store operation to avoid data loss when
+	// the caller's context has expired (e.g., session-ending timeouts). The LLM
+	// call above respects ctx, but the final store must succeed regardless of
+	// context cancellation. This is intentional: IntrospectTranscript is called
+	// at session end and must persist its finding even if the original context
+	// has timed out. This differs from IntrospectFailure and LearnLesson which
+	// pass through ctx because they are called mid-session when the context is
+	// still alive.
 	id, err := ms.Add(context.Background(), store.AddParams{
 		Type:       "self_assessment",
 		Content:    content,

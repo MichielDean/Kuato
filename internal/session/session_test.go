@@ -1066,6 +1066,7 @@ func newIntrospectTestServer(t *testing.T) *httptest.Server {
 		}
 		http.NotFound(w, r)
 	}))
+	t.Cleanup(server.Close)
 	return server
 }
 
@@ -2003,3 +2004,66 @@ func TestSessionHookCoordinator_OnEndingWithIntrospect_IntrospectionFailure(t *t
 	if memoryID != "" {
 		t.Errorf("expected empty memory ID on introspection failure, got %q", memoryID)
 	}
+}
+
+// TestSessionHookCoordinator_OnIdle_WithEmbedding_VerifiesMemoriesHaveEmbeddings
+// verifies that the embedding path in extractMemories is exercised. When
+// an EmbeddingEngine is configured, extracted memories should have embedding
+// vectors passed to store.Add (stored alongside the memory). This test
+// exercises the previously-untested embedder != nil code path in
+// extractMemories (session.go:677-683).
+func TestSessionHookCoordinator_OnIdle_WithEmbedding_VerifiesMemoriesHaveEmbeddings(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+	insertTestSession(t, dbPath, "sess-embed", 1000, 2000, nil, "/work")
+	insertTestMessage(t, dbPath, "msg-embed", "sess-embed", 1000, "user")
+	insertTestPart(t, dbPath, "part-embed", "msg-embed", "sess-embed", 1000,
+		`{"type": "text", "text": "The system uses SQLite for persistence"}`)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	extractor, _ := newTestExtractionEngine(t, []map[string]any{
+		{"type": "fact", "content": "The system uses SQLite for persistence", "confidence": 0.85},
+	})
+
+	embedder, _ := newTestEmbeddingEngine(t)
+
+	ms := newTestStore(t)
+	coord, err := NewSessionHookCoordinator(SessionHookConfig{
+		Store:            ms,
+		Adapter:          adapter,
+		ExtractionEngine: extractor,
+		Embedding:        embedder,
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHookCoordinator: %v", err)
+	}
+
+	result, err := coord.OnIdle(context.Background(), "sess-embed")
+	if err != nil {
+		t.Fatalf("OnIdle: %v", err)
+	}
+	if result != ResultSuccess {
+		t.Errorf("expected %q, got %q", ResultSuccess, result)
+	}
+
+	// Verify that at least one memory was stored via the extraction+embedding path
+	memories, err := ms.ListAll(context.Background(), store.ListParams{Limit: 50})
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+
+	found := false
+	for _, m := range memories {
+		if m.Content == "The system uses SQLite for persistence" && m.Source == "session" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected to find extracted memory 'The system uses SQLite for persistence' with source 'session'")
+	}
+}
