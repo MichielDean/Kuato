@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/MichielDean/LLMem/internal/ollama"
 	"github.com/MichielDean/LLMem/internal/store"
@@ -189,11 +190,17 @@ func buildLessonPrompt(params LearnLessonParams) string {
 	return prompt
 }
 
+const callModelTimeout = 30 * time.Second
+
 // callModel attempts to call the Ollama model. Returns empty string on failure (never panics).
+// Uses a bounded timeout so callers never block indefinitely.
 func callModel(ctx context.Context, model, baseURL, prompt string) string {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, callModelTimeout)
+	defer cancel()
 
 	client, err := ollama.NewOllamaClient(ollama.OllamaClientConfig{
 		BaseURL: baseURL,
@@ -203,12 +210,12 @@ func callModel(ctx context.Context, model, baseURL, prompt string) string {
 		return ""
 	}
 
-	if !client.IsAvailable(ctx) {
+	if !client.IsAvailable(timeoutCtx) {
 		slog.Debug("llmem: introspect: Ollama not available, using storage-only fallback")
 		return ""
 	}
 
-	response, err := client.Generate(ctx, prompt, model)
+	response, err := client.Generate(timeoutCtx, prompt, model)
 	if err != nil {
 		slog.Error("llmem: introspect: model call failed", "error", err)
 		return ""

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/MichielDean/LLMem/internal/store"
 )
@@ -29,13 +30,17 @@ func newTestStore(t *testing.T) *store.MemoryStore {
 }
 
 func TestIntrospectFailure_WithFields(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	ms := newTestStore(t)
-	id, err := IntrospectFailure(context.Background(), ms, IntrospectFailureParams{
+	id, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
 		WhatHappened: "swallowed error on database write",
 		Category:     "ERROR_HANDLING",
 		Context:      "writing to SQLite store",
 		CaughtBy:     "code review",
 		ProposedFix:  "always check error return values",
+		BaseURL:      "http://localhost:59998",
 	})
 	if err != nil {
 		t.Fatalf("IntrospectFailure: %v", err)
@@ -44,7 +49,6 @@ func TestIntrospectFailure_WithFields(t *testing.T) {
 		t.Error("expected non-empty memory ID")
 	}
 
-	// Verify the memory was stored
 	mem, err := ms.Get(context.Background(), id, false)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -61,10 +65,14 @@ func TestIntrospectFailure_WithFields(t *testing.T) {
 }
 
 func TestIntrospectFailure_UnknownCategory(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	ms := newTestStore(t)
-	id, err := IntrospectFailure(context.Background(), ms, IntrospectFailureParams{
+	id, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
 		WhatHappened: "test failure",
 		Category:     "UNKNOWN_CATEGORY",
+		BaseURL:      "http://localhost:59998",
 	})
 	if err != nil {
 		t.Fatalf("IntrospectFailure with unknown category: %v", err)
@@ -75,8 +83,9 @@ func TestIntrospectFailure_UnknownCategory(t *testing.T) {
 }
 
 func TestIntrospectFailure_EmptyWhatHappened(t *testing.T) {
+	ctx := context.Background()
 	ms := newTestStore(t)
-	_, err := IntrospectFailure(context.Background(), ms, IntrospectFailureParams{
+	_, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
 		WhatHappened: "",
 	})
 	if err == nil {
@@ -85,9 +94,11 @@ func TestIntrospectFailure_EmptyWhatHappened(t *testing.T) {
 }
 
 func TestIntrospectFailure_GracefulDegradation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	ms := newTestStore(t)
-	// Use unreachable Ollama URL — tests graceful degradation
-	id, err := IntrospectFailure(context.Background(), ms, IntrospectFailureParams{
+	id, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
 		WhatHappened: "test failure",
 		Category:     "NULL_SAFETY",
 		BaseURL:      "http://localhost:59999",
@@ -103,18 +114,21 @@ func TestIntrospectFailure_GracefulDegradation(t *testing.T) {
 	if mem == nil {
 		t.Fatal("expected memory to be stored")
 	}
-	// Should contain structured content from provided fields
 	if mem.Content == "" {
 		t.Error("expected non-empty content even without LLM")
 	}
 }
 
 func TestLearnLesson_WithFields(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	ms := newTestStore(t)
-	id, err := LearnLesson(context.Background(), ms, LearnLessonParams{
+	id, err := LearnLesson(ctx, ms, LearnLessonParams{
 		WhatWasWrong: "ignored error return value",
 		WhatIsCorrect: "always check error return values",
 		Context:      "database write operation",
+		BaseURL:      "http://localhost:59998",
 	})
 	if err != nil {
 		t.Fatalf("LearnLesson: %v", err)
@@ -158,7 +172,6 @@ func TestLearnLesson_EmptyFields(t *testing.T) {
 }
 
 func TestIntrospectFailure_WithModel(t *testing.T) {
-	// Setup test server that returns a structured response
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/tags" {
 			resp := map[string]any{"models": []map[string]string{{"name": "test-model"}}}
@@ -176,14 +189,17 @@ func TestIntrospectFailure_WithModel(t *testing.T) {
 	}))
 	defer server.Close()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	ms := newTestStore(t)
-	_, err := IntrospectFailure(context.Background(), ms, IntrospectFailureParams{
+	_, err := IntrospectFailure(ctx, ms, IntrospectFailureParams{
 		WhatHappened: "test failure",
 		Category:     "ERROR_HANDLING",
 		BaseURL:      server.URL,
 		Model:        "test-model",
 	})
-	_ = err // This test verifies the function doesn't panic with the test server
+	_ = err
 }
 
 func TestLearnLesson_WithModel(t *testing.T) {

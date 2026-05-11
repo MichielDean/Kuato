@@ -402,6 +402,67 @@ func TestMigration_DBCreatedSuccessfully(t *testing.T) {
 	}
 }
 
+func TestMigration_Vec0ObjectsDroppedBeforeMigration(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test_vec0_migration.db")
+
+	ctx := context.Background()
+
+	ms, err := NewMemoryStore(StoreConfig{DBPath: dbPath, DisableVec: true})
+	if err != nil {
+		t.Fatalf("NewMemoryStore: %v", err)
+	}
+
+	_, err = ms.Add(ctx, AddParams{Type: "fact", Content: "test memory for vec0 migration"})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	ms.Close()
+
+	rawDB, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+
+	_, err = rawDB.Exec(`CREATE TABLE IF NOT EXISTS "memories_vec_rowids" (rowid INTEGER PRIMARY KEY)`)
+	if err != nil {
+		t.Fatalf("create memories_vec_rowids: %v", err)
+	}
+	_, err = rawDB.Exec(`CREATE TABLE IF NOT EXISTS "memories_vec_chunks" (rowid INTEGER PRIMARY KEY)`)
+	if err != nil {
+		t.Fatalf("create memories_vec_chunks: %v", err)
+	}
+	_, err = rawDB.Exec(`CREATE TRIGGER IF NOT EXISTS "memories_vec_insert" AFTER INSERT ON "memories" WHEN new."embedding" IS NOT NULL BEGIN INSERT INTO "memories_vec_rowids"(rowid) VALUES(new."rowid"); END`)
+	if err != nil {
+		t.Fatalf("create vec0 insert trigger: %v", err)
+	}
+	rawDB.Close()
+
+	ms2, err := NewMemoryStore(StoreConfig{DBPath: dbPath, DisableVec: true})
+	if err != nil {
+		t.Fatalf("NewMemoryStore with vec0 artifacts: %v", err)
+	}
+	defer ms2.Close()
+
+	var count int
+	err = ms2.db.QueryRow(`SELECT count(*) FROM "memories" WHERE type = 'fact'`).Scan(&count)
+	if err != nil {
+		t.Fatalf("query after migration: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 fact memory after migration, got %d", count)
+	}
+
+	var triggerCount int
+	err = ms2.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name='memories_vec_insert'`).Scan(&triggerCount)
+	if err != nil {
+		t.Fatalf("query trigger count: %v", err)
+	}
+	if triggerCount != 0 {
+		t.Errorf("expected vec0 insert trigger to be dropped, found %d", triggerCount)
+	}
+}
+
 func TestHelpers_NowUTC(t *testing.T) {
 	result := nowUTC()
 	if result == "" {

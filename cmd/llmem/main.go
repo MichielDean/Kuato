@@ -624,14 +624,18 @@ func metricsCmd() *cobra.Command {
 
 func dreamCmd() *cobra.Command {
 	var (
-		applyVal  bool
-		phaseVal  string
-		reportVal string
+		applyVal   bool
+		dryRunVal  bool
+		phaseVal   string
+		reportVal  string
 	)
 	cmd := &cobra.Command{
 		Use:   "dream",
 		Short: "Run dream consolidation cycle",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if dryRunVal {
+				applyVal = false
+			}
 			ms, err := openStore()
 			if err != nil {
 				return err
@@ -684,6 +688,7 @@ func dreamCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&applyVal, "apply", false, "Apply changes (default: dry run)")
+	cmd.Flags().BoolVar(&dryRunVal, "dry-run", false, "Dry run only (default: true). Shorthand for omitting --apply.")
 	cmd.Flags().StringVar(&phaseVal, "phase", "", "Run specific phase: light, deep, rem (default: all)")
 	cmd.Flags().StringVar(&reportVal, "report", "", "Generate HTML dream report at this path")
 	return cmd
@@ -931,15 +936,25 @@ func contextCmd() *cobra.Command {
 
 func hookCmd() *cobra.Command {
 	var (
-		hookType   string
+		hookType     string
 		sessionIDVal string
 	)
 	cmd := &cobra.Command{
-		Use:   "hook",
+		Use:   "hook [type] [session-id]",
 		Short: "Handle session lifecycle hook events",
+		Args:  cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if hookType == "" && len(args) > 0 {
+				hookType = args[0]
+			}
+			if sessionIDVal == "" && len(args) > 1 {
+				sessionIDVal = args[1]
+			}
+			if hookType == "" {
+				return fmt.Errorf("llmem: hook: hook type is required (use --type or positional arg)")
+			}
 			if sessionIDVal == "" {
-				return fmt.Errorf("llmem: hook: --session-id is required")
+				return fmt.Errorf("llmem: hook: session-id is required (use --session-id or positional arg)")
 			}
 			ms, err := openStore()
 			if err != nil {
@@ -987,8 +1002,6 @@ func hookCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&hookType, "type", "", "Hook type: created, idle, compacting, ending")
 	cmd.Flags().StringVar(&sessionIDVal, "session-id", "", "Session ID")
-	cmd.MarkFlagRequired("type")
-	cmd.MarkFlagRequired("session-id")
 	return cmd
 }
 
