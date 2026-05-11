@@ -150,11 +150,11 @@ func openEmbeddingEngine() *embed.EmbeddingEngine {
 
 // openOllamaClient creates an OllamaClient for session hook introspection.
 // Returns nil on failure — the coordinator gracefully handles a nil client
-// by skipping introspection in OnEnding.
+// by falling back to degraded introspection in OnEnding (plain-text summary, no LLM).
 func openOllamaClient() *ollama.OllamaClient {
 	client, err := ollama.NewOllamaClient(ollama.OllamaClientConfig{})
 	if err != nil {
-		slog.Debug("llmem: failed to create Ollama client, skipping introspection", "error", err)
+		slog.Debug("llmem: failed to create Ollama client, falling back to degraded introspection", "error", err)
 		return nil
 	}
 	return client

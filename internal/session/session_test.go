@@ -831,7 +831,7 @@ func TestSessionHookCoordinator_OnEnding_WithAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OnEnding: %v", err)
 	}
-	// Without OllamaClient, extraction may run but introspect is skipped gracefully
+	// Without OllamaClient, extraction may run but IntrospectTranscript degrades gracefully
 	if result != ResultSuccess {
 		t.Errorf("expected %q, got %q", ResultSuccess, result)
 	}
