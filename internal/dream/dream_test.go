@@ -2,11 +2,16 @@ package dream
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/MichielDean/LLMem/internal/ollama"
 	"github.com/MichielDean/LLMem/internal/store"
 )
 
@@ -362,6 +367,36 @@ func setTimestamps(t *testing.T, ms *store.MemoryStore, id, createdAt, accessedA
 	}
 }
 
+// newTestOllamaClient creates an OllamaClient pointing at the given httptest server.
+// This mirrors the pattern used in extract_test.go.
+func newTestOllamaClient(t *testing.T, server *httptest.Server) *ollama.OllamaClient {
+	t.Helper()
+	client, err := ollama.NewOllamaClient(ollama.OllamaClientConfig{
+		BaseURL:    server.URL,
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("newTestOllamaClient: %v", err)
+	}
+	return client
+}
+
+// addSelfAssessment adds a self_assessment memory with the given category and content.
+func addSelfAssessment(t *testing.T, ms *store.MemoryStore, category, content string) string {
+	t.Helper()
+	fullContent := "Category: " + category + "\n" + content
+	id, err := ms.Add(context.Background(), store.AddParams{
+		Type:       "self_assessment",
+		Content:    fullContent,
+		Source:     "test",
+		Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("Add self_assessment: %v", err)
+	}
+	return id
+}
+
 func TestNewDreamer_DefaultStaleProcedureDays(t *testing.T) {
 	ms := newTestStore(t)
 	d, err := NewDreamer(DreamerConfig{Store: ms})
@@ -370,6 +405,79 @@ func TestNewDreamer_DefaultStaleProcedureDays(t *testing.T) {
 	}
 	if d.staleProcedureDays != defaultStaleProcedureDays {
 		t.Errorf("expected default stale procedure days %d, got %d", defaultStaleProcedureDays, d.staleProcedureDays)
+	}
+	if d.model != defaultDreamModel {
+		t.Errorf("expected default model %q, got %q", defaultDreamModel, d.model)
+	}
+}
+
+// TestNewDreamer_WithOllamaConfig verifies that OllamaClient and Model are properly
+// wired through the constructor.
+func TestNewDreamer_WithOllamaConfig(t *testing.T) {
+	ms := newTestStore(t)
+
+	// Create a test Ollama server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "test-model"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	ollamaClient := newTestOllamaClient(t, server)
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:        ms,
+		OllamaClient: ollamaClient,
+		Model:        "custom-model",
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	if d.ollama == nil {
+		t.Error("expected ollama client to be set")
+	}
+	if d.model != "custom-model" {
+		t.Errorf("expected model 'custom-model', got %q", d.model)
+	}
+
+	// Verify defaults are still applied for other fields
+	if d.similarityThreshold != defaultSimilarityThreshold {
+		t.Errorf("expected default similarity threshold %f, got %f", defaultSimilarityThreshold, d.similarityThreshold)
+	}
+
+	// Test with BaseURL instead of OllamaClient
+	d2, err := NewDreamer(DreamerConfig{
+		Store:      ms,
+		BaseURL:    server.URL,
+		HTTPClient: server.Client(),
+		Model:      "another-model",
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer with BaseURL: %v", err)
+	}
+	if d2.ollama == nil {
+		t.Error("expected ollama client to be created from BaseURL")
+	}
+	if d2.model != "another-model" {
+		t.Errorf("expected model 'another-model', got %q", d2.model)
+	}
+
+	// Test defaults: no OllamaClient, no BaseURL — should create client from default URL
+	d3, err := NewDreamer(DreamerConfig{Store: ms})
+	if err != nil {
+		t.Fatalf("NewDreamer defaults: %v", err)
+	}
+	if d3.model != defaultDreamModel {
+		t.Errorf("expected default model %q, got %q", defaultDreamModel, d3.model)
+	}
+	// The client should have been created from defaultBaseURL
+	if d3.ollama == nil {
+		t.Error("expected ollama client created from default URL")
 	}
 }
 
@@ -547,5 +655,490 @@ func TestDreamer_DeepPhase_NonProcedureNotDoubleDecayed(t *testing.T) {
 	expectedConf := 0.9 - 0.05
 	if mem.Confidence < expectedConf-0.01 || mem.Confidence > expectedConf+0.01 {
 		t.Errorf("expected non-procedure confidence ~%f (normal decay), got %f", expectedConf, mem.Confidence)
+	}
+}
+
+// TestDreamer_RemPhase_BehavioralInsight_WithLLM verifies that when Ollama is
+// available and categories exceed the threshold, extractBehavioralInsights produces
+// actionable procedural content via the LLM.
+func TestDreamer_RemPhase_BehavioralInsight_WithLLM(t *testing.T) {
+	ms := newTestStore(t)
+
+	// Add self_assessment memories with ERROR_HANDLING category (need >= 3)
+	for i := 0; i < 4; i++ {
+		addSelfAssessment(t, ms, "ERROR_HANDLING", "Missing error handling in HTTP call "+strings.Repeat("x", 20))
+	}
+
+	llmResponse := "After any external call (DB, HTTP, subprocess), add try/except with logging. Verify error paths execute by testing them. Check: llmem search ERROR_HANDLING --type self_assessment shows rate dropping."
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "glm-5.1:cloud"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/generate" {
+			resp := map[string]string{"response": llmResponse}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:        ms,
+		OllamaClient: newTestOllamaClient(t, server),
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(context.Background(), true, "rem")
+	if err != nil {
+		t.Fatalf("Run rem: %v", err)
+	}
+	if result.Rem == nil {
+		t.Fatal("expected Rem result")
+	}
+
+	insights := result.Rem.BehavioralInsights
+	if len(insights) == 0 {
+		t.Fatal("expected at least one behavioral insight for ERROR_HANDLING with 4 occurrences")
+	}
+
+	// Find ERROR_HANDLING insight
+	var found bool
+	for _, insight := range insights {
+		if insight.Category == "ERROR_HANDLING" {
+			found = true
+			if insight.ContentSnippet != llmResponse {
+				t.Errorf("expected LLM-generated content, got: %q", insight.ContentSnippet)
+			}
+			if insight.Count != 4 {
+				t.Errorf("expected count 4, got %d", insight.Count)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected ERROR_HANDLING insight not found")
+	}
+}
+
+// TestDreamer_RemPhase_BehavioralInsight_LLMFallback verifies that when Ollama is
+// unavailable, the method falls back to count-based format (current behavior).
+func TestDreamer_RemPhase_BehavioralInsight_LLMFallback(t *testing.T) {
+	ms := newTestStore(t)
+
+	// Add self_assessment memories with ERROR_HANDLING category (need >= 3)
+	for i := 0; i < 3; i++ {
+		addSelfAssessment(t, ms, "ERROR_HANDLING", "Missing error handler in function "+strings.Repeat("y", 10))
+	}
+
+	// Use a server that returns 404 on /api/tags so IsAvailable returns false immediately
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:        ms,
+		OllamaClient: newTestOllamaClient(t, server),
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(context.Background(), true, "rem")
+	if err != nil {
+		t.Fatalf("Run rem: %v", err)
+	}
+	if result.Rem == nil {
+		t.Fatal("expected Rem result")
+	}
+
+	insights := result.Rem.BehavioralInsights
+	if len(insights) == 0 {
+		t.Fatal("expected at least one behavioral insight even without Ollama")
+	}
+
+	// The content should be count-based fallback format
+	var found bool
+	for _, insight := range insights {
+		if insight.Category == "ERROR_HANDLING" {
+			found = true
+			// Should contain the count-based format
+			if !strings.Contains(insight.ContentSnippet, "Behavioral insight:") {
+				t.Errorf("expected fallback format to contain 'Behavioral insight:', got: %q", insight.ContentSnippet)
+			}
+			if !strings.Contains(insight.ContentSnippet, "ERROR_HANDLING") {
+				t.Errorf("expected fallback format to contain 'ERROR_HANDLING', got: %q", insight.ContentSnippet)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected ERROR_HANDLING insight in fallback")
+	}
+
+	// Also test: no OllamaClient but with BaseURL/HTTPClient pointing to a server
+	// that doesn't serve /api/tags correctly — IsAvailable returns false, falls back gracefully
+	ms2 := newTestStore(t)
+	for i := 0; i < 3; i++ {
+		addSelfAssessment(t, ms2, "RACE_CONDITION", "Race condition in concurrent access "+strings.Repeat("z", 10))
+	}
+
+	// Use a server that returns 404 for /api/tags (not available)
+	unavailServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer unavailServer.Close()
+
+	d2, err := NewDreamer(DreamerConfig{
+		Store:      ms2,
+		BaseURL:    unavailServer.URL,
+		HTTPClient: unavailServer.Client(),
+		// OllamaClient intentionally nil — will create from BaseURL
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer with unavailable BaseURL: %v", err)
+	}
+
+	result2, err := d2.Run(context.Background(), true, "rem")
+	if err != nil {
+		t.Fatalf("Run rem with unavailable Ollama: %v", err)
+	}
+	if result2.Rem == nil {
+		t.Fatal("expected Rem result with unavailable Ollama")
+	}
+
+	insights2 := result2.Rem.BehavioralInsights
+	if len(insights2) == 0 {
+		t.Fatal("expected at least one behavioral insight with unavailable Ollama")
+	}
+}
+
+// TestDreamer_RemPhase_BehavioralInsight_BelowThreshold verifies that categories
+// below the threshold (count < 3) do not produce insights.
+func TestDreamer_RemPhase_BehavioralInsight_BelowThreshold(t *testing.T) {
+	ms := newTestStore(t)
+
+	// Add only 2 self_assessment memories for ERROR_HANDLING (below threshold of 3)
+	addSelfAssessment(t, ms, "ERROR_HANDLING", "Small error issue one")
+	addSelfAssessment(t, ms, "ERROR_HANDLING", "Small error issue two")
+
+	// Also add a NULL_SAFETY with just 1 occurrence (also below threshold)
+	addSelfAssessment(t, ms, "NULL_SAFETY", "One null check missing")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Server is available but should never be called since no category exceeds threshold
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "glm-5.1:cloud"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		t.Error("unexpected LLM call for below-threshold category")
+		http.Error(w, "unexpected", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:        ms,
+		OllamaClient: newTestOllamaClient(t, server),
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(context.Background(), true, "rem")
+	if err != nil {
+		t.Fatalf("Run rem: %v", err)
+	}
+	if result.Rem == nil {
+		t.Fatal("expected Rem result")
+	}
+
+	if len(result.Rem.BehavioralInsights) != 0 {
+		t.Errorf("expected 0 insights for below-threshold categories, got %d", len(result.Rem.BehavioralInsights))
+	}
+}
+
+// TestDreamer_RemPhase_BehavioralInsight_ProposedMetadata verifies that generated
+// procedure memories have proposed:true, source:dream_rem, and category metadata.
+func TestDreamer_RemPhase_BehavioralInsight_ProposedMetadata(t *testing.T) {
+	ms := newTestStore(t)
+
+	// Add 3 self_assessment memories for ERROR_HANDLING
+	for i := 0; i < 3; i++ {
+		addSelfAssessment(t, ms, "ERROR_HANDLING", "Error handling gap "+strings.Repeat("a", 10))
+	}
+
+	llmResponse := "Always check error return values after external calls. Do: wrap every external call in try/except. Verify: check tests still pass after error path changes."
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "glm-5.1:cloud"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/generate" {
+			resp := map[string]string{"response": llmResponse}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:        ms,
+		OllamaClient: newTestOllamaClient(t, server),
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(context.Background(), true, "rem")
+	if err != nil {
+		t.Fatalf("Run rem: %v", err)
+	}
+
+	insights := result.Rem.BehavioralInsights
+	if len(insights) == 0 {
+		t.Fatal("expected at least one behavioral insight")
+	}
+
+	// Find the generated procedure memory and verify its metadata
+	var errorHandlingInsight BehavioralInsight
+	var found bool
+	for _, insight := range insights {
+		if insight.Category == "ERROR_HANDLING" {
+			errorHandlingInsight = insight
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected ERROR_HANDLING insight")
+	}
+
+	// The insight should have been stored as a procedure memory
+	if errorHandlingInsight.InsightID == "" {
+		t.Fatal("expected insight to have a non-empty InsightID (stored in the DB)")
+	}
+
+	// Retrieve the stored procedure memory and verify metadata
+	mem, err := ms.Get(context.Background(), errorHandlingInsight.InsightID, false)
+	if err != nil {
+		t.Fatalf("Get stored procedure: %v", err)
+	}
+
+	if mem.Type != "procedure" {
+		t.Errorf("expected type 'procedure', got %q", mem.Type)
+	}
+	if mem.Source != "dream_rem" {
+		t.Errorf("expected source 'dream_rem', got %q", mem.Source)
+	}
+
+	// Verify metadata fields — Metadata is map[string]any, no type assertion needed
+	if proposed, _ := mem.Metadata["proposed"].(bool); !proposed {
+		t.Errorf("expected proposed=true in metadata, got %v", mem.Metadata["proposed"])
+	}
+	if mem.Metadata["source"] != "dream_rem" {
+		t.Errorf("expected source='dream_rem' in metadata, got %v", mem.Metadata["source"])
+	}
+	if mem.Metadata["category"] != "ERROR_HANDLING" {
+		t.Errorf("expected category='ERROR_HANDLING' in metadata, got %v", mem.Metadata["category"])
+	}
+	if occ, ok := mem.Metadata["occurrences"].(float64); !ok || int(occ) != 3 {
+		t.Errorf("expected occurrences=3 in metadata, got %v", mem.Metadata["occurrences"])
+	}
+}
+
+// TestDreamer_RemPhase_BehavioralInsight_InvalidatesOld verifies that repeated REM
+// runs produce new insights and procedure memories are stored correctly.
+func TestDreamer_RemPhase_BehavioralInsight_InvalidatesOld(t *testing.T) {
+	ms := newTestStore(t)
+
+	// Add self_assessment memories
+	for i := 0; i < 3; i++ {
+		addSelfAssessment(t, ms, "ERROR_HANDLING", "Repeated error handling issue "+strings.Repeat("b", 10))
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "glm-5.1:cloud"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/generate" {
+			resp := map[string]string{"response": "First run insight content"}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:        ms,
+		OllamaClient: newTestOllamaClient(t, server),
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	// First REM run
+	result1, err := d.Run(context.Background(), true, "rem")
+	if err != nil {
+		t.Fatalf("Run 1: %v", err)
+	}
+	if len(result1.Rem.BehavioralInsights) == 0 {
+		t.Fatal("expected at least one insight in first run")
+	}
+
+	// The insight should have been stored with an ID
+	insight1 := result1.Rem.BehavioralInsights[0]
+	if insight1.InsightID == "" {
+		t.Fatal("expected InsightID after first REM run")
+	}
+
+	// Verify the procedure memory exists in the store
+	mem, err := ms.Get(context.Background(), insight1.InsightID, false)
+	if err != nil {
+		t.Fatalf("Get procedure memory: %v", err)
+	}
+	if mem.Type != "procedure" {
+		t.Errorf("expected type 'procedure', got %q", mem.Type)
+	}
+	if mem.Content != "First run insight content" {
+		t.Errorf("expected LLM response content, got %q", mem.Content)
+	}
+}
+
+// TestBuildBehavioralInsightPrompt verifies that the prompt builder includes the
+// category name, occurrence count, taxonomy description, and self_assessment samples.
+func TestBuildBehavioralInsightPrompt(t *testing.T) {
+	category := "ERROR_HANDLING"
+	count := 5
+	samples := []string{
+		"Missing try/except in HTTP call",
+		"Swallowed error in database query",
+		"Unhandled promise rejection in async function",
+	}
+
+	prompt := buildBehavioralInsightPrompt(category, count, samples)
+
+	// Verify category name is in the prompt
+	if !strings.Contains(prompt, "ERROR_HANDLING") {
+		t.Error("expected prompt to contain category name")
+	}
+
+	// Verify count is in the prompt
+	if !strings.Contains(prompt, "5") {
+		t.Error("expected prompt to contain occurrence count")
+	}
+
+	// Verify taxonomy description is in the prompt
+	if !strings.Contains(prompt, "Missing try/except") {
+		t.Error("expected prompt to contain taxonomy description for ERROR_HANDLING")
+	}
+
+	// Verify samples are included
+	for _, s := range samples {
+		if !strings.Contains(prompt, s) {
+			t.Errorf("expected prompt to contain sample %q", s)
+		}
+	}
+
+	// Verify prompt includes "Do" section guidance
+	if !strings.Contains(prompt, "Do") {
+		t.Error("expected prompt to contain 'Do' directive guidance")
+	}
+
+	// Verify prompt includes "Verify" section guidance
+	if !strings.Contains(prompt, "Verify") {
+		t.Error("expected prompt to contain 'Verify' step guidance")
+	}
+
+	// Verify prompt mentions word limit
+	if !strings.Contains(prompt, "200") {
+		t.Error("expected prompt to mention 200 word limit")
+	}
+}
+
+// TestBuildBehavioralInsightPrompt_EmptySamples verifies prompt generation with no samples.
+func TestBuildBehavioralInsightPrompt_EmptySamples(t *testing.T) {
+	prompt := buildBehavioralInsightPrompt("RACE_CONDITION", 3, nil)
+
+	if !strings.Contains(prompt, "RACE_CONDITION") {
+		t.Error("expected prompt to contain category name")
+	}
+	if !strings.Contains(prompt, "3") {
+		t.Error("expected prompt to contain occurrence count")
+	}
+	// Should not crash with nil samples
+}
+
+// TestDreamer_RemPhase_BehavioralInsight_LLMErrorFallback verifies that when
+// the LLM call fails (error response), the method falls back to count-based format.
+func TestDreamer_RemPhase_BehavioralInsight_LLMErrorFallback(t *testing.T) {
+	ms := newTestStore(t)
+
+	// Add self_assessment memories with ERROR_HANDLING category
+	for i := 0; i < 3; i++ {
+		addSelfAssessment(t, ms, "ERROR_HANDLING", "Error handling gap "+strings.Repeat("c", 10))
+	}
+
+	// Server that returns 500 for /api/generate but 200 for /api/tags (so IsAvailable returns true)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "glm-5.1:cloud"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/generate" {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	d, err := NewDreamer(DreamerConfig{
+		Store:        ms,
+		OllamaClient: newTestOllamaClient(t, server),
+	})
+	if err != nil {
+		t.Fatalf("NewDreamer: %v", err)
+	}
+
+	result, err := d.Run(context.Background(), true, "rem")
+	if err != nil {
+		t.Fatalf("Run rem: %v", err)
+	}
+	if result.Rem == nil {
+		t.Fatal("expected Rem result")
+	}
+
+	insights := result.Rem.BehavioralInsights
+	if len(insights) == 0 {
+		t.Fatal("expected at least one behavioral insight even when LLM fails")
+	}
+
+	// Should fall back to count-based format
+	var found bool
+	for _, insight := range insights {
+		if insight.Category == "ERROR_HANDLING" {
+			found = true
+			if !strings.Contains(insight.ContentSnippet, "Behavioral insight:") {
+				t.Errorf("expected fallback format with 'Behavioral insight:' when LLM fails, got: %q", insight.ContentSnippet)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected ERROR_HANDLING insight in LLM error fallback")
 	}
 }
