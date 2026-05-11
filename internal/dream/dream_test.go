@@ -1770,12 +1770,100 @@ func TestParseLLMDirectiveResponse_ExtractsDoLines(t *testing.T) {
 	if len(doLines) > 2 && !strings.Contains(doLines[2], "Log errors with context") {
 		t.Errorf("expected third do line about logging, got %q", doLines[2])
 	}
-	// Verify line should be extracted from the **Verify:** line
-	// Note: extractAfterColon finds the first ": " — in "**Verify:** Run...",
-	// the ": " after "Verify" is followed by "**", so extractAfterColon may not
-	// extract correctly for this format. If it fails to extract, the fallback is used.
+	// Verify line must be extracted from the **Verify:** line — not replaced by fallback.
+	// The markdown bold format **Verify:** has no colon-space pattern for extractAfterColon,
+	// so the parser must handle stripping the markdown bold markers.
 	if verifyLine == "" {
 		t.Error("expected non-empty verify line")
+	}
+	if !strings.Contains(verifyLine, "integration tests") {
+		t.Errorf("expected verify line to contain 'integration tests', got %q (likely fallback used instead of extracted content)", verifyLine)
+	}
+}
+
+// TestParseLLMDirectiveResponse_ExtractsVerifyFromBoldFormat verifies that
+// parseLLMDirectiveResponse correctly extracts Verify text from markdown bold
+// format (e.g., **Verify:** some text). The extractAfterColon helper cannot
+// find ": " in "**Verify:**" because the colon is followed by "**", so the
+// parser must strip bold markers before extracting.
+func TestParseLLMDirectiveResponse_ExtractsVerifyFromBoldFormat(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		category string
+		wantDo   []string // substrings that must appear in do lines
+		wantDoN  int      // expected number of do lines
+		wantVer  string   // substring that must appear in verify line
+	}{
+		{
+			name: "bold Verify with inline text",
+			response: `**Do:**
+- Always check return values from external calls
+
+**Verify:** Run integration tests with mock failures to confirm error paths execute.`,
+			category: "ERROR_HANDLING",
+			wantDoN:  1,
+			wantDo:   []string{"Always check return values"},
+			wantVer:  "integration tests",
+		},
+		{
+			name: "non-bold Verify with colon-space",
+			response: `Do:
+- Wrap every external call in try/except
+
+Verify: Run llmem search ERROR_HANDLING to confirm rate drops.`,
+			category: "ERROR_HANDLING",
+			wantDoN:  1,
+			wantDo:   []string{"Wrap every external call"},
+			wantVer:  "llmem search",
+		},
+		{
+			name: "bold Do and bold Verify",
+			response: `**Do:**
+- Check error return values
+- Add defensive nil checks
+- Log errors with context
+
+**Verify:** Run automated tests covering error paths.`,
+			category: "NIL_POINTER",
+			wantDoN:  3,
+			wantDo:   []string{"Check error return values", "Add defensive nil checks", "Log errors with context"},
+			wantVer:  "automated tests",
+		},
+		{
+			name: "Verify on own line after bold header",
+			response: `**Do:**
+- Review recent changes for missing error handling
+
+**Verify:**
+Run llmem search ERROR_HANDLING to confirm reduction in occurrences.`,
+			category: "ERROR_HANDLING",
+			wantDoN:  1,
+			wantDo:   []string{"Review recent changes"},
+			wantVer:  "llmem search",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doLines, verifyLine := parseLLMDirectiveResponse(tt.response, tt.category)
+
+			if len(doLines) != tt.wantDoN {
+				t.Errorf("expected %d do lines, got %d: %v", tt.wantDoN, len(doLines), doLines)
+			}
+			for i, want := range tt.wantDo {
+				if i >= len(doLines) {
+					t.Errorf("missing do line %d: expected to contain %q", i, want)
+					continue
+				}
+				if !strings.Contains(doLines[i], want) {
+					t.Errorf("do line %d: expected to contain %q, got %q", i, want, doLines[i])
+				}
+			}
+			if !strings.Contains(verifyLine, tt.wantVer) {
+				t.Errorf("expected verify line to contain %q, got %q", tt.wantVer, verifyLine)
+			}
+		})
 	}
 }
 

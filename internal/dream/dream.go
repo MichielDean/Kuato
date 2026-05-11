@@ -989,24 +989,44 @@ func (d *Dreamer) WriteProposedChanges(result *DreamResult) error {
 func parseLLMDirectiveResponse(response string, category string) ([]string, string) {
 	var doLines []string
 	var verifyLine string
+	var pastVerifyHeader bool
 
 	lines := strings.Split(response, "\n")
 	var inDoSection bool
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
+
+		// Detect Do section header (handles both "Do:" and "**Do:**" formats)
 		if strings.HasPrefix(trimmed, "Do") || strings.HasPrefix(trimmed, "**Do") {
 			inDoSection = true
+			pastVerifyHeader = false
 			continue
 		}
+
+		// Detect Verify section header (handles both "Verify:" and "**Verify:**" formats)
 		if strings.HasPrefix(trimmed, "Verify") || strings.HasPrefix(trimmed, "**Verify") {
 			inDoSection = false
-			// Extract verify content from same or next line
-			afterColon := extractAfterColon(trimmed)
+			// Strip markdown bold markers (**) so "**Verify:** text" becomes "Verify: text"
+			// before extracting content after the colon.
+			stripped := strings.ReplaceAll(trimmed, "**", "")
+			afterColon := extractAfterColon(stripped)
 			if afterColon != "" {
 				verifyLine = afterColon
+				pastVerifyHeader = false
+			} else {
+				// Verify header has no inline content; next non-empty line is the verify text
+				pastVerifyHeader = true
 			}
 			continue
 		}
+
+		// If we just saw a bare Verify header, the next non-empty line is the verify content
+		if pastVerifyHeader && trimmed != "" {
+			verifyLine = trimmed
+			pastVerifyHeader = false
+			continue
+		}
+
 		if inDoSection && (strings.HasPrefix(trimmed, "-") || strings.HasPrefix(trimmed, "*") || strings.HasPrefix(trimmed, "1.") || strings.HasPrefix(trimmed, "2.") || strings.HasPrefix(trimmed, "3.") || strings.HasPrefix(trimmed, "4.") || strings.HasPrefix(trimmed, "5.")) {
 			cleaned := strings.TrimPrefix(trimmed, "- ")
 			cleaned = strings.TrimPrefix(cleaned, "* ")
@@ -1018,9 +1038,6 @@ func parseLLMDirectiveResponse(response string, category string) ([]string, stri
 			if cleaned != "" {
 				doLines = append(doLines, cleaned)
 			}
-		} else if !inDoSection && verifyLine == "" && trimmed != "" {
-			// If we didn't find a Verify: prefix, look for the line after "Verify"
-			// that could be the verification content
 		}
 	}
 
