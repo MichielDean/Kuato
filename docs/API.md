@@ -1159,7 +1159,6 @@ cfg, err := config.LoadConfig(paths.GetConfigPath())
 // Access config sections
 dbPath := cfg.DBPath()           // resolved database path
 ollamaURL, err := cfg.OllamaURL() // validated Ollama URL
-callModelTimeout := cfg.CallModelTimeoutDuration() // parsed call_model_timeout (default 5m)
 dreamerCfg := cfg.DreamerConfig() // DreamerConfig for dream.NewDreamer()
 dreamCfg := cfg.DreamConfigResolved()
 sessionCfg := cfg.SessionConfigResolved()
@@ -1179,14 +1178,13 @@ type Config struct {
 }
 
 type MemoryConfig struct {
-    DBPath             string
-    OllamaURL          string
-    EmbedModel         string
-    ExtractModel       string
-    ContextBudget      int
-    AutoExtract        bool
-    MaxFileSize        int64
-    CallModelTimeout   string   // Go duration string (e.g. "5m", "120s") for introspect/learn LLM calls
+    DBPath        string
+    OllamaURL     string
+    EmbedModel    string
+    ExtractModel  string
+    ContextBudget int
+    AutoExtract   bool
+    MaxFileSize   int64
 }
 
 type DreamConfig struct {
@@ -1205,7 +1203,6 @@ type DreamConfig struct {
     StaleProcedureDays       int
     OllamaURL               string
     Model                    string
-    ModelTimeout             string   // Go duration string for REM behavioral insight LLM calls
 }
 
 type SessionConfig struct {
@@ -1259,56 +1256,32 @@ The `internal/introspect` package provides failure analysis and lesson learning 
 ```go
 import "github.com/MichielDean/LLMem/internal/introspect"
 
-result, err := introspect.IntrospectFailure(ctx, ms, introspect.IntrospectFailureParams{
+id, err := introspect.IntrospectFailure(ctx, ms, introspect.IntrospectFailureParams{
     WhatHappened: "null pointer dereference",
     Category:     "NULL_SAFETY",
     Context:      "handler.go:42",
     CaughtBy:     "self-review",
     ProposedFix:  "add nil check",
 })
-// result.MemoryID  → stored memory ID (always non-empty on success)
-// result.Content   → stored memory content
-// result.LLMStatus → Enriched, Skipped, or Disabled
 
-result, err := introspect.LearnLesson(ctx, ms, introspect.LearnLessonParams{
+id, err := introspect.LearnLesson(ctx, ms, introspect.LearnLessonParams{
     WhatWasWrong:  "used global state",
     WhatIsCorrect: "inject dependency via constructor",
     Context:       "service.go:15",
-    NoLLM:         true,  // skip LLM entirely → LLMStatus = Disabled
 })
 ```
 
-Both functions use LLM expansion via Ollama when available. When Ollama is unavailable, they gracefully degrade to storage-only mode (storing the raw parameters without LLM expansion, with `LLMStatus = Skipped`). When `NoLLM` is true, LLM is bypassed entirely (`LLMStatus = Disabled`).
+Both functions use LLM expansion via Ollama when available. When Ollama is unavailable, they gracefully degrade to storage-only mode (storing the raw parameters without LLM expansion).
 
-#### LLMEnrichment Status
-
-The `LLMEnrichment` type indicates whether LLM enrichment was applied:
-
-| Value | Constant | Meaning |
-|-------|----------|---------|
-| `"enriched"` | `Enriched` | LLM successfully generated structured content |
-| `"skipped"` | `Skipped` | LLM was unavailable or timed out; raw fields stored |
-| `"disabled"` | `Disabled` | Caller explicitly set `NoLLM=true` |
-
-#### Result Types
+#### IntrospectAuto
 
 ```go
-type IntrospectResult struct {
-    MemoryID   string         // Always non-empty on success
-    Content    string         // Stored memory content
-    LLMStatus  LLMEnrichment  // Enriched, Skipped, or Disabled
-}
-
-type LearnResult struct {
-    MemoryID   string         // Always non-empty on success
-    Content    string         // Stored memory content
-    LLMStatus  LLMEnrichment  // Enriched, Skipped, or Disabled
-}
+id, err := introspect.IntrospectAuto(ctx, ms, "Session transcript text...", "glm-5.1:cloud", "http://localhost:11434")
 ```
 
-#### Timeout Configuration
+`IntrospectAuto` performs automatic introspection on arbitrary text (typically a session transcript) and stores a `self_assessment` memory. When Ollama is available, it uses the LLM to expand the introspection into a richer assessment; when unavailable, it stores the raw text directly (graceful degradation). The `model` and `baseURL` parameters default to `"glm-5.1:cloud"` and `"http://localhost:11434"` respectively when empty.
 
-Both `IntrospectFailureParams` and `LearnLessonParams` accept a `Timeout` field (Go `time.Duration`). When zero, defaults to 5 minutes. Values below 10 seconds are rejected with an error. The CLI `--timeout` flag and the `call_model_timeout` config setting both feed into this field.
+Contract: never returns `("", nil)` — either creates a memory or returns an error. Even on LLM failure, a storage-only memory is created.
 
 ### Ollama Client (internal/ollama)
 
@@ -1475,6 +1448,8 @@ type SessionHookConfig struct {
     Adapter         SessionAdapter      // Provides session content. nil → no_transcript
     DebounceSeconds int                 // Min interval between idle events. Default: 30
     ContextDir      string              // Directory for context files. Default: paths.GetContextDir()
+    Model           string              // LLM model for introspection. Default: "glm-5.1:cloud"
+    BaseURL         string              // Ollama base URL for introspection. Default: "http://localhost:11434"
 }
 ```
 
@@ -1490,6 +1465,13 @@ result, err := coord.OnCreated(ctx, "session-id")       // "success" | "already_
 result, err := coord.OnIdle(ctx, "session-id")          // "success" | "debounced" | "no_transcript"
 resultType, ctxPath, err := coord.OnCompacting(ctx, "session-id")  // "success" | "no_memories"
 result, err := coord.OnEnding(ctx, "session-id")         // "success"
+
+// OnEndingWithIntrospect: like OnEnding, but also performs automatic introspection
+resultType, memoryID, err := coord.OnEndingWithIntrospect(ctx, "session-id")
+// Returns: ("success", memoryID, nil) on success
+//         ("no_transcript", "", nil) when adapter is nil or transcript is empty
+//         ("success", "", nil) when introspection fails (logs warning, doesn't crash)
+//         ("error", "", err) on validation error
 ```
 
 All methods validate session IDs via `paths.ValidateSessionID` to prevent path traversal. OnIdle includes a 30-second debounce mechanism.

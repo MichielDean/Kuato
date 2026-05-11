@@ -131,7 +131,8 @@ llmem context --compacting --session-id <session_id>  # Inject key memories duri
 # Session lifecycle hooks
 llmem hook --type idle --session-id <session_id>      # Memory extraction + introspection
 llmem hook --type created --session-id <session_id>   # Context injection on session start
-llmem hook --type ending --session-id <session_id>    # Introspection on session end
+llmem hook --type ending --session-id <session_id>    # Automatic introspection on session end
+llmem hook --type ending --session-id <session_id> --model glm-5.1:cloud --base-url http://localhost:11434
 llmem hook --type compacting --session-id <session_id># Context during compaction
 
 # Dream — background consolidation (decay, boost, promote, merge)
@@ -146,8 +147,16 @@ llmem dream --apply --report /path/to/report.html         # Generate HTML dream 
 # Learn a lesson from a wrong→right correction
 llmem learn --wrong "called wrong function" --right "call correctFunction() instead" --context "handler.py:42"
 
-# Introspect — analyze a failure and store self_assessment memory (manual mode)
+# Introspect — analyze a failure and store self_assessment memory
+
+# Manual mode: specify fields directly
 llmem introspect --category NULL_SAFETY --what-happened "missing null check" --context "handler.py:42" --caught-by self-review --proposed-fix "always check for None before .field"
+llmem introspect --category NULL_SAFETY --what-happened "missing null check" --model glm-5.1:cloud --base-url http://localhost:11434
+
+# Automatic mode: introspect a session transcript or arbitrary text
+llmem introspect --auto --session <session-id>                      # Read transcript from OpenCode adapter
+llmem introspect --auto --text "Encountered a null pointer error"   # Introspect arbitrary text
+llmem introspect --auto --session <session-id> --model glm-5.1:cloud --base-url http://localhost:11434
 
 # Track review findings as self_assessment memories (automatic post-review hook)
 llmem track-review --single --category NULL_SAFETY --context "handler.py:42"  # Single finding (uses --single flag)
@@ -213,7 +222,7 @@ final_score = rrf_score * (1 - blend) + weighted_signal * blend
 - **ANN vector index** — semantic search uses sqlite-vec (`vec0` virtual table) for fast ANN retrieval, with automatic fallback to brute-force cosine similarity if sqlite-vec is not available.
 - **Confidence** is 0.0-1.0. Higher = more certain. Facts from the user directly should be 0.9+, auto-extracted should be 0.7.
 - **Context generation** is what gets injected into the system prompt for context. Use `llmem context --session-id <id>` to preview what gets injected.
-- **Session hooks** use `llmem hook --type <idle|created|ending|compacting> --session-id <id>`. The idle hook processes the session's transcript, extracts memories, and runs introspection automatically.
+- **Session hooks** use `llmem hook --type <idle|created|ending|compacting> --session-id <id>`. The idle hook processes the session's transcript, extracts memories, and runs introspection automatically. The ending hook performs automatic introspection on the session transcript and stores a `self_assessment` memory; use `--model` and `--base-url` to configure the LLM for introspection.
 - **Access tracking** — `llmem get` is read-only and does not update `access_count` or `accessed_at`. Search operations automatically track access — each returned result's `access_count` and `accessed_at` are updated (best-effort).
 - **Calibration status metadata** — procedure memories created by behavioral insights receive `calibration_status` (trend: `decreasing`, `stable`, or `increasing`) and `calibrated_at` metadata when calibration runs. Stale procedures get `stale_procedure: true` and `stale_at` metadata. These are visible via `llmem get <id>`.
 - **Review outcome tracking** — `llmem track-review` persists review findings as `self_assessment` memories. Three modes: `--single` for a single finding, `--findings <file>` for batch from JSON, or no flags for a clean review (creates `REVIEW_PASSED` memory). Use `--clean` to invalidate all existing track-review memories before storing new ones.

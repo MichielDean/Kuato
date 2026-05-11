@@ -16,6 +16,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/MichielDean/LLMem/internal/introspect"
 	"github.com/MichielDean/LLMem/internal/paths"
 	"github.com/MichielDean/LLMem/internal/store"
 )
@@ -382,6 +383,12 @@ type SessionHookConfig struct {
 
 	// ContextDir is the directory for writing context files. Defaults from paths.GetContextDir().
 	ContextDir string
+
+	// Model is the LLM model name for introspection. Defaults to "glm-5.1:cloud" if zero.
+	Model string
+
+	// BaseURL is the Ollama base URL for introspection. Defaults to "http://localhost:11434" if zero.
+	BaseURL string
 }
 
 // SessionHookCoordinator orchestrates memory operations for session lifecycle events.
@@ -392,6 +399,8 @@ type SessionHookCoordinator struct {
 	debounceSeconds  int
 	lastIdle         map[string]time.Time
 	mu               sync.Mutex
+	model            string
+	baseURL          string
 }
 
 // fmtErr wraps an error with the "llmem: session:" domain prefix.
@@ -422,6 +431,8 @@ func NewSessionHookCoordinator(cfg SessionHookConfig) (*SessionHookCoordinator, 
 		contextDir:       contextDir,
 		debounceSeconds:  debounceSeconds,
 		lastIdle:         map[string]time.Time{},
+		model:            cfg.Model,
+		baseURL:          cfg.BaseURL,
 	}, nil
 }
 
@@ -558,6 +569,44 @@ func (c *SessionHookCoordinator) OnEnding(ctx context.Context, sessionID string)
 	_ = transcript // transcript content would be used for extraction
 	logSessionEvent("ending", validID)
 	return ResultSuccess, nil
+}
+
+// OnEndingWithIntrospect handles the session.ending event with automatic introspection.
+// It reads the session transcript and generates a self_assessment memory via
+// introspect.IntrospectAuto. Returns (resultType, memoryID, error).
+// When adapter is nil or transcript is empty, returns (ResultNoTranscript, "", nil).
+// On success, returns (ResultSuccess, memoryID, nil).
+// If introspection fails but transcript was read, logs a warning and returns
+// (ResultSuccess, "", nil) — the session hook should not fail the ending event.
+func (c *SessionHookCoordinator) OnEndingWithIntrospect(ctx context.Context, sessionID string) (string, string, error) {
+	validID, err := paths.ValidateSessionID(sessionID)
+	if err != nil {
+		return ResultError, "", fmtErr("on_ending_with_introspect: validate session ID: %w", err)
+	}
+
+	// If no adapter, no transcript
+	if c.adapter == nil {
+		return ResultNoTranscript, "", nil
+	}
+
+	transcript, err := c.adapter.ReadTranscript(validID)
+	if err != nil {
+		return ResultError, "", fmtErr("on_ending_with_introspect: read transcript: %w", err)
+	}
+	if transcript == "" {
+		return ResultNoTranscript, "", nil
+	}
+
+	memoryID, err := introspect.IntrospectAuto(ctx, c.store, transcript, c.model, c.baseURL)
+	if err != nil {
+		// Introspection failed, but the session hook should not crash the ending event.
+		// Log a warning and return success with empty memoryID.
+		slog.Warn("llmem: session: on_ending_with_introspect: introspection failed", "error", err)
+		return ResultSuccess, "", nil
+	}
+
+	logSessionEvent("ending_with_introspect", validID)
+	return ResultSuccess, memoryID, nil
 }
 
 // logSessionEvent logs a session event at debug level.

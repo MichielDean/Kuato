@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -538,5 +539,172 @@ func TestLearnLesson_WithModel(t *testing.T) {
 	}
 	if result.LLMStatus != Enriched {
 		t.Errorf("expected LLMStatus Enriched with mock server, got %q", result.LLMStatus)
+	}
+}
+
+func TestIntrospectAuto_WithText(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	id, err := IntrospectAuto(ctx, ms, "Encountered a null pointer error when processing user input", "", "http://localhost:59999")
+	if err != nil {
+		t.Fatalf("IntrospectAuto: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty memory ID")
+	}
+
+	mem, err := ms.Get(context.Background(), id, false)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if mem == nil {
+		t.Fatal("expected memory to be stored")
+	}
+	if mem.Type != "self_assessment" {
+		t.Errorf("expected type self_assessment, got %q", mem.Type)
+	}
+	if mem.Source != "introspect-auto" {
+		t.Errorf("expected source introspect-auto, got %q", mem.Source)
+	}
+	if mem.Content == "" {
+		t.Error("expected non-empty content even without LLM")
+	}
+}
+
+func TestIntrospectAuto_WithTextAndModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "test-model"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/generate" {
+			resp := map[string]string{
+				"response": "Category: NULL_SAFETY\nWhat_happened: null pointer when processing input\nProposed_update: add null checks",
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	id, err := IntrospectAuto(ctx, ms, "Got null pointer error processing input", "test-model", server.URL)
+	if err != nil {
+		t.Fatalf("IntrospectAuto with model: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty memory ID")
+	}
+
+	mem, err := ms.Get(context.Background(), id, false)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if mem == nil {
+		t.Fatal("expected memory to be stored")
+	}
+	if mem.Source != "introspect-auto" {
+		t.Errorf("expected source introspect-auto, got %q", mem.Source)
+	}
+	// With LLM response, content should be from the model
+	if mem.Content == "" {
+		t.Error("expected non-empty content from LLM")
+	}
+}
+
+func TestIntrospectAuto_EmptyText(t *testing.T) {
+	ctx := context.Background()
+	ms := newTestStore(t)
+	_, err := IntrospectAuto(ctx, ms, "", "", "")
+	if err == nil {
+		t.Error("expected error for empty text")
+	}
+	if err.Error() != "llmem: introspect: text is required" {
+		t.Errorf("expected 'text is required' error, got: %v", err)
+	}
+}
+
+func TestIntrospectAuto_GracefulDegradation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	// Point at a non-existent Ollama URL to trigger graceful degradation
+	id, err := IntrospectAuto(ctx, ms, "test failure in error handling", "", "http://localhost:59999")
+	if err != nil {
+		t.Fatalf("IntrospectAuto graceful degradation: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty memory ID even when Ollama is unavailable")
+	}
+
+	mem, _ := ms.Get(context.Background(), id, false)
+	if mem == nil {
+		t.Fatal("expected memory to be stored")
+	}
+	if mem.Content == "" {
+		t.Error("expected non-empty content even without LLM")
+	}
+	// Graceful degradation content should start with "What_happened: " followed by the text
+	if !strings.HasPrefix(mem.Content, "What_happened: ") {
+		t.Errorf("expected content to start with 'What_happened: ', got: %q", mem.Content)
+	}
+	if mem.Source != "introspect-auto" {
+		t.Errorf("expected source introspect-auto, got %q", mem.Source)
+	}
+	if mem.Confidence != 0.9 {
+		t.Errorf("expected confidence 0.9, got %f", mem.Confidence)
+	}
+}
+
+func TestIntrospectAuto_WithModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			resp := map[string]any{"models": []map[string]string{{"name": "test-model"}}}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/generate" {
+			resp := map[string]string{
+				"response": "Category: EDGE_CASE\nWhat_happened: unhandled input case\nProposed_update: add input validation",
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ms := newTestStore(t)
+	id, err := IntrospectAuto(ctx, ms, "Edge case with empty slice", "test-model", server.URL)
+	if err != nil {
+		t.Fatalf("IntrospectAuto with model: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty memory ID")
+	}
+
+	mem, err := ms.Get(context.Background(), id, false)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if mem == nil {
+		t.Fatal("expected memory to be stored")
+	}
+	if mem.Type != "self_assessment" {
+		t.Errorf("expected type self_assessment, got %q", mem.Type)
+	}
+	if mem.Source != "introspect-auto" {
+		t.Errorf("expected source introspect-auto, got %q", mem.Source)
 	}
 }
