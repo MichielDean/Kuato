@@ -80,7 +80,12 @@ func NewOpenCodeAdapter(dbPath string) (*OpenCodeAdapter, error) {
 
 	// Open the database in read-only mode — we must not modify the external
 	// OpenCode database. No WAL pragma or migrations are applied.
-	db, err := sql.Open("sqlite", dbPath+"?mode=ro")
+	// The "file:" URI prefix is required so modernc.org/sqlite processes the
+	// mode=ro parameter via SQLite's URI mechanism. Without "file:", the
+	// driver strips query parameters and opens with READWRITE|CREATE flags,
+	// silently ignoring mode=ro.
+	dsn := "file:" + dbPath + "?mode=ro"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmtErr("open opencode db %s: %w", dbPath, err)
 	}

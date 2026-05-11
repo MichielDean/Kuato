@@ -457,6 +457,27 @@ func TestSessionHookCoordinator_OnEnding_UsesValidatedID(t *testing.T) {
 	}
 }
 
+func TestOpenCodeAdapter_ReadOnlyDB(t *testing.T) {
+	dbPath := createTestOpenCodeDB(t)
+
+	adapter, err := NewOpenCodeAdapter(dbPath)
+	if err != nil {
+		t.Fatalf("NewOpenCodeAdapter: %v", err)
+	}
+	t.Cleanup(func() { adapter.Close() })
+
+	// The adapter opens the DB in read-only mode (mode=ro).
+	// Verify that write operations are rejected, confirming mode=ro is effective.
+	// Using the adapter's underlying db handle directly to attempt a write.
+	writeErr := func() error {
+		_, err := adapter.db.Exec("INSERT INTO session (id) VALUES ('ro-test')")
+		return err
+	}()
+	if writeErr == nil {
+		t.Error("expected write to fail on read-only database, but it succeeded — mode=ro not enforced")
+	}
+}
+
 func TestOpenCodeAdapter_Close_Idempotent(t *testing.T) {
 	dbPath := createTestOpenCodeDB(t)
 	adapter, err := NewOpenCodeAdapter(dbPath)
