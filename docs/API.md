@@ -1200,6 +1200,7 @@ type DreamConfig struct {
     BehavioralThreshold      int
     BehavioralLookbackDays   int
     AutoLinkThreshold        float64
+    StaleProcedureDays       int
 }
 
 type SessionConfig struct {
