@@ -18,6 +18,12 @@ function run(cmd, args, timeout) {
   }
 }
 
+function runAsync(cmd, args, label) {
+  const child = child_process.spawn(cmd, args, { detached: true, stdio: "ignore" })
+  child.unref()
+  log("spawned async: " + label + " (pid=" + child.pid + ")")
+}
+
 // Track modified files during this session
 const modifiedFiles = new Set()
 let trackReviewRan = false
@@ -69,7 +75,7 @@ export const LLMemPlugin = async ({ $, client }) => {
         const sessionId = event.properties?.sessionID || currentSessionId || ""
         log("session.idle: " + sessionId + (currentSessionId ? " (cached)" : " (from event)"))
         if (sessionId) {
-          run(LLMEM, ["hook", "--type", "idle", "--session-id", sessionId])
+          runAsync(LLMEM, ["hook", "--type", "idle", "--session-id", sessionId], "hook idle " + sessionId)
         } else {
           log("session.idle: no sessionID available")
         }
@@ -78,14 +84,9 @@ export const LLMemPlugin = async ({ $, client }) => {
         const sessionId = event.properties?.sessionID || event.properties?.info?.id || currentSessionId || ""
         log("session.ending: " + sessionId + (currentSessionId ? " (cached)" : " (from event)"))
         if (sessionId) {
-          // Run extraction + introspection pass at session end
-          run(LLMEM, ["hook", "--type", "ending", "--session-id", sessionId], 120000)
-          log("session-end hook ending completed")
-          // Run track-review if no review was done this session
+          runAsync(LLMEM, ["hook", "--type", "ending", "--session-id", sessionId], "hook ending " + sessionId)
           if (!trackReviewRan) {
-            const filesList = Array.from(modifiedFiles).slice(0, 10).join(", ")
-            run(LLMEM, ["track-review"])
-            log("session-end track-review completed (no review was done this session)")
+            runAsync(LLMEM, ["track-review"], "track-review (no review this session)")
           }
         }
       }

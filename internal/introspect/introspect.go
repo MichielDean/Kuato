@@ -190,7 +190,7 @@ func buildLessonPrompt(params LearnLessonParams) string {
 	return prompt
 }
 
-const callModelTimeout = 120 * time.Second
+const callModelTimeout = 5 * time.Minute
 
 // callModel attempts to call the Ollama model. Returns empty string on failure (never panics).
 // Uses a bounded timeout so callers never block indefinitely.
