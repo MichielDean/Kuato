@@ -7,59 +7,24 @@ on:
     branches: [main]
 
 jobs:
-  python-test:
+  go-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          python-version: "3.11"
+          go-version: "1.26"
 
-      - name: Install dependencies
-        run: pip install ".[dev]"
+      - name: Build
+        run: go build ./...
 
-      - name: Run tests
-        run: python -m pytest
-
-  python-lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install lint tools
-        run: pip install ruff
-
-      - name: Lint Python code
-        run: ruff check llmem/ tests/
+      - name: Test
+        run: go test ./...
 
   node-test:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run tests
-        run: npm test
-
-  opencode-llmem-test:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: opencode-llmem
     steps:
       - uses: actions/checkout@v4
 
