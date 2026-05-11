@@ -109,6 +109,16 @@ func NewMemoryStore(cfg StoreConfig) (*MemoryStore, error) {
 		db:              db,
 	}
 
+	// Drop vec0 virtual table and triggers before running migrations.
+	// The vec0 module may not be registered in this connection (e.g., when
+	// migrating from Python LLMem where sqlite-vec was loaded as a C extension).
+	// Existing triggers reference the vec0 virtual table module, which causes
+	// "no such module: vec0" errors during DDL operations (like ALTER TABLE).
+	// initVecTable() will recreate them after migrations if vec0 is available.
+	if err := dropVec0Objects(db); err != nil {
+		slog.Warn("llmem: store: failed to drop vec0 objects before migration", "error", err)
+	}
+
 	// Run migrations
 	if err := runMigrationsFromDB(db); err != nil {
 		db.Close()
@@ -1501,6 +1511,25 @@ func (ms *MemoryStore) rebuildFTSIfEmpty() error {
 			return fmtErr("rebuild FTS: insert: %w", err)
 		}
 	}
+	return nil
+}
+
+// dropVec0Objects removes existing vec0 virtual table, chunk tables, and triggers
+// from the database. This is necessary before running migrations because the vec0
+// module may not be registered in the Go connection, and existing triggers that
+// reference vec0 will cause "no such module: vec0" errors during DDL operations.
+// initVecTable() will recreate these objects after migrations if vec0 is available.
+func dropVec0Objects(db *sql.DB) error {
+	// Drop triggers first (they reference the vec0 virtual table)
+	for _, name := range []string{"memories_vec_insert", "memories_vec_update", "memories_vec_update_null", "memories_vec_delete"} {
+		_, _ = db.Exec(fmt.Sprintf(`DROP TRIGGER IF EXISTS "%s"`, name))
+	}
+	// Drop vec0 auxiliary tables (created by sqlite-vec)
+	for _, name := range []string{"memories_vec_chunks", "memories_vec_rowids", "memories_vec_vector_chunks00", "memories_vec_info"} {
+		_, _ = db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS "%s"`, name))
+	}
+	// Drop the vec0 virtual table last
+	_, _ = db.Exec(`DROP TABLE IF EXISTS "memories_vec"`)
 	return nil
 }
 
