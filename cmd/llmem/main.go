@@ -866,19 +866,18 @@ func introspectCmd() *cobra.Command {
 
 func learnCmd() *cobra.Command {
 	var (
-		wrongVal    string
-		rightVal    string
-		contextVal  string
-		noLLM       bool
-		timeoutVal  string
+		noLLM      bool
+		timeoutVal string
 	)
 	cmd := &cobra.Command{
-		Use:   "learn",
-		Short: "Learn a lesson from a wrong→right correction",
+		Use:   "learn [wrong] --right [correct]",
+		Short: "Learn a lesson from a wrong→right correction (alias for introspect)",
+		Long: "Learn a lesson from a wrong→right correction. " +
+			"Delegates to introspect with a combined description. " +
+			"Consider using 'introspect' directly — it handles both analysis and correction.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if wrongVal == "" || rightVal == "" {
-				return fmt.Errorf("llmem: learn: --wrong and --right are required")
-			}
+			wrongVal := args[0]
 
 			var timeout time.Duration
 			if timeoutVal != "" {
@@ -888,7 +887,6 @@ func learnCmd() *cobra.Command {
 				}
 				timeout = parsed
 			} else {
-				// Use config default as fallback
 				cfg, cfgErr := loadConfig()
 				if cfgErr != nil {
 					slog.Debug("llmem: learn: could not load config for timeout default, using 5m", "error", cfgErr)
@@ -903,26 +901,36 @@ func learnCmd() *cobra.Command {
 			}
 			defer ms.Close()
 
-			result, err := introspect.LearnLesson(context.Background(), ms, introspect.LearnLessonParams{
-				WhatWasWrong:  wrongVal,
-				WhatIsCorrect: rightVal,
-				Context:       contextVal,
-				NoLLM:         noLLM,
-				Timeout:       timeout,
+			rightVal, _ := cmd.Flags().GetString("right")
+			contextVal, _ := cmd.Flags().GetString("context")
+
+			// Build a combined description for introspect
+			description := "WRONG: " + wrongVal
+			if rightVal != "" {
+				description += "\nRIGHT: " + rightVal
+			}
+			if contextVal != "" {
+				description += "\nContext: " + contextVal
+			}
+
+			result, err := introspect.IntrospectFailure(context.Background(), ms, introspect.IntrospectFailureParams{
+				WhatHappened: description,
+				NoLLM:        noLLM,
+				Timeout:      timeout,
 			})
 			if err != nil {
 				return err
 			}
 
-			fmt.Printf("Stored procedure: %s\n", result.MemoryID)
+			fmt.Printf("Stored self_assessment: %s\n", result.MemoryID)
 
 			if noLLM {
-				fmt.Fprintln(os.Stderr, "WARNING: LLM expansion disabled (--no-llm flag)")
+				fmt.Fprintln(os.Stderr, "WARNING: LLM enrichment disabled (--no-llm flag)")
 				return nil
 			}
 
 			if result.LLMStatus == introspect.Skipped {
-				fmt.Fprintln(os.Stderr, "WARNING: LLM expansion skipped — stored raw fields (Ollama unavailable)")
+				fmt.Fprintln(os.Stderr, "WARNING: LLM enrichment skipped — stored raw fields (Ollama unavailable)")
 				ms.Close()
 				os.Exit(2)
 			}
@@ -930,10 +938,9 @@ func learnCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&wrongVal, "wrong", "", "What was wrong")
-	cmd.Flags().StringVar(&rightVal, "right", "", "What is correct")
-	cmd.Flags().StringVar(&contextVal, "context", "", "Context")
-	cmd.Flags().BoolVar(&noLLM, "no-llm", false, "Skip LLM expansion, store raw fields only (exit code 0)")
+	cmd.Flags().String("right", "", "What is correct (the fix)")
+	cmd.Flags().String("context", "", "Context")
+	cmd.Flags().BoolVar(&noLLM, "no-llm", false, "Skip LLM enrichment, store raw fields only (exit code 0)")
 	cmd.Flags().StringVar(&timeoutVal, "timeout", "", "LLM call timeout (e.g. \"120s\", \"2m\"). Must be >= 10s.")
 	return cmd
 }

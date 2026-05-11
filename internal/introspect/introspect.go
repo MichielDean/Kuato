@@ -267,26 +267,22 @@ func buildRawLessonContent(params LearnLessonParams) string {
 }
 
 // buildFailurePrompt builds the prompt for failure introspection.
+// The description may include what went wrong, the fix, and context — or just
+// the problem. The LLM infers category, caught_by, and proposed_fix from
+// whatever the agent provides. If the agent includes a known fix, the LLM
+// produces a procedural update within the self_assessment.
 func buildFailurePrompt(params IntrospectFailureParams) string {
 	fieldLines := taxonomy.IntrospectFieldLines()
 	prompt := "Analyze this failure from a coding agent's session and produce a structured self-assessment.\n\n"
-	prompt += "The agent encountered a problem mid-session. Based on the context below, identify what went wrong, " +
-		"why it happened, whether it's a recurring pattern, and what procedural change would prevent it in the future.\n\n"
+	prompt += "The agent provided a summary of what went wrong. Infer the category, context, " +
+		"how it was caught, and a proposed procedural fix from the description. " +
+		"Identify whether it's a recurring pattern and what procedural change would prevent it.\n\n"
+	prompt += "If the description includes both what went wrong AND what the correct approach is, " +
+		"treat the proposed_update as a definitive procedural rule. If it only describes the failure, " +
+		"propose a specific, actionable update based on the pattern.\n\n"
 	prompt += "Format each field on its own line as \"Field: value\":\n\n"
 	prompt += fieldLines + "\n\n"
-	prompt += "Failure context:\n  What happened: " + params.WhatHappened
-	if params.Category != "" {
-		prompt += "\n  Category: " + params.Category
-	}
-	if params.Context != "" {
-		prompt += "\n  Context: " + params.Context
-	}
-	if params.CaughtBy != "" {
-		prompt += "\n  How caught: " + params.CaughtBy
-	}
-	if params.ProposedFix != "" {
-		prompt += "\n  Proposed fix: " + params.ProposedFix
-	}
+	prompt += "Agent's description:\n  " + params.WhatHappened
 	prompt += "\n\nProduce a structured self-assessment. Be specific about what went wrong and what should change."
 	return prompt
 }
