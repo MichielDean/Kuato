@@ -23,22 +23,61 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and coding conventi
 
 ## Installation
 
-### Python (full-featured)
+### Go binary (CLI + library)
 
-Quick install:
-
-```bash
-curl -sSL https://raw.githubusercontent.com/MichielDean/LLMem/main/setup.sh | bash
-```
-
-Or clone and run locally:
+Clone and build:
 
 ```bash
 git clone https://github.com/MichielDean/LLMem.git
-cd LLMem && ./setup.sh
+cd LLMem && make build
 ```
 
-For detailed installation options (extras, plugins, requirements), see [docs/INSTALLATION.md](docs/INSTALLATION.md).
+This produces the `llmem` CLI binary. Install it on your PATH:
+
+```bash
+make install   # copies to ~/.local/bin/llmem
+```
+
+Or install manually:
+
+```bash
+cp llmem ~/.local/bin/llmem
+ln -sf ~/.local/bin/llmem /usr/local/bin/llmem   # optional, for system-wide access
+```
+
+Then initialize:
+
+```bash
+llmem init                  # interactive — detects providers
+llmem init --non-interactive  # use defaults, no prompts
+```
+
+For detailed installation options (Python extras, providers, requirements), see [docs/INSTALLATION.md](docs/INSTALLATION.md).
+
+### Agent integration (skills + plugins)
+
+After building the CLI, install the agent integration layer:
+
+```bash
+cd LLMem && npm install
+```
+
+This runs the postinstall script which:
+1. Copies 4 skill directories to `~/.agents/skills/`
+2. Auto-detects your agent platform (OpenCode, Claude Code, or Copilot CLI)
+3. Deploys the correct plugin to the right location
+
+Force a specific platform:
+
+```bash
+node install.js --platform opencode      # OpenCode only
+node install.js --platform claude-code   # Claude Code / Copilot CLI
+node install.js --platform copilot       # Copilot CLI (same plugin as claude-code)
+node install.js --platform both          # OpenCode + Claude Code / Copilot CLI
+node install.js --platform none          # Skills only, no plugins
+```
+
+See below for per-platform setup details.
 
 ### Go (memory store library)
 
@@ -91,13 +130,15 @@ LLMem uses platform plugins to inject memory context automatically. **No manual 
 - **Session idle/end**: Extracts memories from the session transcript
 - **Compaction**: Preserves key memories across context compaction
 
-| Platform | Plugin | Install |
-|----------|--------|---------|
-| **OpenCode** | `plugins/opencode/llmem.js` → `~/.config/opencode/plugins/` | Auto-deployed by `npm install` |
-| **Claude Code** | `plugins/agent/` → `~/.claude/plugins/llmem/` | `claude plugin install ~/.claude/plugins/llmem` |
-| **Copilot CLI** | `plugins/agent/` → same as Claude Code | Same plugin format |
+| Platform | Plugin | How to install |
+|----------|--------|---------------|
+| **OpenCode** | `plugins/opencode/llmem.js` | Auto-deployed by `npm install` to `~/.config/opencode/plugins/` |
+| **Claude Code** | `plugins/agent/` | `claude plugin install ~/.claude/plugins/llmem` (auto-deployed by `npm install`) |
+| **Copilot CLI** | `plugins/agent/` | Same plugin as Claude Code — both use the `.claude-plugin` format |
 
-The plugin-first approach means your AGENTS.md or CLAUDE.md stays clean — no 80-line memory instruction blocks. See [Integrations](docs/INTEGRATIONS.md) for platform-specific setup.
+Claude Code and GitHub Copilot CLI share the same plugin (`plugins/agent/`) because they use the same plugin specification. The plugin bundles hooks for `SessionStart`, `SessionEnd`, and `PreCompact`, plus all four LLMem skills.
+
+The plugin-first approach means your AGENTS.md, CLAUDE.md, or system instructions stay clean — no 80-line memory blocks. See [Integrations](docs/INTEGRATIONS.md) for platform-specific setup.
 
 ## Skills
 

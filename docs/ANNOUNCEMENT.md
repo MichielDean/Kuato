@@ -4,12 +4,15 @@ We're excited to announce LLMem, an open-source SQLite-backed memory store desig
 
 LLMem ships with a background dreaming cycle that automatically consolidates, decays, and merges memories over time — keeping your agent's knowledge base clean and relevant without manual curation. The provider abstraction supports Ollama, OpenAI, Anthropic, and local sentence-transformers models, with graceful fallback so your agent always works even when individual providers are unavailable. A working memory inbox with attention scoring lets agents stage ephemeral observations before promoting them to long-term storage.
 
-Getting started is simple — one command installs everything:
+Getting started is simple — clone and build:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/MichielDean/LLMem/main/setup.sh | bash
+git clone https://github.com/MichielDean/LLMem.git
+cd LLMem && make build && make install
+npm install   # deploys skills + plugins for your platform
+llmem init
 ```
 
-Or clone and install manually: `pip install .` for the Python package, `npm install` from `opencode-llmem/` for OpenCode integration. LLMem runs on Python 3.11+ with a single runtime dependency (PyYAML) and uses SQLite for zero-config local storage. Optional extras add vector search (`pip install ".[vec]"`) and local embedding without any server (`pip install ".[local]"`).
+LLMem also integrates with Claude Code and GitHub Copilot CLI via a shared plugin that injects memory context at session start. See the [Integrations docs](INTEGRATIONS.md) for platform-specific setup.
 
 Check out the [GitHub repository](https://github.com/MichielDean/LLMem) for full documentation, the [CONTRIBUTING.md](https://github.com/MichielDean/LLMem/blob/main/CONTRIBUTING.md) guide for how to get involved, and the [ecosystem page](https://github.com/MichielDean/LLMem/blob/main/docs/ECOSYSTEM.md) for OpenCode integration details. We welcome contributions — whether it's bug fixes, new features, or documentation improvements.
