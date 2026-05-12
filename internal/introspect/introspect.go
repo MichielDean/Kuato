@@ -19,10 +19,8 @@ const (
 	defaultModel          = "glm-5.1:cloud"
 	defaultBaseURL        = "http://localhost:11434"
 	introspectSource      = "introspect"
-	introspectAutoSource  = "introspect-auto"
 	learnSource           = "learn"
 	introspectConfidence  = 0.9
-	introspectAutoConfidence = 0.9
 	learnConfidence       = 0.85
 
 	// callModelTimeout is the default timeout for LLM calls in IntrospectFailure and LearnLesson.
@@ -290,94 +288,6 @@ func LearnLesson(ctx context.Context, ms *store.MemoryStore, params LearnLessonP
 	return LearnResult{MemoryID: id, Content: content, LLMStatus: llmStatus}, nil
 }
 
-// IntrospectAutoResult holds the result of an IntrospectAuto call.
-// MemoryID is always non-empty on success (never empty string).
-// ProposedUpdate contains the proposed procedural update extracted from the
-// self-assessment content. Empty when no proposed update is available.
-// Category contains the error taxonomy category. May be empty when no category is specified.
-type IntrospectAutoResult struct {
-	MemoryID       string
-	ProposedUpdate string
-	Category       string
-}
-
-// IntrospectAuto performs automatic introspection on a text description and stores
-// a self_assessment memory. It is designed for programmatic use (session hooks, CLI --auto)
-// where the agent provides a text summary rather than structured fields.
-//
-// When model is non-empty and Ollama is available, the text is enriched by the LLM
-// into a structured self-assessment. When model is empty or Ollama is unavailable,
-// the text is stored directly with graceful degradation (source "introspect-auto",
-// confidence 0.9).
-//
-// Contract: NEVER returns (IntrospectAutoResult{}, nil) — either creates a memory or returns an error.
-// Even on LLM failure, a storage-only memory is created (graceful degradation).
-// Returns (IntrospectAutoResult{}, error) only if text is empty (validation error)
-// or if the store operation fails.
-func IntrospectAuto(ctx context.Context, ms *store.MemoryStore, text, model, baseURL string) (IntrospectAutoResult, error) {
-	if text == "" {
-		return IntrospectAutoResult{}, fmtErr("text is required")
-	}
-	if model == "" {
-		model = defaultModel
-	}
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-
-	var content string
-	llmResponse, llmStatus := callModel(ctx, model, baseURL, buildAutoPrompt(text), 0, nil)
-
-	if llmStatus == Enriched && llmResponse != "" {
-		content = llmResponse
-	} else {
-		// Graceful degradation: build from the provided text
-		content = "What_happened: " + text
-	}
-
-	id, err := ms.Add(ctx, store.AddParams{
-		Type:       "self_assessment",
-		Content:    content,
-		Source:     introspectAutoSource,
-		Confidence: introspectAutoConfidence,
-	})
-	if err != nil {
-		return IntrospectAutoResult{}, fmtErr("store self_assessment: %w", err)
-	}
-
-	// Extract ProposedUpdate and Category from the stored content.
-	// When LLM enrichment succeeded, parse from the LLM response.
-	// When LLM was skipped, these fields remain empty (no structured data to parse).
-	proposedUpdate := ""
-	category := ""
-	if llmStatus == Enriched && content != "" {
-		proposedUpdate = taxonomy.ParseSelfAssessmentField(content, "Proposed_update")
-		category = taxonomy.ParseSelfAssessmentField(content, "Category")
-	}
-
-	slog.Info("llmem: introspect: stored auto self_assessment", "id", id, "llm_status", llmStatus)
-	return IntrospectAutoResult{
-		MemoryID:       id,
-		ProposedUpdate: proposedUpdate,
-		Category:       category,
-	}, nil
-}
-
-// buildAutoPrompt builds the prompt for automatic introspection from free-form text.
-func buildAutoPrompt(text string) string {
-	fieldLines := taxonomy.IntrospectFieldLines()
-	prompt := "Analyze this failure from a coding agent's session and produce a structured self-assessment.\n\n"
-	prompt += "The agent provided a free-form text summary. Infer the category, context, " +
-		"how the error was caught, and a proposed procedural fix from the description.\n\n"
-	prompt += "Format each field on its own line as \"Field: value\":\n\n"
-	prompt += fieldLines + "\n\n"
-	prompt += "Agent's text:\n  " + text
-	prompt += "\n\nProduce a structured self-assessment. Be specific about what went wrong and what should change."
-	return prompt
-}
-
-// buildRawLessonContent constructs the fallback content string from provided fields
-// when LLM enrichment is not available or was skipped.
 func buildRawLessonContent(params LearnLessonParams) string {
 	var lines []string
 	lines = append(lines, "WRONG: "+params.WhatWasWrong)
@@ -469,116 +379,6 @@ func callModel(ctx context.Context, model, baseURL, prompt string, timeout time.
 	return response, Enriched
 }
 
-// callModelWithClient calls the Ollama model using a pre-configured OllamaClient.
-// Returns empty string on failure (never panics).
-// If ollamaClient is nil, returns "" immediately (graceful no-op, no network call).
-// Uses a bounded timeout so callers never block indefinitely.
-func callModelWithClient(ctx context.Context, ollamaClient *ollama.OllamaClient, model, prompt string) string {
-	if ollamaClient == nil {
-		slog.Debug("llmem: introspect: no OllamaClient provided, using storage-only fallback")
-		return ""
-	}
-
-	timeoutCtx, cancel := context.WithTimeout(ctx, callModelTimeout)
-	defer cancel()
-
-	if !ollamaClient.IsAvailable(timeoutCtx) {
-		slog.Debug("llmem: introspect: Ollama not available, using storage-only fallback")
-		return ""
-	}
-
-	response, err := ollamaClient.Generate(timeoutCtx, prompt, model)
-	if err != nil {
-		slog.Error("llmem: introspect: model call failed", "error", err)
-		return ""
-	}
-
-	return response
-}
-
-// IntrospectTranscript analyzes a session transcript and stores a self_assessment memory.
-// On LLM availability, it uses the model to produce a structured self-assessment from the
-// transcript content. On LLM failure, it falls back to a plain-text summary of the session.
-//
-// The ollamaClient parameter provides the configured Ollama connection. If nil,
-// IntrospectTranscript falls back to degraded storage immediately (no LLM call attempted).
-//
-// Contract: NEVER returns ("", nil) — either creates a memory or returns an error.
-// Even on LLM failure, a degraded memory is created.
-// Returns ("", error) only if the transcript is empty (validation error).
-func IntrospectTranscript(ctx context.Context, ms *store.MemoryStore, transcript string, sessionID string, ollamaClient *ollama.OllamaClient, model string) (string, error) {
-	if transcript == "" {
-		return "", fmtErr("transcript is required for introspection")
-	}
-	if model == "" {
-		model = defaultModel
-	}
-
-	var content string
-	prompt := buildTranscriptPrompt(transcript, sessionID)
-	llmResponse := callModelWithClient(ctx, ollamaClient, model, prompt)
-
-	if llmResponse != "" {
-		content = llmResponse
-	} else {
-		// Graceful degradation: build from provided fields
-		var lines []string
-		lines = append(lines, "Session_id: "+sessionID)
-		lines = append(lines, "Summary: session completed")
-		// Truncate transcript for storage if very long
-		transcriptExcerpt := transcript
-		if len(transcriptExcerpt) > 500 {
-			transcriptExcerpt = transcriptExcerpt[:500] + "..."
-		}
-		lines = append(lines, "Transcript_excerpt: "+transcriptExcerpt)
-		content = strings.Join(lines, "\n")
-	}
-
-	// Use context.Background() for the store operation to avoid data loss when
-	// the caller's context has expired (e.g., session-ending timeouts). The LLM
-	// call above respects ctx, but the final store must succeed regardless of
-	// context cancellation. This is intentional: IntrospectTranscript is called
-	// at session end and must persist its finding even if the original context
-	// has timed out. This differs from IntrospectFailure and LearnLesson which
-	// pass through ctx because they are called mid-session when the context is
-	// still alive.
-	id, err := ms.Add(context.Background(), store.AddParams{
-		Type:       "self_assessment",
-		Content:    content,
-		Source:     introspectSource,
-		Confidence: 0.8,
-	})
-	if err != nil {
-		return "", fmtErr("store self_assessment: %w", err)
-	}
-
-	slog.Info("llmem: introspect: stored transcript self_assessment", "id", id, "session_id", sessionID)
-	return id, nil
-}
-
-// buildTranscriptPrompt builds the prompt for transcript introspection.
-func buildTranscriptPrompt(transcript, sessionID string) string {
-	prompt := "Analyze the following session transcript and produce a structured self-assessment.\n\n"
-	prompt += "The session has ended. Identify key decisions, preferences, project state updates, " +
-		"and any lessons learned during this session.\n\n"
-	prompt += "Format each insight as a separate point:\n" +
-		"- What was decided and why\n" +
-		"- What preferences were expressed\n" +
-		"- What project state changed\n" +
-		"- What patterns or recurring issues appeared\n\n"
-	prompt += "Session ID: " + sessionID + "\n\n"
-
-	// Truncate very long transcripts to avoid overwhelming the model
-	transcriptExcerpt := transcript
-	if len(transcriptExcerpt) > 3000 {
-		transcriptExcerpt = transcriptExcerpt[:3000] + "\n...(truncated)"
-	}
-	prompt += "Transcript:\n" + transcriptExcerpt
-	prompt += "\n\nProduce a structured self-assessment of this session."
-	return prompt
-}
-
-// orDefault returns val if non-empty, otherwise returns defaultVal.
 func orDefault(val, defaultVal string) string {
 	if val != "" {
 		return val

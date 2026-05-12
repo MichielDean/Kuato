@@ -46,19 +46,6 @@ type DreamConfig struct {
 	// ModelTimeout is the timeout for each LLM call during REM behavioral insight generation.
 	// Parsed as a Go duration string (e.g. "5m", "120s"). Defaults to "5m".
 	ModelTimeout        string `yaml:"model_timeout"`
-	ProposedChangesPath string  `yaml:"proposed_changes_path"`
-}
-
-// SessionConfig holds session lifecycle settings.
-type SessionConfig struct {
-	Adapter         string `yaml:"adapter"`
-	DebounceSeconds int   `yaml:"debounce_seconds"`
-}
-
-// OpenCodeConfig holds OpenCode adapter settings.
-type OpenCodeConfig struct {
-	DBPath      string `yaml:"db_path"`
-	ContextDir  string `yaml:"context_dir"`
 }
 
 // SkillPatchConfig holds skill patch settings.
@@ -69,11 +56,9 @@ type SkillPatchConfig struct {
 
 // Config holds the full LLMem configuration.
 type Config struct {
-	Memory    MemoryConfig    `yaml:"memory"`
-	Dream     DreamConfig     `yaml:"dream"`
+	Memory     MemoryConfig     `yaml:"memory"`
+	Dream      DreamConfig      `yaml:"dream"`
 	SkillPatch SkillPatchConfig `yaml:"skill_patch"`
-	OpenCode  OpenCodeConfig  `yaml:"opencode"`
-	Session   SessionConfig   `yaml:"session"`
 }
 
 // MemoryConfig holds memory store settings.
@@ -126,14 +111,6 @@ func DefaultConfig() Config {
 		},
 		SkillPatch: SkillPatchConfig{
 			Dir: paths.GetSkillDir(),
-		},
-		OpenCode: OpenCodeConfig{
-			DBPath:      openCodeDefaultDBPath(),
-			ContextDir:  paths.GetContextDir(),
-		},
-		Session: SessionConfig{
-			Adapter:          "opencode",
-			DebounceSeconds:  30,
 		},
 	}
 }
@@ -253,7 +230,6 @@ func (c *Config) DreamerConfig() dream.DreamerConfig {
 		StaleProcedureDays:     c.Dream.StaleProcedureDays,
 		DiaryPath:              c.Dream.DiaryPath,
 		ReportPath:             c.Dream.ReportPath,
-		ProposedChangesPath:    c.Dream.ProposedChangesPath,
 		BaseURL:                ollamaURL,
 		Model:                  model,
 		ModelTimeout:           modelTimeout,
@@ -265,11 +241,6 @@ func (c *Config) DreamerConfig() dream.DreamerConfig {
 // wired to the actual Dreamer implementation.
 func (c *Config) DreamConfigResolved() DreamConfig {
 	return c.Dream
-}
-
-// SessionConfigResolved returns the session configuration.
-func (c *Config) SessionConfigResolved() SessionConfig {
-	return c.Session
 }
 
 // NewSkillPatcher creates a SkillPatcher using the SkillPatch config.
@@ -323,15 +294,6 @@ func WriteConfigYAML(path string, config map[string]any, force bool) (bool, erro
 	}
 
 	return true, nil
-}
-
-// openCodeDefaultDBPath returns the default OpenCode database path using filepath.Join.
-func openCodeDefaultDBPath() string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(paths.GetHomeDir(), "..", ".local", "share", "opencode", "opencode.db")
-	}
-	return filepath.Join(homeDir, ".local", "share", "opencode", "opencode.db")
 }
 
 // expandHome expands ~ to the user's home directory.

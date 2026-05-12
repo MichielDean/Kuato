@@ -102,20 +102,10 @@ func GetDreamReportPath() string {
 	return filepath.Join(GetHomeDir(), "dream_report.html")
 }
 
-// GetProposedChangesPath returns the path to the proposed-changes file (~/.config/llmem/proposed-changes.md).
-func GetProposedChangesPath() string {
-	return filepath.Join(GetHomeDir(), "proposed-changes.md")
-}
-
 // GetSkillDir returns the path to the skills directory (~/.config/llmem/skills/).
 // Checks LMEM_HOME env var override, same as GetHomeDir().
 func GetSkillDir() string {
 	return filepath.Join(GetHomeDir(), "skills")
-}
-
-// GetContextDir returns the path to the context directory (~/.config/llmem/context/).
-func GetContextDir() string {
-	return filepath.Join(GetHomeDir(), "context")
 }
 
 // GetDirFromPath returns the parent directory of a file path.
@@ -238,7 +228,7 @@ func ValidateSessionID(sessionID string) (string, error) {
 }
 
 // MigrateFromLobsterdog migrates data from ~/.lobsterdog/ to ~/.config/llmem/.
-// Copies config.yaml, memory.db, dream_diary.md, proposed-changes.md,
+// Copies config.yaml, memory.db, dream_diary.md,
 // and context/ directory from ~/.lobsterdog/ to ~/.config/llmem/
 // only if the source exists and the destination doesn't.
 // Never deletes the source directory.
@@ -279,7 +269,6 @@ func MigrateFromLobsterdog() (bool, error) {
 		"config.yaml",
 		"memory.db",
 		"dream_diary.md",
-		"proposed-changes.md",
 	}
 
 	for _, filename := range filesToCopy {

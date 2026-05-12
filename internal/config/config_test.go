@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -24,21 +23,6 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.Dream.SimilarityThreshold != 0.92 {
 		t.Errorf("expected default similarity threshold 0.92, got %f", cfg.Dream.SimilarityThreshold)
-	}
-	if cfg.Session.Adapter != "opencode" {
-		t.Errorf("expected default adapter opencode, got %q", cfg.Session.Adapter)
-	}
-	// OpenCode DBPath should use filepath.Join (XDG data dir, not config dir)
-	if cfg.OpenCode.DBPath == "" {
-		t.Error("expected non-empty OpenCode.DBPath")
-	}
-	// Should end with opencode/opencode.db
-	if !strings.HasSuffix(cfg.OpenCode.DBPath, filepath.Join("opencode", "opencode.db")) {
-		t.Errorf("expected DBPath to end with opencode/opencode.db, got %q", cfg.OpenCode.DBPath)
-	}
-	// Should not contain ".." (the old code used string concat with "/../")
-	if strings.Contains(cfg.OpenCode.DBPath, "..") {
-		t.Errorf("DBPath should not contain '..' (used string concat instead of filepath.Join): %q", cfg.OpenCode.DBPath)
 	}
 }
 

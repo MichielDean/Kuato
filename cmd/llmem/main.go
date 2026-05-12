@@ -18,7 +18,6 @@ import (
 	"github.com/MichielDean/LLMem/internal/introspect"
 	"github.com/MichielDean/LLMem/internal/ollama"
 	"github.com/MichielDean/LLMem/internal/paths"
-	"github.com/MichielDean/LLMem/internal/session"
 	"github.com/MichielDean/LLMem/internal/store"
 	"github.com/MichielDean/LLMem/internal/taxonomy"
 	"github.com/spf13/cobra"
@@ -56,8 +55,7 @@ func main() {
 		introspectCmd(),
 		learnCmd(),
 		trackReviewCmd(),
-		contextCmd(),
-		hookCmd(),
+
 		backfillEmbeddingsCmd(),
 	)
 
@@ -95,34 +93,7 @@ func openStore() (*store.MemoryStore, error) {
 	return ms, nil
 }
 
-// openAdapter creates an OpenCodeAdapter from configuration.
-// If the OpenCode DB path is empty or the DB cannot be opened, returns nil
-// (the coordinator gracefully handles a nil adapter by returning no_transcript).
-// Returns session.SessionAdapter (not *OpenCodeAdapter) to avoid nil-interface panic:
-// a nil *OpenCodeAdapter assigned to SessionAdapter creates a non-nil interface with
-// nil underlying value, which bypasses nil checks and panics on method calls.
-func openAdapter() (session.SessionAdapter, error) {
-	appCfg, err := loadConfig()
-	if err != nil {
-		// Log but don't fail — adapter is optional
-		slog.Warn("llmem: failed to load config for adapter, skipping", "error", err)
-		return nil, nil
-	}
 
-	dbPath := appCfg.OpenCode.DBPath
-	if dbPath == "" {
-		slog.Debug("llmem: no OpenCode DB path configured, skipping adapter")
-		return nil, nil
-	}
-
-	adapter, err := session.NewOpenCodeAdapter(dbPath)
-	if err != nil {
-		// Log but don't fail — the adapter is optional and the DB may not exist yet
-		slog.Warn("llmem: failed to open OpenCode adapter, skipping", "db_path", dbPath, "error", err)
-		return nil, nil
-	}
-	return adapter, nil
-}
 
 // openExtractionEngine creates an ExtractionEngine for session hooks.
 // Returns nil on failure — the coordinator gracefully handles a nil engine
@@ -792,11 +763,6 @@ func introspectCmd() *cobra.Command {
 	var (
 		noLLM      bool
 		timeoutVal string
-		auto       bool
-		textVal    string
-		sessionVal string
-		modelVal   string
-		baseURLVal string
 	)
 	cmd := &cobra.Command{
 		Use:   "introspect [description]",
@@ -804,56 +770,9 @@ func introspectCmd() *cobra.Command {
 		Long: "Analyze a failure and store a self_assessment memory.\n" +
 			"The description is a free-form summary of what went wrong.\n" +
 			"The LLM infers category, context, and proposed fix from your description.\n" +
-			"When the LLM is unavailable, the description is stored directly.\n\n" +
-			"Use --auto --text for programmatic introspection from session hooks.",
-		Args: cobra.MaximumNArgs(1),
+			"When the LLM is unavailable, the description is stored directly.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Auto mode: use IntrospectAuto with --text or --session
-			if auto {
-				description := textVal
-				if description == "" && sessionVal != "" {
-					// Read from session transcript if --session is provided
-					adapter, adapterErr := openAdapter()
-					if adapterErr != nil {
-						return fmt.Errorf("llmem: introspect: create adapter: %w", adapterErr)
-					}
-					if adapter != nil {
-						defer adapter.Close()
-						transcript, readErr := adapter.ReadTranscript(sessionVal)
-						if readErr != nil {
-							return fmt.Errorf("llmem: introspect: read transcript: %w", readErr)
-						}
-						description = transcript
-					}
-				}
-				if description == "" {
-					return fmt.Errorf("llmem: introspect: --text is required with --auto")
-				}
-
-				ms, err := openStore()
-				if err != nil {
-					return err
-				}
-				defer ms.Close()
-
-				autoResult, err := introspect.IntrospectAuto(context.Background(), ms, description, modelVal, baseURLVal)
-				if err != nil {
-					return err
-				}
-				fmt.Printf("Stored self_assessment: %s\n", autoResult.MemoryID)
-
-				// Patch skill file if ProposedUpdate and Category are available
-				if autoResult.ProposedUpdate != "" && autoResult.Category != "" {
-					patchSkillAfterIntrospect(ms, autoResult.Category, autoResult.ProposedUpdate)
-				}
-
-				return nil
-			}
-
-			// Standard mode: positional description argument
-			if len(args) == 0 {
-				return fmt.Errorf("llmem: introspect: description argument is required (or use --auto --text)")
-			}
 			whatHappened := args[0]
 
 			var timeout time.Duration
@@ -889,7 +808,6 @@ func introspectCmd() *cobra.Command {
 
 			fmt.Printf("Stored self_assessment: %s\n", result.MemoryID)
 
-			// Patch skill file if ProposedUpdate and Category are available
 			if result.ProposedUpdate != "" && result.Category != "" {
 				patchSkillAfterIntrospect(ms, result.Category, result.ProposedUpdate)
 			}
@@ -901,8 +819,6 @@ func introspectCmd() *cobra.Command {
 
 			if result.LLMStatus == introspect.Skipped {
 				fmt.Fprintln(os.Stderr, "WARNING: LLM enrichment skipped — stored raw fields (Ollama unavailable)")
-				ms.Close()
-				os.Exit(2)
 			}
 
 			return nil
@@ -910,11 +826,6 @@ func introspectCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&noLLM, "no-llm", false, "Skip LLM enrichment, store raw fields only (exit code 0)")
 	cmd.Flags().StringVar(&timeoutVal, "timeout", "", "LLM call timeout (e.g. \"120s\", \"2m\"). Must be >= 10s.")
-	cmd.Flags().BoolVar(&auto, "auto", false, "Automatic introspection mode (use with --text)")
-	cmd.Flags().StringVar(&textVal, "text", "", "Text description for auto introspection")
-	cmd.Flags().StringVar(&sessionVal, "session", "", "Session ID to read transcript from for auto introspection")
-	cmd.Flags().StringVar(&modelVal, "model", "", "LLM model name (default: glm-5.1:cloud)")
-	cmd.Flags().StringVar(&baseURLVal, "base-url", "", "Ollama base URL (default: http://localhost:11434)")
 	return cmd
 }
 
@@ -1113,148 +1024,6 @@ func trackReviewCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&batchVal, "batch", false, "Store multiple findings")
 	cmd.Flags().BoolVar(&cleanVal, "clean", false, "Invalidate all existing track-review memories")
 	cmd.Flags().StringVar(&findingsVal, "findings", "", "Path to findings file (or stdin)")
-	return cmd
-}
-
-func contextCmd() *cobra.Command {
-	var (
-		sessionIDVal string
-		compacting   bool
-	)
-	cmd := &cobra.Command{
-		Use:   "context",
-		Short: "Inject context from session hooks",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if sessionIDVal == "" {
-				return fmt.Errorf("llmem: context: --session-id is required")
-			}
-			ms, err := openStore()
-			if err != nil {
-				return err
-			}
-			defer ms.Close()
-
-			adapter, err := openAdapter()
-			if err != nil {
-				return err
-			}
-			if adapter != nil {
-				defer adapter.Close()
-			}
-
-			coord, err := session.NewSessionHookCoordinator(session.SessionHookConfig{
-				Store:            ms,
-				Adapter:          adapter,
-				ExtractionEngine: openExtractionEngine(),
-				Embedding:        openEmbeddingEngine(),
-				OllamaClient:     openOllamaClient(),
-			})
-			if err != nil {
-				return err
-			}
-
-			if compacting {
-				resultType, contextPath, err := coord.OnCompacting(context.Background(), sessionIDVal)
-				if err != nil {
-					return err
-				}
-				fmt.Printf("Compacting result: %s, context: %s\n", resultType, contextPath)
-			} else {
-				result, err := coord.OnCreated(context.Background(), sessionIDVal)
-				if err != nil {
-					return err
-				}
-				fmt.Printf("Created result: %s\n", result)
-			}
-			return nil
-		},
-	}
-	cmd.Flags().StringVar(&sessionIDVal, "session-id", "", "Session ID")
-	cmd.Flags().BoolVar(&compacting, "compacting", false, "Generate context for compacting")
-	cmd.MarkFlagRequired("session-id")
-	return cmd
-}
-
-func hookCmd() *cobra.Command {
-	var (
-		hookType     string
-		sessionIDVal string
-	)
-	cmd := &cobra.Command{
-		Use:   "hook [type] [session-id]",
-		Short: "Handle session lifecycle hook events",
-		Args:  cobra.MaximumNArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if hookType == "" && len(args) > 0 {
-				hookType = args[0]
-			}
-			if sessionIDVal == "" && len(args) > 1 {
-				sessionIDVal = args[1]
-			}
-			if hookType == "" {
-				return fmt.Errorf("llmem: hook: hook type is required (use --type or positional arg)")
-			}
-			if sessionIDVal == "" {
-				return fmt.Errorf("llmem: hook: session-id is required (use --session-id or positional arg)")
-			}
-			ms, err := openStore()
-			if err != nil {
-				return err
-			}
-			defer ms.Close()
-
-			adapter, err := openAdapter()
-			if err != nil {
-				return err
-			}
-			if adapter != nil {
-				defer adapter.Close()
-			}
-
-			coord, err := session.NewSessionHookCoordinator(session.SessionHookConfig{
-				Store:            ms,
-				Adapter:          adapter,
-				ExtractionEngine: openExtractionEngine(),
-				Embedding:        openEmbeddingEngine(),
-				OllamaClient:     openOllamaClient(),
-			})
-			if err != nil {
-				return err
-			}
-
-			switch hookType {
-			case "created":
-				result, err := coord.OnCreated(context.Background(), sessionIDVal)
-				if err != nil {
-					return err
-				}
-				fmt.Printf("Hook result: %s\n", result)
-			case "idle":
-				result, err := coord.OnIdle(context.Background(), sessionIDVal)
-				if err != nil {
-					return err
-				}
-				fmt.Printf("Hook result: %s\n", result)
-			case "compacting":
-				resultType, contextPath, err := coord.OnCompacting(context.Background(), sessionIDVal)
-				if err != nil {
-					return err
-				}
-				fmt.Printf("Hook result: %s, context: %s\n", resultType, contextPath)
-			case "ending":
-				result, err := coord.OnEnding(context.Background(), sessionIDVal)
-				if err != nil {
-					return err
-				}
-				fmt.Printf("Hook result: %s\n", result)
-			default:
-				return fmt.Errorf("llmem: hook: unknown hook type %q (must be created, idle, compacting, or ending)", hookType)
-			}
-			return nil
-		},
-	}
-	cmd.Flags().StringVar(&hookType, "type", "", "Hook type: created, idle, compacting, ending")
-	cmd.Flags().StringVar(&sessionIDVal, "session-id", "", "Session ID")
 	return cmd
 }
 

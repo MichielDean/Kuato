@@ -3,7 +3,6 @@ package paths
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -185,33 +184,6 @@ func TestGetDreamReportPath(t *testing.T) {
 	t.Setenv("LMEM_HOME", dir)
 	path := GetDreamReportPath()
 	expected := filepath.Join(dir, "dream_report.html")
-	if path != expected {
-		t.Errorf("expected %q, got %q", expected, path)
-	}
-}
-
-func TestGetProposedChangesPath(t *testing.T) {
-	// Test 1: resolves to ~/.config/llmem/proposed-changes.md by default
-	path := GetProposedChangesPath()
-	if !strings.HasSuffix(path, "proposed-changes.md") {
-		t.Errorf("expected path to end with 'proposed-changes.md', got %q", path)
-	}
-
-	// Test 2: respects LLMEM_HOME env var
-	dir := t.TempDir()
-	t.Setenv("LMEM_HOME", dir)
-	path = GetProposedChangesPath()
-	expected := filepath.Join(dir, "proposed-changes.md")
-	if path != expected {
-		t.Errorf("expected %q, got %q", expected, path)
-	}
-}
-
-func TestGetContextDir(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("LMEM_HOME", dir)
-	path := GetContextDir()
-	expected := filepath.Join(dir, "context")
 	if path != expected {
 		t.Errorf("expected %q, got %q", expected, path)
 	}
