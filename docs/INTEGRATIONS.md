@@ -126,9 +126,9 @@ llmem init --non-interactive
 
 See [Provider Configuration](PROVIDERS.md) for the full YAML reference.
 
-## Claude Code / Copilot CLI Integration
+## Claude Code Integration
 
-The agent plugin (`plugins/agent/`) uses the standard `.claude-plugin/` format and is compatible with both Claude Code and GitHub Copilot CLI.
+The agent plugin (`plugins/agent/`) uses the standard `.claude-plugin/` format.
 
 ### Plugin Structure
 
@@ -147,6 +147,8 @@ plugins/agent/
 
 ### Installation
 
+The plugin is auto-deployed to `~/.claude/plugins/llmem/` by `npm install`. To enable:
+
 ```bash
 claude plugin install ~/.claude/plugins/llmem
 # Or for testing:
@@ -161,15 +163,15 @@ The `hooks.json` declares:
 | `SessionEnd` | Runs `llmem hook ending` — extracts memories and runs introspection |
 | `PreCompact` | Runs `llmem context --compacting` — preserves key memories |
 
-The `SessionStart` hook's **stdout is added as context that Claude can see and act on** — this is the key mechanism for zero-config integration. The agent sees the memory context at session start without any AGENTS.md modifications.
+The `SessionStart` hook's **stdout is added as context that Claude can see and act on** — this is the key mechanism for zero-config integration.
 
 ### Skills
 
-Skills are namespaced under the plugin: `/llmem:llmem`, `/llmem:llmem-setup`, etc. They're discovered automatically when the plugin is enabled.
+Skills are namespaced under the plugin: `/llmem:llmem`, `/llmem:llmem-setup`, etc. Discovered automatically when the plugin is enabled.
 
 ### Optional: CLAUDE.md Pointer
 
-If you want a persistent reminder (not required — the `SessionStart` hook handles context injection):
+If you want a persistent reminder (not required):
 
 ```markdown
 ## Memory
@@ -177,9 +179,43 @@ If you want a persistent reminder (not required — the `SessionStart` hook hand
 Plugin-managed. Search when uncertain: `llmem search "topic"`. Add when you learn: `llmem add --type fact --content "..."`.
 ```
 
-## Future Integrations
+## Copilot CLI Integration
 
-After installation, verify the skills are discoverable:
+Copilot CLI uses the same plugin source as Claude Code (`plugins/agent/` with `.claude-plugin/plugin.json`), but installs to a different location (`~/.copilot/installed-plugins/`).
+
+### Installation
+
+The plugin is auto-deployed to `~/.copilot/installed-plugins/_direct/llmem/` by `npm install`. To enable:
+
+```bash
+copilot plugin install ~/.copilot/installed-plugins/_direct/llmem
+```
+
+Or install directly from the repo:
+
+```bash
+copilot plugin install MichielDean/LLMem:plugins/agent
+```
+
+The same hooks and skills as Claude Code apply. Copilot CLI discovers `.claude-plugin/plugin.json` as a valid manifest location.
+
+### Skills
+
+Skills are discovered from the plugin's `skills/` directory. Also available project-level via `~/.agents/skills/` or `.copilot/skills/`.
+
+### Optional: COPILOT.md Pointer
+
+If you want a persistent reminder (not required):
+
+```markdown
+## Memory
+
+Plugin-managed. Search when uncertain: `llmem search "topic"`. Add when you learn: `llmem add --type fact --content "..."`.
+```
+
+## Verification
+
+After installation, verify the skills and plugins are discoverable:
 
 ```bash
 ls ~/.agents/skills/llmem ~/.agents/skills/introspection ~/.agents/skills/introspection-review-tracker
@@ -187,8 +223,11 @@ ls ~/.agents/skills/llmem ~/.agents/skills/introspection ~/.agents/skills/intros
 # OpenCode plugin
 ls ~/.config/opencode/plugins/llmem.js
 
-# Claude Code / Copilot plugin
+# Claude Code plugin
 ls ~/.claude/plugins/llmem/.claude-plugin/plugin.json
+
+# Copilot CLI plugin
+ls ~/.copilot/installed-plugins/_direct/llmem/.claude-plugin/plugin.json
 ```
 
 Run the bundled tests:

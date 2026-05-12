@@ -130,13 +130,13 @@ LLMem uses platform plugins to inject memory context automatically. **No manual 
 - **Session idle/end**: Extracts memories from the session transcript
 - **Compaction**: Preserves key memories across context compaction
 
-| Platform | Plugin | How to install |
-|----------|--------|---------------|
-| **OpenCode** | `plugins/opencode/llmem.js` | Auto-deployed by `npm install` to `~/.config/opencode/plugins/` |
-| **Claude Code** | `plugins/agent/` | `claude plugin install ~/.claude/plugins/llmem` (auto-deployed by `npm install`) |
-| **Copilot CLI** | `plugins/agent/` | Same plugin as Claude Code — both use the `.claude-plugin` format |
+| Platform | Plugin source | Install path | How to install |
+|----------|---------------|-------------|---------------|
+| **OpenCode** | `plugins/opencode/llmem.js` | `~/.config/opencode/plugins/` | Auto-deployed by `npm install` |
+| **Claude Code** | `plugins/agent/` | `~/.claude/plugins/llmem/` | `claude plugin install ~/.claude/plugins/llmem` (auto-deployed by `npm install`) |
+| **Copilot CLI** | `plugins/agent/` | `~/.copilot/installed-plugins/_direct/llmem/` | `copilot plugin install ~/.copilot/installed-plugins/_direct/llmem` (auto-deployed by `npm install`) |
 
-Claude Code and GitHub Copilot CLI share the same plugin (`plugins/agent/`) because they use the same plugin specification. The plugin bundles hooks for `SessionStart`, `SessionEnd`, and `PreCompact`, plus all four LLMem skills.
+Claude Code and Copilot CLI share the same plugin source (`plugins/agent/`) because they use the same plugin specification (`.claude-plugin/plugin.json` manifest, `skills/`, `hooks/`). They differ only in where the plugin is installed. The `npm install` postinstall script auto-detects each platform and deploys to the correct location.
 
 The plugin-first approach means your AGENTS.md, CLAUDE.md, or system instructions stay clean — no 80-line memory blocks. See [Integrations](docs/INTEGRATIONS.md) for platform-specific setup.
 
@@ -192,8 +192,11 @@ ls ~/.agents/skills/llmem ~/.agents/skills/introspection
 # Verify plugin deployed (OpenCode)
 ls ~/.config/opencode/plugins/llmem.js
 
-# Verify plugin deployed (Claude Code / Copilot CLI)
+# Verify plugin deployed (Claude Code)
 ls ~/.claude/plugins/llmem/.claude-plugin/plugin.json
+
+# Verify plugin deployed (Copilot CLI)
+ls ~/.copilot/installed-plugins/_direct/llmem/.claude-plugin/plugin.json
 ```
 
 ## Quick Start

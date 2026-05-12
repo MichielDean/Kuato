@@ -104,14 +104,16 @@ If you can't use npm install, deploy manually:
 | Platform | Plugin file | Target |
 |----------|------------|--------|
 | OpenCode | `plugins/opencode/llmem.js` | `~/.config/opencode/plugins/llmem.js` |
-| Claude Code / Copilot CLI | Entire `plugins/agent/` directory | `~/.claude/plugins/llmem/` |
+| Claude Code | Entire `plugins/agent/` directory | `~/.claude/plugins/llmem/` |
+| Copilot CLI | Entire `plugins/agent/` directory | `~/.copilot/installed-plugins/_direct/llmem/` |
 
 **Force a specific platform:**
 
 ```bash
 node install.js --platform opencode    # OpenCode only
-node install.js --platform claude-code # Claude Code / Copilot only
-node install.js --platform both         # Both platforms
+node install.js --platform claude-code # Claude Code only
+node install.js --platform copilot     # Copilot CLI only
+node install.js --platform all         # All platforms
 node install.js --platform none         # Skills only, no plugins
 ```
 
@@ -139,7 +141,7 @@ Or, if using local plugin deployment (the file was already copied by install.js)
 Plugin-managed. Search when uncertain: `llmem search "topic"`. Add when you learn: `llmem add --type fact --content "..."`.
 ```
 
-#### Claude Code / Copilot CLI
+#### Claude Code
 
 The plugin is installed at `~/.claude/plugins/llmem/`. Enable it:
 
@@ -156,6 +158,26 @@ The plugin provides:
 - **Skills**: `llmem`, `llmem-setup`, `introspection`, `introspection-review-tracker` — loaded on-demand
 
 **Instructions in CLAUDE.md — optional.** The `SessionStart` hook injects context. If you want a persistent reminder:
+
+```markdown
+## Memory
+
+Plugin-managed. Search when uncertain: `llmem search "topic"`. Add when you learn: `llmem add --type fact --content "..."`.
+```
+
+#### Copilot CLI
+
+The plugin is installed at `~/.copilot/installed-plugins/_direct/llmem/`. Enable it:
+
+```bash
+copilot plugin install ~/.copilot/installed-plugins/_direct/llmem
+# Or install directly from the GitHub repo:
+copilot plugin install MichielDean/LLMem:plugins/agent
+```
+
+Copilot CLI uses the same plugin format as Claude Code (`.claude-plugin/plugin.json`) but installs to `~/.copilot/` instead of `~/.claude/`. The hooks and skills are identical.
+
+**Instructions in COPILOT.md — optional.** If you want a persistent reminder:
 
 ```markdown
 ## Memory
@@ -182,6 +204,8 @@ ls ~/.agents/skills/llmem ~/.agents/skills/introspection
 ls ~/.config/opencode/plugins/llmem.js
 # Claude Code:
 ls ~/.claude/plugins/llmem/.claude-plugin/plugin.json
+# Copilot CLI:
+ls ~/.copilot/installed-plugins/_direct/llmem/.claude-plugin/plugin.json
 
 # Optional: verify OpenCode tools
 ls .opencode/tools/llmem-*.ts

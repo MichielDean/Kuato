@@ -7,9 +7,15 @@
  *
  * 1. Copies skill directories to ~/.agents/skills/ (all platforms)
  * 2. Deploys the OpenCode plugin to ~/.config/opencode/plugins/ (if OpenCode detected)
- * 3. Deploys the Claude Code / Copilot CLI plugin to ~/.claude/plugins/ (if detected)
+ * 3. Deploys the Claude Code plugin to ~/.claude/plugins/llmem/ (if Claude Code detected)
+ * 4. Deploys the Copilot CLI plugin to ~/.copilot/installed-plugins/_direct/llmem/ (if Copilot detected)
  *
- * Use --platform to force a specific platform: opencode, claude-code, copilot, both, none
+ * Claude Code and Copilot CLI use the same plugin source (plugins/agent/) but
+ * install to different locations. Claude Code reads from ~/.claude/plugins/,
+ * Copilot CLI reads from ~/.copilot/installed-plugins/. The plugin format
+ * (.claude-plugin/plugin.json) is shared between both.
+ *
+ * Use --platform to force a specific platform: opencode, claude-code, copilot, both, all, none
  * Defaults to auto-detecting.
  *
  * Uses only Node.js built-in modules: fs, path, os, child_process.
@@ -25,15 +31,17 @@ const PLUGINS_DIR = path.join(__dirname, 'plugins');
 const TARGET_SKILLS_DIR = path.join(os.homedir(), '.agents', 'skills');
 const OPENCODE_PLUGIN_SRC = path.join(PLUGINS_DIR, 'opencode', 'llmem.js');
 const OPENCODE_PLUGIN_DEST = path.join(os.homedir(), '.config', 'opencode', 'plugins', 'llmem.js');
-const AGENT_PLUGIN_SRC = path.join(PLUGINS_DIR, 'agent');
-const CLAUDE_PLUGIN_DEST = path.join(os.homedir(), '.claude', 'plugins', 'llmem');
+var AGENT_PLUGIN_SRC = path.join(PLUGINS_DIR, 'agent');
+var CLAUDE_PLUGIN_DEST = path.join(os.homedir(), '.claude', 'plugins', 'llmem');
+var COPILOT_PLUGIN_DEST = path.join(os.homedir(), '.copilot', 'installed-plugins', '_direct', 'llmem');
 
 function copyDirRecursive(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
-  const entries = fs.readdirSync(src, { withFileTypes: true });
-  for (const entry of entries) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
+  var entries = fs.readdirSync(src, { withFileTypes: true });
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i];
+    var srcPath = path.join(src, entry.name);
+    var destPath = path.join(dest, entry.name);
     if (entry.isDirectory()) {
       copyDirRecursive(srcPath, destPath);
     } else {
@@ -44,6 +52,7 @@ function copyDirRecursive(src, dest) {
 
 function detectPlatforms() {
   var platforms = [];
+  var home = os.homedir();
   try {
     child_process.execFileSync('which', ['opencode'], { encoding: 'utf8', timeout: 5000 }).trim();
     platforms.push('opencode');
@@ -52,12 +61,18 @@ function detectPlatforms() {
     child_process.execFileSync('which', ['claude'], { encoding: 'utf8', timeout: 5000 }).trim();
     platforms.push('claude-code');
   } catch {}
-  var home = os.homedir();
+  try {
+    child_process.execFileSync('which', ['copilot'], { encoding: 'utf8', timeout: 5000 }).trim();
+    if (platforms.indexOf('copilot') === -1) platforms.push('copilot');
+  } catch {}
   if (fs.existsSync(path.join(home, '.config', 'opencode'))) {
     if (platforms.indexOf('opencode') === -1) platforms.push('opencode');
   }
   if (fs.existsSync(path.join(home, '.claude'))) {
     if (platforms.indexOf('claude-code') === -1) platforms.push('claude-code');
+  }
+  if (fs.existsSync(path.join(home, '.copilot'))) {
+    if (platforms.indexOf('copilot') === -1) platforms.push('copilot');
   }
   return platforms.length > 0 ? platforms : ['opencode'];
 }
@@ -119,17 +134,29 @@ function installOpenCodePlugin() {
   }
 }
 
-function installAgentPlugin() {
+function installClaudeCodePlugin() {
   if (!fs.existsSync(AGENT_PLUGIN_SRC)) {
     console.error('llmem: agent plugin not found at ' + AGENT_PLUGIN_SRC);
     return;
   }
-  var claudeDest = CLAUDE_PLUGIN_DEST;
   try {
-    copyDirRecursive(AGENT_PLUGIN_SRC, claudeDest);
-    console.log('llmem: installed Claude Code / Copilot CLI plugin to ' + claudeDest);
+    copyDirRecursive(AGENT_PLUGIN_SRC, CLAUDE_PLUGIN_DEST);
+    console.log('llmem: installed Claude Code plugin to ' + CLAUDE_PLUGIN_DEST);
   } catch (err) {
-    console.error('llmem: failed to install agent plugin: ' + err.message);
+    console.error('llmem: failed to install Claude Code plugin: ' + err.message);
+  }
+}
+
+function installCopilotPlugin() {
+  if (!fs.existsSync(AGENT_PLUGIN_SRC)) {
+    console.error('llmem: agent plugin not found at ' + AGENT_PLUGIN_SRC);
+    return;
+  }
+  try {
+    copyDirRecursive(AGENT_PLUGIN_SRC, COPILOT_PLUGIN_DEST);
+    console.log('llmem: installed Copilot CLI plugin to ' + COPILOT_PLUGIN_DEST);
+  } catch (err) {
+    console.error('llmem: failed to install Copilot CLI plugin: ' + err.message);
   }
 }
 
@@ -149,8 +176,10 @@ function main() {
       console.log('llmem: skipping plugin deployment (--platform none)');
       return;
     }
-    if (platformArg === 'both') {
-      platforms = ['opencode', 'claude-code'];
+    if (platformArg === 'both' || platformArg === 'all') {
+      platforms = ['opencode', 'claude-code', 'copilot'];
+    } else if (platformArg === 'claude-code') {
+      platforms = ['claude-code'];
     } else {
       platforms = [platformArg];
     }
@@ -162,8 +191,10 @@ function main() {
     var p = platforms[j];
     if (p === 'opencode') {
       installOpenCodePlugin();
-    } else if (p === 'claude-code' || p === 'copilot') {
-      installAgentPlugin();
+    } else if (p === 'claude-code') {
+      installClaudeCodePlugin();
+    } else if (p === 'copilot') {
+      installCopilotPlugin();
     }
   }
 
