@@ -11,14 +11,12 @@ Agent Session
     │
     ├── Plugin (auto, no instructions needed)
     │   ├── session.created/start → llmem stats + search → inject context
-    │   ├── session.idle/end      → llmem hook idle/ending → extract + introspect
+    │   ├── session.idle/end      → llmem hook idle/ending → extract memories
     │   └── session.compacting    → llmem context --compacting → preserve memories
     │
     ├── Skills (on-demand, loaded by trigger)
     │   ├── llmem                      → CLI reference, memory types, commands
-    │   ├── llmem-setup                → Install and configure LLMem
-    │   ├── introspection              → Self-assessment framework, error taxonomy
-    │   └── introspection-review-tracker → Review outcome tracking
+    │   └── llmem-setup                → Install and configure LLMem
     │
     └── Custom Tools (structural, zero-instruction)
         ├── llmem-search   → Search memories
@@ -33,8 +31,6 @@ Agent Session
 
 - **No instruction pollution.** The plugin injects context automatically. Skills load on-demand. Your AGENTS.md/CLAUDE.md stays clean.
 - **Platform-agnostic core.** Same Go binary, same skills, same CLI across OpenCode, Claude Code, and Copilot CLI. Only the thin adapter plugin differs.
-- **Single install command.** `npm install` deploys skills, plugins, and tools for your platform.
-- **No per-platform instruction docs to maintain.** The plugin handles behavioral injection, not 80-line instruction blocks.
 
 ## OpenCode Integration
 
@@ -61,7 +57,7 @@ The OpenCode plugin (`plugins/opencode/llmem.js`) handles:
 
 | Event | Action |
 |-------|--------|
-| `session.created` | Runs `llmem stats` + `llmem search behavioral/proposed` — injects results as log context |
+| `session.created` | Runs `llmem stats` + `llmem search` — injects results as log context |
 | `session.idle` | Runs `llmem hook idle <session_id>` — extracts memories from transcript |
 | `session.ending` | (not yet wired — agent-driven via skills) |
 | `experimental.session.compacting` | Runs `llmem context --compacting` — preserves key memories |
@@ -97,8 +93,6 @@ Four skills ship with LLMem and are installed to `~/.agents/skills/`:
 |-------|-------------|
 | **llmem** | Full CLI reference, memory types, commands, dream config |
 | **llmem-setup** | Install, configure, and integrate LLMem into a harness |
-| **introspection** | Self-assessment framework, error taxonomy, vigilance checks |
-| **introspection-review-tracker** | Review outcome tracking for code reviews |
 
 ### Optional: AGENTS.md Pointer
 
@@ -140,9 +134,7 @@ plugins/agent/
 │   └── hooks.json           # Session lifecycle hooks
 └── skills/
     ├── llmem/SKILL.md
-    ├── llmem-setup/SKILL.md
-    ├── introspection/SKILL.md
-    └── introspection-review-tracker/SKILL.md
+    └── llmem-setup/SKILL.md
 ```
 
 ### Installation
@@ -159,8 +151,8 @@ The `hooks.json` declares:
 
 | Event | Action |
 |-------|--------|
-| `SessionStart` | Runs `llmem stats` + behavioral + proposed searches — stdout injected as context |
-| `SessionEnd` | Runs `llmem hook ending` — extracts memories and runs introspection |
+| `SessionStart` | Runs `llmem stats` + search — stdout injected as context |
+| `SessionEnd` | Runs `llmem hook ending` — extracts memories |
 | `PreCompact` | Runs `llmem context --compacting` — preserves key memories |
 
 The `SessionStart` hook's **stdout is added as context that Claude can see and act on** — this is the key mechanism for zero-config integration.
@@ -218,7 +210,7 @@ Plugin-managed. Search when uncertain: `llmem search "topic"`. Add when you lear
 After installation, verify the skills and plugins are discoverable:
 
 ```bash
-ls ~/.agents/skills/llmem ~/.agents/skills/introspection ~/.agents/skills/introspection-review-tracker
+ls ~/.agents/skills/llmem ~/.agents/skills/llmem-setup
 
 # OpenCode plugin
 ls ~/.config/opencode/plugins/llmem.js

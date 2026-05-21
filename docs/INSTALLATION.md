@@ -4,7 +4,7 @@ How to install and set up LLMem. [Back to README](../README.md)
 
 ## Go Installation (recommended)
 
-The Go binary provides the full CLI, dream cycle, session hooks, introspection, and extraction.
+The Go binary provides the full CLI, dream cycle, session hooks, and extraction.
 
 ### Build from source
 

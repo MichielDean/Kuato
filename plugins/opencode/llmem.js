@@ -74,30 +74,6 @@ const LLMemPlugin = async function ({ client, $, directory, worktree }) {
         if (context) {
           log(client, "info", INJECT_TAG + "\n" + context);
         }
-
-        const behavioral = run([
-          "search",
-          "behavioral",
-          "--type",
-          "self_assessment",
-          "--limit",
-          "5",
-        ]);
-        if (behavioral) {
-          log(client, "info", "## LLMem Behavioral Patterns\n" + behavioral);
-        }
-
-        const proposed = run([
-          "search",
-          "proposed",
-          "--type",
-          "procedure",
-          "--limit",
-          "5",
-        ]);
-        if (proposed) {
-          log(client, "info", "## LLMem Proposed Procedures\n" + proposed);
-        }
       }
 
       if (event.type === "session.idle") {

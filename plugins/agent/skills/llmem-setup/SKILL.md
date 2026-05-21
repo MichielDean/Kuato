@@ -122,8 +122,7 @@ Memory is working memory, not a startup ritual. Search before assuming.
 
 **Session start — MANDATORY:**
 1. `llmem stats` — check memory health
-2. `llmem search "behavioral" --type self_assessment --limit 5` — surface recurring error patterns
-3. `llmem search "proposed" --type procedure --limit 5` — check for proposed procedural memories
+2. `llmem search "topic" --limit 5` — search for relevant memories
 
 **Mid-session search triggers — search whenever:**
 - Looking up how something works

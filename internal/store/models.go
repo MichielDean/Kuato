@@ -157,7 +157,6 @@ func DefaultRegisteredTypes() []string {
 		"project_state",
 		"procedure",
 		"conversation",
-		"self_assessment",
 	}
 }
 

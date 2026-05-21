@@ -14,7 +14,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and coding conventi
 | [Providers](docs/PROVIDERS.md) | Embedding/generation providers, fallback chains, configuration |
 | [CLI Reference](docs/CLI.md) | All `llmem` commands and options |
 | [Python API](docs/API.md) | MemoryStore, Retriever, extension points, database schema, module reference |
-| [Go API](docs/API.md#go-api) | Go packages — store, config, dream, extract, introspect, ollama, paths, session, systemd, taxonomy, urlvalidate |
+| [Go API](docs/API.md#go-api) | Go packages — store, config, dream, extract, ollama, paths, session, systemd, taxonomy, urlvalidate |
 | [Integrations](docs/INTEGRATIONS.md) | OpenCode, Copilot CLI, custom tools, session hooks |
 | [Configuration](docs/CONFIGURATION.md) | config.yaml reference, path resolution, dream settings |
 | [Search Reranking](docs/RERANKING.md) | Multi-signal reranking, signal weights, type priority |
@@ -81,7 +81,7 @@ See below for per-platform setup details.
 
 ### Go (memory store library)
 
-The Go implementation provides the core memory store as a pure-Go library with no CGo dependency, plus a full CLI, dream cycle, session hooks, introspection, and extraction:
+The Go implementation provides the core memory store as a pure-Go library with no CGo dependency, plus a full CLI, dream cycle, session hooks, and extraction:
 
 ```bash
 go get github.com/MichielDean/LLMem
@@ -146,10 +146,8 @@ LLMem ships four skills focused on memory management. They load on-demand via th
 
 | Skill | Description |
 |-------|-------------|
-| **llmem** | Manage LLMem memories — add, search, consolidate, dream, introspect, and track review outcomes. |
+| **llmem** | Manage LLMem memories — add, search, consolidate, and dream. |
 | **llmem-setup** | Install and configure LLMem — plugin deployment, provider setup, skill registration. |
-| **introspection** | Operational reference for the introspection framework — self-assessment, sampajanna checks, error taxonomy. |
-| **introspection-review-tracker** | Reference for the automated ReviewOutcomeTracker hook that persists review findings as self_assessment memories. |
 
 ## Templates
 
@@ -187,7 +185,7 @@ llmem init
 llmem stats
 
 # Verify skills are deployed
-ls ~/.agents/skills/llmem ~/.agents/skills/introspection
+ls ~/.agents/skills/llmem
 
 # Verify plugin deployed (OpenCode)
 ls ~/.config/opencode/plugins/llmem.js
@@ -215,11 +213,6 @@ llmem add --type fact --content "Project uses pytest for testing"
 llmem search "testing"
 llmem search "testing" --type fact --limit 5 --json
 llmem search "testing" --include-code --json
-
-# Index a codebase
-llmem learn ./src
-llmem learn ./src --strategy fixed --window-size 30 --overlap 5
-llmem learn ./src --no-embed
 
 # List all memories
 llmem list
@@ -269,7 +262,7 @@ go test ./...
 
 1349 Python tests and 142 JavaScript tests covering all providers, session adapters (OpenCode, Copilot, none), URL validation, configuration, security, session hooks, CLI commands, and edge cases.
 
-Go tests covering store operations, FTS5 search, vector search, hybrid retrieval, embedding engine, metrics, URL validation, migrations, type validation, import/export, config, dream cycle, extraction, introspection, session hooks, path validation, systemd unit generation, and taxonomy.
+Go tests covering store operations, FTS5 search, vector search, hybrid retrieval, embedding engine, metrics, URL validation, migrations, type validation, import/export, config, dream cycle, extraction, session hooks, path validation, systemd unit generation, and taxonomy.
 
 ## Makefile
 

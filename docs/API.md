@@ -627,7 +627,7 @@ Code ref paths must be relative (no leading `/`) and must not contain `..` trave
 | `llmem.url_validate` | `is_safe_url()`, `safe_urlopen()`, `_strip_credentials()`, `validate_base_url()`, `_NoRedirectHandler`, `_extract_url_string()` (mirrors `memory.url_validate`), DNS rebinding protection |
 | `llmem.paths` | `validate_session_id()`, `get_context_dir()`, `_validate_write_path()`, `BLOCKED_SYSTEM_PREFIXES`, home/write path checks |
 | `llmem.registry` | `register_session_hook()`, `get_registered_session_hooks()`, `VALID_SESSION_EVENT_TYPES` |
-| `llmem.taxonomy` | `ERROR_TAXONOMY`, `REVIEW_SEVERITY_TAXONOMY`, `SELF_ASSESSMENT_FIELDS`, `ERROR_TAXONOMY_KEYS` |
+| `llmem.taxonomy` | `ERROR_TAXONOMY`, `REVIEW_SEVERITY_TAXONOMY`, `ERROR_TAXONOMY_KEYS` |
 | `llmem.metrics` | `compute_metrics()`, `anisotropy()`, `similarity_range()`, `discrimination_gap()`, `cosine_similarity()`, `bytes_to_vec()`, `EmbeddingMetrics` dataclass, warning thresholds, `METRICS_MAX_EMBEDDINGS` |
 | `llmem.store` | `MemoryStore` with `export_all(limit=)`, `import_memories()` validation, brute-force/embedding caps, dimension validation, inbox methods (`add_to_inbox`, `get_from_inbox`, `list_inbox`, `remove_from_inbox`, `update_inbox_attention_score`, `consolidate`), capacity eviction, `get_embeddings_with_types(limit=)`, `count_embeddings()` |
 | `llmem.code_index` | `CodeIndex` — manages `code_chunks` table, FTS5/vec virtual tables, add/search/remove operations |
@@ -823,7 +823,7 @@ err := ms.RegisterMemoryType("my_custom_type")
 
 // Get the default types
 types := store.DefaultRegisteredTypes()
-// ["fact", "decision", "preference", "event", "project_state", "procedure", "conversation", "self_assessment"]
+// ["fact", "decision", "preference", "event", "project_state", "procedure", "conversation"]
 
 // Get valid relation types
 relTypes := store.ValidRelationTypes()
@@ -1060,7 +1060,7 @@ weighted := retriever.ComputeWeightedSignal(signals)
 
 // Get default type priority map (returns defensive copy).
 priorities := retriever.DefaultTypePriority()
-// map[decision:1.2 preference:1.1 procedure:1.1 fact:1.0 project_state:1.0 self_assessment:1.0 event:0.9]
+// map[decision:1.2 preference:1.1 procedure:1.1 fact:1.0 project_state:1.0 event:0.9]
 ```
 
 #### Reranking Signals
@@ -1080,8 +1080,7 @@ The final score is: `rrf_score * (1 - blend) + weighted_signal * blend`
 |------|----------|-|------|----------|
 | decision | 1.2 | | fact | 1.0 |
 | preference | 1.1 | | project_state | 1.0 |
-| procedure | 1.1 | | self_assessment | 1.0 |
-| | | | event | 0.9 |
+| procedure | 1.1 | | event | 0.9 |
 
 ### Embedding Metrics (internal/metrics)
 
@@ -1163,9 +1162,6 @@ dreamerCfg := cfg.DreamerConfig() // DreamerConfig for dream.NewDreamer()
 dreamCfg := cfg.DreamConfigResolved()
 sessionCfg := cfg.SessionConfigResolved()
 
-// Create a SkillPatcher from config (returns nil if store is nil)
-sp, err := cfg.NewSkillPatcher(ms)  // *skillpatch.SkillPatcher, nil ms → nil, nil
-
 // Write config YAML (with file permissions 0600)
 written, err := config.WriteConfigYAML(path, configMap, false) // false = don't overwrite
 ```
@@ -1176,7 +1172,6 @@ written, err := config.WriteConfigYAML(path, configMap, false) // false = don't 
 type Config struct {
     Memory    MemoryConfig
     Dream     DreamConfig
-    SkillPatch SkillPatchConfig
     OpenCode  OpenCodeConfig
     Session   SessionConfig
 }
@@ -1201,21 +1196,13 @@ type DreamConfig struct {
     BoostAmount             float64
     DiaryPath                string
     ReportPath               string
-    BehavioralThreshold      int
-    BehavioralLookbackDays   int
     AutoLinkThreshold        float64
     StaleProcedureDays       int
-    OllamaURL               string
-    Model                    string
 }
 
 type SessionConfig struct {
     Adapter         string
     DebounceSeconds int
-}
-
-type SkillPatchConfig struct {
-    Dir string  // Root directory for skill files. Defaults to paths.GetSkillDir() (~/.config/llmem/skills/).
 }
 ```
 
@@ -1255,119 +1242,6 @@ available := engine.CheckAvailable(ctx)
 | Model | string | `"glm-5.1:cloud"` | Extraction model name |
 | BaseURL | string | `"http://localhost:11434"` | Ollama API base URL (validated for SSRF) |
 | HTTPClient | *http.Client | nil → new client | Optional pre-configured client (for testing) |
-| OllamaClient | *ollama.OllamaClient | nil → new client | Optional pre-configured client (takes precedence over BaseURL) |
-
-### Introspection (internal/introspect)
-
-The `internal/introspect` package provides failure analysis, lesson learning, and session transcript introspection (see [Dream Cycle & Extraction](DREAM.md#go) for usage).
-
-```go
-import "github.com/MichielDean/LLMem/internal/introspect"
-
-// IntrospectFailure — returns IntrospectResult with MemoryID, ProposedUpdate, and Category
-result, err := introspect.IntrospectFailure(ctx, ms, introspect.IntrospectFailureParams{
-    WhatHappened: "null pointer dereference",
-    Category:     "NULL_SAFETY",
-    Context:      "handler.go:42",
-    CaughtBy:     "self-review",
-    ProposedFix:  "add nil check",
-})
-// result.MemoryID, result.ProposedUpdate, result.Category
-
-// LearnLesson — returns IntrospectResult with MemoryID, ProposedUpdate, and Category
-result, err := introspect.LearnLesson(ctx, ms, introspect.LearnLessonParams{
-    WhatWasWrong:  "used global state",
-    WhatIsCorrect: "inject dependency via constructor",
-    Context:       "service.go:15",
-})
-// result.MemoryID, result.ProposedUpdate, result.Category
-
-// IntrospectTranscript — analyze a session transcript at session end
-id, err := introspect.IntrospectTranscript(ctx, ms, transcript, "session-id", ollamaClient, "glm-5.1:cloud")
-// When ollamaClient is nil, falls back to degraded storage (plain-text summary, no LLM call)
-```
-
-`IntrospectFailure` and `LearnLesson` return an `IntrospectResult` with `MemoryID`, `ProposedUpdate`, and `Category` fields. When `ProposedUpdate` and `Category` are non-empty, callers should patch the relevant skill file using a `SkillPatcher` (see [Skill Patching](#skill-patching)).
-
-All three functions use LLM expansion via Ollama when available. When Ollama is unavailable, they gracefully degrade to storage-only mode (storing the raw parameters without LLM expansion).
-
-**IntrospectTranscript** differs from `IntrospectFailure` and `LearnLesson` in two ways:
-1. It accepts a pre-configured `*ollama.OllamaClient` instead of a model/baseURL pair, reusing the session's configured Ollama connection.
-2. It uses `context.Background()` for the final store operation (not the caller's `ctx`), ensuring the session-end self-assessment is persisted even if the calling context has expired during the LLM call. This is intentional — `IntrospectFailure` and `LearnLesson` pass through `ctx` because they run mid-session when the context is still alive.
-
-#### IntrospectAuto
-
-```go
-result, err := introspect.IntrospectAuto(ctx, ms, "Session transcript text...", "glm-5.1:cloud", "http://localhost:11434")
-// result.MemoryID, result.ProposedUpdate, result.Category
-```
-
-`IntrospectAuto` performs automatic introspection on arbitrary text (typically a session transcript) and stores a `self_assessment` memory. When Ollama is available, it uses the LLM to expand the introspection into a richer assessment; when unavailable, it stores the raw text directly (graceful degradation). The `model` and `baseURL` parameters default to `"glm-5.1:cloud"` and `"http://localhost:11434"` respectively when empty.
-
-Returns an `IntrospectAutoResult` with three fields:
-- `MemoryID`: always non-empty on success
-- `ProposedUpdate`: extracted from LLM-enriched content when available; empty on graceful degradation
-- `Category`: extracted from LLM-enriched content when available; empty on graceful degradation
-
-Contract: never returns `(IntrospectAutoResult{}, nil)` — either creates a memory or returns an error. Even on LLM failure, a storage-only memory is created.
-
-When `ProposedUpdate` and `Category` are both non-empty, callers should patch the relevant skill file using a `SkillPatcher` (see [Skill Patching](#skill-patching)). The CLI commands `introspect`, `learn`, and the `ending` hook all perform this patching automatically.
-
-### Skill Patching (internal/skillpatch)
-
-The `internal/skillpatch` package provides direct skill file patching after introspection. When introspection produces a `ProposedUpdate` and `Category`, the relevant SKILL.md file is patched immediately — no proposed-changes.md or human approval gate. The dream cycle later validates whether the patch reduced errors in that category.
-
-```go
-import "github.com/MichielDean/LLMem/internal/skillpatch"
-
-sp, err := skillpatch.NewSkillPatcher(skillpatch.SkillPatchConfig{
-    SkillDir: "",  // empty → paths.GetSkillDir() (~/.config/llmem/skills/)
-})
-if err != nil {
-    log.Fatal(err)
-}
-
-// Patch a skill file with a procedural update from introspection
-err = sp.Patch(ctx, "NULL_SAFETY", "Always guard nil pointers in Go", "Missing null checks")
-
-// Find the skill file for a category (returns "" if not found)
-path, err := sp.FindSkillFile(ctx, "ERROR_HANDLING")
-
-// Validate whether a patch was effective (pure function, no I/O)
-validation := skillpatch.ValidatePatch("NULL_SAFETY", 10, 3)
-// validation.Effective → true (errors decreased)
-// validation.Flagged   → false
-```
-
-#### Patch Behavior
-
-- **Category mapping**: All 10 error taxonomy categories (`NULL_SAFETY`, `ERROR_HANDLING`, `OFF_BY_ONE`, `RACE_CONDITION`, `AUTH_BYPASS`, `DATA_INTEGRITY`, `MISSING_VERIFICATION`, `EDGE_CASE`, `PERFORMANCE`, `DESIGN`) map to the `introspection` skill directory. Unknown categories use `strings.ToLower(category)` as the directory name.
-- **Additive patches**: New `## Patch: CATEGORY (YYYY-MM-DD)` sections are appended to SKILL.md, never overwriting existing content.
-- **Idempotent**: Duplicate patches (same `proposedUpdate` text already in the file) are silently skipped.
-- **New skill files**: If no SKILL.md exists for a category, a new one is created with YAML frontmatter.
-- **Security**: Category names are validated against `^[A-Za-z0-9_]+$` to prevent path traversal. YAML frontmatter values have newlines sanitized to prevent injection. Resolved paths are validated to stay within the root skill directory.
-
-#### SkillPatchConfig
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| SkillDir | string | `paths.GetSkillDir()` | Root directory for skill files (~/.config/llmem/skills/) |
-
-#### ValidatePatch
-
-`ValidatePatch` is a pure function that compares two integer counts (before and after error count for a category) and returns a `PatchValidation` struct:
-
-```go
-type PatchValidation struct {
-    Category    string
-    BeforeCount int
-    AfterCount  int
-    Effective  bool  // true when AfterCount < BeforeCount
-    Flagged    bool  // true when AfterCount >= BeforeCount
-}
-```
-
-Zero before-count returns `{Effective: false, Flagged: false}` (no baseline to compare against).
 
 ### Ollama Client (internal/ollama)
 
@@ -1524,17 +1398,14 @@ coord, err := session.NewSessionHookCoordinator(session.SessionHookConfig{
     Adapter:          adapter,           // nil → no_transcript on idle/ending
     ExtractionEngine: extractionEngine,  // nil → skip extraction
     Embedding:        embeddingEngine,   // nil → store without embeddings
-    OllamaClient:     ollamaClient,      // nil → degraded introspection in OnEnding
-    SkillPatcher:     skillPatcher,     // nil → skip skill patching (graceful degradation)
 })
 ```
 
 When `config.yaml` has `opencode.db_path` set and the database exists, the adapter is wired into the coordinator. When the path is empty or the DB is unreachable, a nil adapter is used — `OnIdle` and `OnEnding` return `"no_transcript"` gracefully.
 
-The CLI also provides `openExtractionEngine()`, `openEmbeddingEngine()`, and `openOllamaClient()` helper functions that return nil on failure. The coordinator gracefully degrades when any of these are nil:
+The CLI also provides `openExtractionEngine()` and `openEmbeddingEngine()` helper functions that return nil on failure. The coordinator gracefully degrades when any of these are nil:
 - `ExtractionEngine` nil → extraction skipped, memories not extracted from transcript
 - `Embedding` nil → memories stored without embedding vectors
-- `OllamaClient` nil → `IntrospectTranscript` produces degraded self-assessment (plain-text summary, no LLM call)
 
 #### SessionHookConfig
 
@@ -1544,13 +1415,8 @@ type SessionHookConfig struct {
     Adapter          SessionAdapter              // Provides session content. nil → no_transcript
     DebounceSeconds  int                        // Min interval between idle events. Default: 30
     ContextDir       string                     // Directory for context files. Default: paths.GetContextDir()
-    Model            string                     // LLM model for introspection. Default: "glm-5.1:cloud"
-    BaseURL          string                     // Ollama base URL for introspection. Default: "http://localhost:11434"
     ExtractionEngine *extract.ExtractionEngine  // Extracts memories from transcript. nil → skip extraction
     Embedding        *embed.EmbeddingEngine     // Generates embedding vectors. nil → store without embeddings
-    OllamaClient     *ollama.OllamaClient       // Used for introspection in OnEnding. nil → degraded fallback
-    IntrospectModel  string                     // LLM model name for IntrospectTranscript. Default: "glm-5.1:cloud"
-    SkillPatcher     *skillpatch.SkillPatcher   // Patches skill files after introspection. nil → skip patching (graceful degradation)
 }
 ```
 
@@ -1562,23 +1428,12 @@ coord, err := session.NewSessionHookCoordinator(session.SessionHookConfig{
     Adapter:          adapter,
     ExtractionEngine: extractionEngine,  // nil → skip extraction
     Embedding:        embeddingEngine,    // nil → store without embeddings
-    OllamaClient:     ollamaClient,       // nil → degraded introspection in OnEnding
-    IntrospectModel:  "glm-5.1:cloud",    // optional, defaults to "glm-5.1:cloud"
 })
 
 result, err := coord.OnCreated(ctx, "session-id")       // "success" | "already_processed"
 result, err := coord.OnIdle(ctx, "session-id")          // "success" | "debounced" | "no_transcript"
 resultType, ctxPath, err := coord.OnCompacting(ctx, "session-id")  // "success" | "no_memories"
 result, err := coord.OnEnding(ctx, "session-id")         // "success"
-
-// OnEndingWithIntrospect: like OnEnding, but also performs automatic introspection
-// and skill patching. When the result includes ProposedUpdate and Category,
-// patches the relevant skill file immediately (no human approval gate).
-resultType, memoryID, err := coord.OnEndingWithIntrospect(ctx, "session-id")
-// Returns: ("success", memoryID, nil) on success
-//         ("no_transcript", "", nil) when adapter is nil or transcript is empty
-//         ("success", "", nil) when introspection fails (logs warning, doesn't crash)
-//         ("error", "", err) on validation error
 ```
 
 All methods validate session IDs via `paths.ValidateSessionID` to prevent path traversal.
@@ -1589,7 +1444,7 @@ All methods validate session IDs via `paths.ValidateSessionID` to prevent path t
 3. Generates embedding vectors for each memory (if `Embedding` is non-nil)
 4. Stores memories and logs the extraction
 
-**OnEnding** extracts memories the same way as OnIdle, then runs `IntrospectTranscript` to produce a session-end self-assessment. When `OllamaClient` is nil, `IntrospectTranscript` falls back to a degraded plain-text summary (no LLM call attempted) — the nil-OllamaClient guard must NOT be used, or the degradation path is bypassed.
+**OnEnding** extracts memories the same way as OnIdle.
 
 ### Systemd Unit Generation (internal/systemd)
 
@@ -1613,7 +1468,7 @@ Templates are embedded via `embed.FS`. `GenerateTimerUnit` calls `ValidateSchedu
 
 ### Taxonomy (internal/taxonomy)
 
-The `internal/taxonomy` package provides error taxonomy constants for self_assessment memories.
+The `internal/taxonomy` package provides error taxonomy constants.
 
 ```go
 import "github.com/MichielDean/LLMem/internal/taxonomy"
@@ -1626,19 +1481,7 @@ for category, description := range taxonomy.ErrorTaxonomy {
 // Get ordered category keys
 keys := taxonomy.ErrorTaxonomyKeys()
 // ["NULL_SAFETY", "ERROR_HANDLING", "OFF_BY_ONE", "RACE_CONDITION", "AUTH_BYPASS",
-//  "DATA_INTEGRITY", "MISSING_VERIFICATION", "EDGE_CASE", "PERFORMANCE", "DESIGN", "REVIEW_PASSED"]
-
-// Parse a formatted self-assessment line
-parsed := taxonomy.ParseSelfAssessment("NULL_SAFETY: null pointer dereference")
-// map[string]string{"Category": "NULL_SAFETY", "What": "null pointer dereference"}
-
-// Parse a specific field from self-assessment content (used by introspect and skillpatch)
-proposedUpdate := taxonomy.ParseSelfAssessmentField(content, "Proposed_update")
-category := taxonomy.ParseSelfAssessmentField(content, "Category")
-// Returns empty string if field not found; never returns an error
-
-// Get comma-separated category choices
-choices := taxonomy.IntrospectCategoryChoices()
+//  "DATA_INTEGRITY", "MISSING_VERIFICATION", "EDGE_CASE", "PERFORMANCE", "DESIGN"]
 ```
 
 #### Error Categories
@@ -1655,4 +1498,3 @@ choices := taxonomy.IntrospectCategoryChoices()
 | `EDGE_CASE` | Unhandled empty input, unexpected types |
 | `PERFORMANCE` | N+1 queries, memory leaks |
 | `DESIGN` | Architectural issues, coupling problems |
-| `REVIEW_PASSED` | Clean review — positive outcome |

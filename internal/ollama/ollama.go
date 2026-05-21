@@ -1,5 +1,5 @@
 // Package ollama provides a client for the Ollama /api/generate and /api/tags endpoints.
-// It is a shared extraction layer used by the extract, introspect, and dream packages
+// It is a shared extraction layer used by the extract and dream packages
 // to call the Ollama LLM generation API.
 package ollama
 
