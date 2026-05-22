@@ -20,9 +20,7 @@ const TEMPLATES_DIR = path.join(__dirname, 'templates');
 const TOOLS_DIR = path.join(__dirname, '.opencode', 'tools');
 const EXPECTED_SKILLS = [
   'llmem',
-  'llmem-setup',
-  'introspection',
-  'introspection-review-tracker'
+  'llmem-setup'
 ];
 const EXPECTED_TEMPLATES = [
   'rules.md',
