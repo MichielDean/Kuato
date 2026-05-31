@@ -152,7 +152,7 @@ claude --plugin-dir ~/.claude/plugins/llmem
 ```
 
 The plugin provides:
-- **`SessionStart` hook**: Injects `llmem stats` and `llmem context` at session start
+- **`SessionStart` hook**: Injects `llmem stats` and `llmem search` at session start
 - **`SessionEnd` hook**: Runs `llmem hook ending` for memory extraction
 - **`PreCompact` hook**: Injects key memories before compaction
 - **Skills**: `llmem`, `llmem-setup` — loaded on-demand
@@ -232,7 +232,7 @@ Runs nightly at 3am by default. Configure in `~/.config/llmem/config.yaml` under
 Agent Session
     │
     ├── Plugin (auto, no instructions needed)
-    │   ├── session.created/start → llmem stats + llmem context → inject context
+    │   ├── session.created/start → llmem stats + llmem search → inject context
     │   ├── session.idle/end      → llmem hook idle/ending → extract memories
     │   └── session.compacting    → llmem context --compacting → preserve key memories
     │

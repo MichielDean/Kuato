@@ -1243,6 +1243,7 @@ available := engine.CheckAvailable(ctx)
 | Model | string | `"glm-5.1:cloud"` | Extraction model name |
 | BaseURL | string | `"http://localhost:11434"` | Ollama API base URL (validated for SSRF) |
 | HTTPClient | *http.Client | nil → new client | Optional pre-configured client (for testing) |
+| OllamaClient | *ollama.OllamaClient | nil | Optional pre-configured OllamaClient; takes precedence over BaseURL/HTTPClient |
 
 ### Ollama Client (internal/ollama)
 

@@ -10,7 +10,7 @@ LLMem uses a **plugin-first architecture**. The plugin handles automatic memory 
 Agent Session
     │
     ├── Plugin (auto, no instructions needed)
-    │   ├── session.created/start → llmem stats + llmem context → inject context
+    │   ├── session.created/start → llmem stats + llmem search → inject context
     │   ├── session.idle/end      → llmem hook idle/ending → extract memories
     │   └── session.compacting    → llmem context --compacting → preserve memories
     │
@@ -57,7 +57,7 @@ The OpenCode plugin (`plugins/opencode/llmem.js`) handles:
 
 | Event | Action |
 |-------|--------|
-| `session.created` | Runs `llmem stats` + `llmem context --session-id <id>` — injects results as log context |
+| `session.created` | Runs `llmem stats` + `llmem search` — injects results as log context |
 | `session.idle` | Runs `llmem hook idle <session_id>` — extracts memories from transcript |
 | `session.ending` | (not yet wired — agent-driven via skills) |
 | `experimental.session.compacting` | Runs `llmem context --compacting` — preserves key memories |
@@ -151,7 +151,7 @@ The `hooks.json` declares:
 
 | Event | Action |
 |-------|--------|
-| `SessionStart` | Runs `llmem stats` + `llmem context --session-id start` — stdout injected as context |
+| `SessionStart` | Runs `llmem stats` + `llmem search` — stdout injected as context |
 | `SessionEnd` | Runs `llmem hook ending` — extracts memories |
 | `PreCompact` | Runs `llmem context --compacting` — preserves key memories |
 

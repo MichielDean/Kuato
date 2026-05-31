@@ -1,11 +1,9 @@
 /**
  * LLMem OpenCode Plugin — session lifecycle hooks for memory injection.
  *
- * This plugin handles four things automatically:
+ * This plugin handles two things automatically:
  * 1. session.created — injects memory context and stats into the session
- * 2. session.idle — extracts memories from the session transcript
- * 3. session.ending — extracts memories and runs introspection
- * 4. experimental.session.compacting — preserves key memories across compaction
+ * 2. experimental.session.compacting — preserves key memories across compaction
  *
  * All behavioral instructions (when to search, when to add, when to introspect)
  * live in the llmem SKILL.md and are loaded on-demand by the agent.
@@ -70,18 +68,14 @@ const LLMemPlugin = async function ({ client, $, directory, worktree }) {
           log(client, "info", STATS_TAG + "\n" + stats);
         }
 
-        const context = run(["context", "--session-id", sessionId || "start"]);
+        const context = run([
+          "search",
+          "recent decisions important facts preferences",
+          "--limit",
+          "5",
+        ]);
         if (context) {
           log(client, "info", INJECT_TAG + "\n" + context);
-        }
-      }
-
-      if (event.type === "session.idle") {
-        const sessionId =
-          event.properties &&
-          (event.properties.sessionId || event.properties.id);
-        if (sessionId) {
-          runAsync(["hook", "idle", sessionId]);
         }
       }
     },

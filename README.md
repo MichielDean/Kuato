@@ -126,7 +126,7 @@ See [docs/INSTALLATION.md](docs/INSTALLATION.md) for Go build dependencies and [
 
 LLMem uses platform plugins to inject memory context automatically. **No manual instruction editing required.** The plugin handles:
 
-- **Session start**: Injects memory stats and context as session starts
+- **Session start**: Injects memory stats and search results as context
 - **Session idle/end**: Extracts memories from the session transcript
 - **Compaction**: Preserves key memories across context compaction
 

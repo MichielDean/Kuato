@@ -111,7 +111,7 @@ weighted := retriever.ComputeWeightedSignal(signals)
 priorities := retriever.DefaultTypePriority()
 ```
 
-The type priority weights are identical to Python (`decision: 1.2`, `preference: 1.1`, `procedure: 1.1`, `fact: 1.0`, `project_state: 1.0`, `event: 0.9`). `NewRetriever` makes a defensive copy of the input map to prevent caller mutation.
+The type priority weights are identical to Python (`decision: 1.2`, `preference: 1.1`, `procedure: 1.1`, `fact: 1.0`, `project_state: 1.0`, `event: 0.9`, `conversation: 0.7`). `NewRetriever` makes a defensive copy of the input map to prevent caller mutation.
 
 ### Access Tracking
 

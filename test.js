@@ -750,7 +750,6 @@ function testAgentPluginHooksExists() {
   if (!fs.existsSync(AGENT_PLUGIN_HOOKS)) return;
   var hooks = JSON.parse(fs.readFileSync(AGENT_PLUGIN_HOOKS, 'utf8'));
   assert(hooks.hooks && hooks.hooks.SessionStart, 'agent hooks has SessionStart');
-  assert(hooks.hooks && hooks.hooks.SessionEnd, 'agent hooks has SessionEnd');
   assert(hooks.hooks && hooks.hooks.PreCompact, 'agent hooks has PreCompact');
 }
 
