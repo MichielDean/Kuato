@@ -89,16 +89,6 @@ llmem delete <id>
 # Stats
 llmem stats
 
-# Context injection for sessions
-llmem context --session-id <session_id>              # Inject context for a new session
-llmem context --compacting --session-id <session_id>  # Inject key memories during compaction
-
-# Session lifecycle hooks
-llmem hook --type idle --session-id <session_id>      # Memory extraction
-llmem hook --type created --session-id <session_id>   # Context injection on session start
-llmem hook --type ending --session-id <session_id>    # Memory extraction on session end
-llmem hook --type compacting --session-id <session_id># Context during compaction
-
 # Dream — background consolidation (decay, boost, promote, merge)
 llmem dream                                               # Preview all phases (dry-run)
 llmem dream --apply                                       # Execute all phases
@@ -164,8 +154,7 @@ final_score = rrf_score * (1 - blend) + weighted_signal * blend
 - **Embeddings** require Ollama running with `nomic-embed-text` pulled. If Ollama is down, semantic search falls back to FTS5-only.
 - **ANN vector index** — semantic search uses sqlite-vec (`vec0` virtual table) for fast ANN retrieval, with automatic fallback to brute-force cosine similarity if sqlite-vec is not available.
 - **Confidence** is 0.0-1.0. Higher = more certain. Facts from the user directly should be 0.9+, auto-extracted should be 0.7.
-- **Context generation** is what gets injected into the system prompt for context. Use `llmem context --session-id <id>` to preview what gets injected.
-- **Session hooks** use `llmem hook --type <idle|created|ending|compacting> --session-id <id>`. The idle hook processes the session's transcript and extracts memories automatically. The ending hook extracts memories from the session transcript.
+- **Context generation** uses `llmem search <query>` to find relevant memories for injection into a session. The plugin handles this automatically at session start.
 - **Access tracking** — `llmem get` is read-only and does not update `access_count` or `accessed_at`. Search operations automatically track access — each returned result's `access_count` and `accessed_at` are updated (best-effort).
 
 

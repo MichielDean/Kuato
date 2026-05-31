@@ -153,7 +153,6 @@ claude --plugin-dir ~/.claude/plugins/llmem
 
 The plugin provides:
 - **`SessionStart` hook**: Injects `llmem stats` and `llmem search` at session start
-- **`SessionEnd` hook**: Runs `llmem hook ending` for memory extraction
 - **`PreCompact` hook**: Injects key memories before compaction
 - **Skills**: `llmem`, `llmem-setup` — loaded on-demand
 
@@ -233,8 +232,7 @@ Agent Session
     │
     ├── Plugin (auto, no instructions needed)
     │   ├── session.created/start → llmem stats + llmem search → inject context
-    │   ├── session.idle/end      → llmem hook idle/ending → extract memories
-    │   └── session.compacting    → llmem context --compacting → preserve key memories
+    │   └── session.compacting    → llmem search → preserve key memories
     │
     ├── Skills (on-demand, loaded by trigger)
     │   ├── llmem                      → CLI reference, memory types, commands

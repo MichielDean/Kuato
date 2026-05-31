@@ -25,8 +25,7 @@ Commands:
   init                Initialize the llmem memory system
   metrics             Report embedding quality metrics
   dream               Run the dream consolidation cycle
-  context             Inject relevant memory context for a session
-  hook                Handle session lifecycle hook events
+
 ```
 
 **Python-only commands** (not yet in the Go CLI): `register-type`, `types`, `note`, `inbox`, `consolidate`, `embed`, `learn` (codebase indexing), `suggest-categories`.
@@ -150,28 +149,3 @@ Output is printed to stdout. On `--report` path validation errors, the error mes
 
 > **Python-only commands:** The Python CLI includes additional commands not yet in the Go CLI: `register-type`, `types`, `note`, `inbox`, `consolidate`, `embed` (full embedding quality metrics), `learn` (codebase indexing), and `suggest-categories`.
 
-### `llmem context`
-
-```bash
-llmem context --session-id ID [--compacting]
-```
-
-Inject relevant memory context for a session. Used by session hooks to inject memories into a new or compacting session.
-
-- `--session-id` (required): The session ID to inject context for. Validated against path traversal attacks.
-- `--compacting`: If set, inject key memories for compaction instead of session start context. High-confidence memories of types `decision`, `preference`, `procedure`, and `project_state` (confidence ≥ 0.7) are selected.
-
-### `llmem hook`
-
-```bash
-llmem hook --type TYPE --session-id ID
-```
-
-Handle session lifecycle hook events. Supports four hook types:
-
-- `--type` (required): Hook type. Choices: `created`, `idle`, `compacting`, `ending`.
-- `--session-id` (required): Session ID for the hook event. Validated against path traversal attacks.
-
-The `idle` hook processes the session's transcript, extracts memories via the extraction pipeline (chunk → dedup → LLM extract → embed → store), and generates embedding vectors for each extracted memory. It uses a debounce mechanism (via `extraction_log` table) to prevent re-extraction. When `ExtractionEngine` is not configured, extraction is skipped gracefully.
-
-The `ending` hook extracts memories from the transcript (same pipeline as `idle`).

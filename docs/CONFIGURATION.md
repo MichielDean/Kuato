@@ -71,9 +71,8 @@ LLMem uses a session adapter to read conversation transcripts for memory extract
 
 **Key behavior differences:**
 
-- `llmem context` (session.created) — works with all adapters, including `none`. Injects relevant memories without needing session transcripts.
-- `llmem hook idle` (session.idle) — requires transcript access. Returns `no_transcript` when no adapter is configured or no share file exists.
-- `llmem context --compacting` (session.compacting) — works with all adapters. Reads from MemoryStore, not the session DB.
+- `llmem search` (session.created) — works with all adapters, including `none`. Searches relevant memories without needing session transcripts.
+- `llmem search --limit 15` (session.compacting) — works with all adapters. Reads from MemoryStore, not the session DB.
 
 **OpenCode adapter specifics:** The adapter reads from the OpenCode SQLite database in read-only mode. When a session has `time_compacting` set (indicating context compaction), `ReadTranscript` returns only messages after the compaction time (recent context), not the full history. The `Close()` method on the adapter is idempotent and should be called when done (typically via `defer`).
 

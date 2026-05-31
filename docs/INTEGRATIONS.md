@@ -11,8 +11,7 @@ Agent Session
     │
     ├── Plugin (auto, no instructions needed)
     │   ├── session.created/start → llmem stats + llmem search → inject context
-    │   ├── session.idle/end      → llmem hook idle/ending → extract memories
-    │   └── session.compacting    → llmem context --compacting → preserve memories
+    │   └── session.compacting    → llmem search → preserve memories
     │
     ├── Skills (on-demand, loaded by trigger)
     │   ├── llmem                      → CLI reference, memory types, commands
@@ -58,9 +57,7 @@ The OpenCode plugin (`plugins/opencode/llmem.js`) handles:
 | Event | Action |
 |-------|--------|
 | `session.created` | Runs `llmem stats` + `llmem search` — injects results as log context |
-| `session.idle` | Runs `llmem hook idle <session_id>` — extracts memories from transcript |
-| `session.ending` | (not yet wired — agent-driven via skills) |
-| `experimental.session.compacting` | Runs `llmem context --compacting` — preserves key memories |
+| `experimental.session.compacting` | Runs `llmem search` — preserves key memories |
 
 The plugin is deployed to `~/.config/opencode/plugins/llmem.js` by the install script. No manual configuration needed — OpenCode auto-discovers plugins in this directory.
 
@@ -83,7 +80,6 @@ The `.opencode/tools/` directory contains six type-safe tools that the agent can
 | `llmem-context` | `llmem search <query> --limit 20` | Retrieve formatted context for a topic |
 | `llmem-invalidate` | `llmem invalidate <ID>` | Invalidate a memory by ID |
 | `llmem-stats` | `llmem stats` | Show memory statistics |
-| `llmem-hook` | `llmem hook <type>` | Run the extraction hook |
 
 ### Skills
 
@@ -152,8 +148,7 @@ The `hooks.json` declares:
 | Event | Action |
 |-------|--------|
 | `SessionStart` | Runs `llmem stats` + `llmem search` — stdout injected as context |
-| `SessionEnd` | Runs `llmem hook ending` — extracts memories |
-| `PreCompact` | Runs `llmem context --compacting` — preserves key memories |
+| `PreCompact` | Runs `llmem search` — preserves key memories |
 
 The `SessionStart` hook's **stdout is added as context that Claude can see and act on** — this is the key mechanism for zero-config integration.
 
