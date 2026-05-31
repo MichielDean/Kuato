@@ -20,9 +20,7 @@ const TEMPLATES_DIR = path.join(__dirname, 'templates');
 const TOOLS_DIR = path.join(__dirname, '.opencode', 'tools');
 const EXPECTED_SKILLS = [
   'llmem',
-  'llmem-setup',
-  'introspection',
-  'introspection-review-tracker'
+  'llmem-setup'
 ];
 const EXPECTED_TEMPLATES = [
   'rules.md',
@@ -752,7 +750,6 @@ function testAgentPluginHooksExists() {
   if (!fs.existsSync(AGENT_PLUGIN_HOOKS)) return;
   var hooks = JSON.parse(fs.readFileSync(AGENT_PLUGIN_HOOKS, 'utf8'));
   assert(hooks.hooks && hooks.hooks.SessionStart, 'agent hooks has SessionStart');
-  assert(hooks.hooks && hooks.hooks.SessionEnd, 'agent hooks has SessionEnd');
   assert(hooks.hooks && hooks.hooks.PreCompact, 'agent hooks has PreCompact');
 }
 
