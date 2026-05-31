@@ -63,7 +63,7 @@ cd LLMem && npm install
 ```
 
 This runs the postinstall script which:
-1. Copies 4 skill directories to `~/.agents/skills/`
+1. Copies all skill directories to `~/.agents/skills/`
 2. Auto-detects your agent platform (OpenCode, Claude Code, or Copilot CLI)
 3. Deploys the correct plugin to the right location
 
@@ -100,7 +100,7 @@ ms, err := store.NewMemoryStore(store.StoreConfig{
     DBPath:         "",               // defaults to ~/.config/llmem/memory.db
     VecDimensions:  0,               // defaults to 768
     DisableVec:     false,            // set true to skip vec0 virtual table
-    RegisteredTypes: nil,             // defaults to 8 standard types
+    RegisteredTypes: nil,             // defaults to 7 standard types
 })
 if err != nil {
     log.Fatal(err)
@@ -126,7 +126,7 @@ See [docs/INSTALLATION.md](docs/INSTALLATION.md) for Go build dependencies and [
 
 LLMem uses platform plugins to inject memory context automatically. **No manual instruction editing required.** The plugin handles:
 
-- **Session start**: Injects memory stats, behavioral patterns, and proposed procedures as context
+- **Session start**: Injects memory stats and context as session starts
 - **Session idle/end**: Extracts memories from the session transcript
 - **Compaction**: Preserves key memories across context compaction
 
@@ -142,7 +142,7 @@ The plugin-first approach means your AGENTS.md, CLAUDE.md, or system instruction
 
 ## Skills
 
-LLMem ships four skills focused on memory management. They load on-demand via the skill system — no need to paste their content into instruction files.
+LLMem ships two skills focused on memory management. They load on-demand via the skill system — no need to paste their content into instruction files.
 
 | Skill | Description |
 |-------|-------------|

@@ -653,7 +653,7 @@ ms, err := store.NewMemoryStore(store.StoreConfig{
     DBPath:         "",               // empty → ~/.config/llmem/memory.db
     VecDimensions:  0,               // 0 → defaults to 768
     DisableVec:     false,           // false → attempt vec0 virtual table
-    RegisteredTypes: nil,             // nil → 8 standard types
+    RegisteredTypes: nil,             // nil → 7 standard types
 })
 if err != nil {
     log.Fatal(err)
@@ -837,7 +837,7 @@ type StoreConfig struct {
     DBPath          string   // Database file path (default: ~/.config/llmem/memory.db)
     VecDimensions   int      // Embedding dimensions (default: 768, must be ≥ 0)
     DisableVec      bool     // Skip vec0 virtual table creation
-    RegisteredTypes []string // Custom type list (default: 8 standard types)
+    RegisteredTypes []string // Custom type list (default: 7 standard types)
 }
 
 type AddParams struct {
@@ -924,7 +924,7 @@ The Go implementation uses the identical 7-migration schema as Python:
 |-----------|-------------|
 | 001 | Initial schema: `memories`, `relations`, `extraction_log` tables, `memories_fts` FTS5 virtual table |
 | 002 | Add `hints` column (TEXT, JSON array) |
-| 003 | Register 8 default memory types via CHECK constraint |
+| 003 | Register default memory types via CHECK constraint |
 | 004 | Add `code_chunks` table for code indexing |
 | 005 | Add `inbox` table for working memory |
 | 006 | Add `supersedes` and `references` relation types |
@@ -1060,7 +1060,7 @@ weighted := retriever.ComputeWeightedSignal(signals)
 
 // Get default type priority map (returns defensive copy).
 priorities := retriever.DefaultTypePriority()
-// map[decision:1.2 preference:1.1 procedure:1.1 fact:1.0 project_state:1.0 event:0.9]
+// map[conversation:0.7 decision:1.2 preference:1.1 procedure:1.1 fact:1.0 project_state:1.0 event:0.9]
 ```
 
 #### Reranking Signals
@@ -1081,6 +1081,7 @@ The final score is: `rrf_score * (1 - blend) + weighted_signal * blend`
 | decision | 1.2 | | fact | 1.0 |
 | preference | 1.1 | | project_state | 1.0 |
 | procedure | 1.1 | | event | 0.9 |
+| conversation | 0.7 | | | |
 
 ### Embedding Metrics (internal/metrics)
 
@@ -1481,7 +1482,7 @@ for category, description := range taxonomy.ErrorTaxonomy {
 // Get ordered category keys
 keys := taxonomy.ErrorTaxonomyKeys()
 // ["NULL_SAFETY", "ERROR_HANDLING", "OFF_BY_ONE", "RACE_CONDITION", "AUTH_BYPASS",
-//  "DATA_INTEGRITY", "MISSING_VERIFICATION", "EDGE_CASE", "PERFORMANCE", "DESIGN"]
+//  "DATA_INTEGRITY", "MISSING_VERIFICATION", "EDGE_CASE", "PERFORMANCE", "DESIGN", "REVIEW_PASSED"]
 ```
 
 #### Error Categories
@@ -1498,3 +1499,4 @@ keys := taxonomy.ErrorTaxonomyKeys()
 | `EDGE_CASE` | Unhandled empty input, unexpected types |
 | `PERFORMANCE` | N+1 queries, memory leaks |
 | `DESIGN` | Architectural issues, coupling problems |
+| `REVIEW_PASSED` | Clean review with no findings — positive outcome for tracking purposes |
